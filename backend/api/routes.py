@@ -114,21 +114,179 @@ def _terminal(status: str) -> bool:
     return status in ("complete", "failed", "cancelled", "orphaned")
 
 
+def _iso_from_ns(ts_ns: Any) -> str | None:
+    """ISO-8601 UTC for a nanosecond timestamp, or None when it is absent."""
+    if ts_ns is None:
+        return None
+    try:
+        value = int(ts_ns)
+    except (TypeError, ValueError):
+        return None
+    return datetime.fromtimestamp(value / 1e9, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _mapping(value: Any) -> dict[str, Any] | None:
+    """Read a JSON string or mapping artifact field without inventing values."""
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except (TypeError, ValueError):
+            return None
+        return parsed if isinstance(parsed, dict) else None
+    return None
+
+
+def _entry_context(
+    signals: list[dict[str, Any]], trade: dict[str, Any], direction: str | None
+) -> dict[str, Any] | None:
+    """Signal/indicator snapshot for the nearest matching entry signal.
+
+    The match is exact: same instrument, same entry action, signal timestamp at
+    or before the fill. If the signals artifact has no such row the context is
+    null; a context is never built from a later signal or another instrument.
+    """
+    if direction not in ("long", "short"):
+        return None
+    action = "long_entry" if direction == "long" else "short_entry"
+    instrument_id = str(trade.get("instrument_id") or "")
+    entry_ns = trade.get("entry_ts_ns")
+    if entry_ns is None:
+        return None
+    try:
+        entry_ns = int(entry_ns)
+    except (TypeError, ValueError):
+        return None
+
+    best: dict[str, Any] | None = None
+    for row in signals:
+        if str(row.get("action") or "") != action:
+            continue
+        if str(row.get("instrument_id") or "") != instrument_id:
+            continue
+        ts = row.get("ts_ns")
+        if ts is None:
+            continue
+        try:
+            ts = int(ts)
+        except (TypeError, ValueError):
+            continue
+        if ts > entry_ns:
+            continue
+        if best is None or ts > int(best["ts_ns"]):
+            best = {**row, "ts_ns": ts}
+    if best is None:
+        return None
+
+    context: dict[str, Any] = {
+        "signal_ts": _iso_from_ns(best["ts_ns"]),
+        "ts_ns": best["ts_ns"],
+        "action": action,
+        "condition": action,
+    }
+    for key in ("reference_price", "phase", "signal_id"):
+        if best.get(key) is not None:
+            context[key] = best[key]
+    indicators = _mapping(best.get("indicator_values"))
+    if indicators:
+        context["indicator_values"] = indicators
+    truths = _mapping(best.get("condition_truths"))
+    if truths:
+        context["condition_truths"] = truths
+    return context
+
+
 def _trade_rows(run_id: str) -> list[dict[str, Any]]:
     rows = parquet_rows(run_id, "trades.parquet", 100_000)
+    signals = parquet_rows(run_id, "signals.parquet", 100_000)
     out = []
     for i, t in enumerate(rows):
-        intent = "open_long" if t.get("side") == "long" else "open_short"
+        raw_side = str(t.get("side") or "")
+        direction = raw_side if raw_side in ("long", "short") else None
+        intent = str(t.get("intent") or "") or (
+            f"open_{direction}" if direction is not None else ""
+        )
+        held_to_settlement = t.get("exit_reason") == "settlement"
         out.append(
             {
                 **t,
                 "trade_id": f"T-{i + 1:04d}",
+                # The artifact's side is the intent direction (long/short). Keep
+                # it as `direction` and expose the actual entry order side too;
+                # overwriting one with the other loses the trade's meaning.
+                "direction": direction,
                 "side": "BUY",
-                "close_side": "SELL",
-                "intent": intent,
+                "order_side": "BUY",
+                # Settlement is not a SELL order: no closing side is invented.
+                "close_side": None if held_to_settlement else "SELL",
+                "intent": intent or None,
                 "contracts": t.get("quantity"),
-                "held_to_settlement": t.get("exit_reason") == "settlement",
+                "held_to_settlement": held_to_settlement,
                 "phase": t.get("entry_phase"),
+                "entry_context": _entry_context(signals, t, direction),
+            }
+        )
+    return out
+
+
+def _trade_position_windows(trades: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Position windows derived from the trades artifact, one per closed lot."""
+    out = []
+    for i, trade in enumerate(trades):
+        reason = trade.get("exit_reason")
+        settlement = reason == "settlement"
+        out.append(
+            {
+                "position_id": f"P-{i + 1:04d}",
+                "entry_ts": trade.get("entry_ts"),
+                "exit_ts": trade.get("exit_ts"),
+                "instrument_id": trade.get("instrument_id"),
+                "token": trade.get("token"),
+                "side": trade.get("direction"),
+                "intent": trade.get("intent"),
+                "quantity": trade.get("quantity"),
+                "entry_price": trade.get("entry_price"),
+                "exit_price": trade.get("exit_price"),
+                "settlement": settlement,
+                "exit_reason": reason,
+                "status": "settled" if settlement else "closed",
+                "entry_execution_source": trade.get("entry_execution_source"),
+                "entry_fallback_reason": trade.get("entry_fallback_reason"),
+                "exit_execution_source": trade.get("exit_execution_source"),
+                "exit_fallback_reason": trade.get("exit_fallback_reason"),
+            }
+        )
+    return out
+
+
+def _open_position_windows(run_id: str) -> list[dict[str, Any]]:
+    """Lots still unsettled in the positions artifact, with no invented exit."""
+    rows = parquet_rows(run_id, "positions.parquet", 100_000)
+    out = []
+    for i, row in enumerate(rows):
+        if str(row.get("status") or "") != "unsettled":
+            continue
+        side = row.get("side") if row.get("side") in ("long", "short") else None
+        out.append(
+            {
+                "position_id": f"O-{i + 1:04d}",
+                "entry_ts": row.get("entry_ts"),
+                "exit_ts": None,
+                "instrument_id": row.get("instrument_id"),
+                "token": row.get("token"),
+                "side": side,
+                "intent": row.get("intent") or (f"open_{side}" if side else None),
+                "quantity": row.get("quantity"),
+                "entry_price": row.get("entry_price"),
+                "exit_price": None,
+                "settlement": False,
+                "exit_reason": None,
+                "status": "open",
+                "entry_execution_source": row.get("entry_execution_source"),
+                "entry_fallback_reason": row.get("entry_fallback_reason"),
+                "exit_execution_source": None,
+                "exit_fallback_reason": None,
             }
         )
     return out
@@ -140,11 +298,7 @@ def _signal_rows(run_id: str) -> list[dict[str, Any]]:
     for s in rows:
         action = str(s.get("action", "signal"))
         ts_ns = s.get("ts_ns")
-        ts = None
-        if ts_ns:
-            from datetime import datetime, timezone
-
-            ts = datetime.fromtimestamp(int(ts_ns) / 1e9, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+        ts = _iso_from_ns(ts_ns)
         out.append(
             {
                 **s,
@@ -236,6 +390,8 @@ def _run_payload(run: dict[str, Any], include_summary: bool = True, detail: bool
                 payload["costs"]["fallback_reason"] = (manifest or {}).get("execution", {}).get("fallback_reason")
             payload["equity"] = parquet_rows(run_id, "equity.parquet", 100_000)
             payload["trades"] = _trade_rows(run_id)
+            payload["positions"] = _trade_position_windows(payload["trades"])
+            payload["open_positions"] = _open_position_windows(run_id)
             payload["signals"] = _signal_rows(run_id)
             phases = payload.get("phase_breakdown") or {}
             payload["phases"] = [

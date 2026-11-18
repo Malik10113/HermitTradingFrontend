@@ -4,6 +4,7 @@ import {
   normaliseCompare,
   normaliseInstrumentList,
   normaliseMetrics,
+  normalisePositions,
   normalisePresets,
   normaliseQuality,
   normaliseRun,
@@ -209,9 +210,66 @@ describe("wire normalisation", () => {
       token: "NO",
       intent: "open_short",
       side: "BUY",
+      direction: "short",
       contracts: 5,
       held_to_settlement: false,
     });
+  });
+
+  it("preserves direction when the API already supplies an order side", () => {
+    const trades = normaliseTrades([
+      {
+        entry_ts: "2024-10-19T10:00:00Z",
+        token: "YES",
+        side: "BUY",
+        direction: "long",
+        intent: "open_long",
+        quantity: 5,
+      },
+    ]);
+    expect(trades[0].side).toBe("BUY");
+    expect(trades[0].direction).toBe("long");
+    expect(trades[0].intent).toBe("open_long");
+  });
+
+  it("maps artifact position windows without inventing an exit", () => {
+    const windows = normalisePositions([
+      {
+        position_id: "P-0001",
+        entry_ts: "2024-10-19T10:00:00Z",
+        exit_ts: "2024-10-19T10:05:00Z",
+        token: "YES",
+        side: "long",
+        intent: "open_long",
+        quantity: 5,
+        entry_price: 0.4,
+        exit_price: 0.5,
+        settlement: false,
+        status: "closed",
+        entry_execution_source: "conservative_fallback",
+        exit_execution_source: "book",
+      },
+      {
+        position_id: "O-0001",
+        entry_ts: "2024-10-19T10:10:00Z",
+        token: "NO",
+        side: "short",
+        quantity: 2,
+        status: "open",
+      },
+    ]);
+    expect(windows).not.toBeNull();
+    expect(windows?.[0]).toMatchObject({
+      position_id: "P-0001",
+      side: "long",
+      settlement: false,
+      entry_execution_source: "conservative_fallback",
+      exit_execution_source: "book",
+    });
+    expect(windows?.[1].exit_ts).toBeNull();
+    expect(windows?.[1].status).toBe("open");
+    expect(normalisePositions(null)).toBeNull();
+    expect(normalisePositions([])).toEqual([]);
   });
 
   it("keeps absent trade prices and close side absent instead of inventing them", () => {

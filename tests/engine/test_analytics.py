@@ -95,6 +95,54 @@ def test_unsettled_instrument_is_reported_not_invented():
     assert positions[0]["status"] == "unsettled"
 
 
+def test_trade_row_derives_slippage_from_reference_and_fill_prices():
+    fills = [
+        _fill(0, "BUY", 0.41, qty=10.0, ref=0.40),
+        _fill(100, "SELL", 0.59, qty=10.0, ref=0.60),
+    ]
+    trades, _ = reconstruct_trades(fills, _settle(), YES)
+    trade = trades[0]
+    assert trade["entry_reference_price"] == 0.40
+    assert trade["exit_reference_price"] == 0.60
+    assert trade["entry_slippage_usd"] == pytest.approx(0.10)
+    assert trade["exit_slippage_usd"] == pytest.approx(0.10)
+    assert trade["slippage_usd"] == pytest.approx(0.20)
+
+
+def test_trade_row_leaves_slippage_unknown_without_a_reference():
+    fills = [_fill(0, "BUY", 0.41), _fill(100, "SELL", 0.59)]
+    trades, _ = reconstruct_trades(fills, _settle(), YES)
+    trade = trades[0]
+    assert trade["entry_slippage_usd"] is None
+    assert trade["exit_slippage_usd"] is None
+    assert trade["slippage_usd"] is None
+
+
+def test_settlement_has_no_exit_fill_provenance():
+    fills = [_fill(0, "BUY", 0.30, fee=0.2)]
+    trades, positions = reconstruct_trades(fills, _settle(1.0, 0.0), YES)
+    trade = trades[0]
+    assert trade["exit_reason"] == "settlement"
+    assert trade["exit_execution_source"] is None
+    assert trade["exit_fallback_reason"] is None
+    assert trade["slippage_usd"] is None
+    assert positions[0]["side"] == "long"
+    assert positions[0]["intent"] == "open_long"
+
+
+def test_unsettled_position_keeps_direction_and_entry_provenance():
+    entry = _fill(0, "BUY", 0.30)
+    entry.execution_source = "conservative_fallback"
+    entry.fallback_reason = "book_snapshot_stale"
+    trades, positions = reconstruct_trades([entry], {}, YES)
+    assert trades == []
+    assert positions[0]["status"] == "unsettled"
+    assert positions[0]["side"] == "long"
+    assert positions[0]["intent"] == "open_long"
+    assert positions[0]["entry_execution_source"] == "conservative_fallback"
+    assert positions[0]["entry_fallback_reason"] == "book_snapshot_stale"
+
+
 def test_equity_marks_positions_and_includes_cash():
     bars = [
         {"ts_event_ns": 0, "close": 0.40},

@@ -266,6 +266,25 @@ chain, requested/effective execution profile with fallback reason and rate,
 book coverage, evaluation split and split hash, risk config and
 `acknowledged_warnings`.
 
+`GET /api/backtests/{run_id}` exposes the run detail. Trade rows preserve the
+artifact direction (`direction: long|short` and `intent`) separately from the
+actual entry order side (`side: BUY`; `close_side: SELL`, or `null` when the
+lot settled). `entry_execution_source`/`entry_fallback_reason` and
+`exit_execution_source`/`exit_fallback_reason` come from the fill records;
+an absent value stays `null`, and a settlement exit has no fill source.
+`slippage_usd` is derived from reference vs fill prices when that leg has a
+reference, otherwise `null`. `entry_context` is the nearest stored signal at
+or before the entry timestamp for the same instrument and entry action; it
+carries the signal time, action/condition, reference price, phase and the
+persisted indicator snapshot. With no matching signal row the field is `null`.
+
+`positions` is one window per closed trade (`entry_ts`, `exit_ts`, token,
+direction/intent, quantity, entry/exit price, `settlement`, `status` and
+per-leg execution provenance). `open_positions` lists entries from
+`positions.parquet` whose status is `unsettled`; their `exit_ts` is `null`
+because no exit was observed. A zero-trade run returns `trades: []`,
+`positions: []` and `open_positions: []`.
+
 ## Package layout
 
 ```

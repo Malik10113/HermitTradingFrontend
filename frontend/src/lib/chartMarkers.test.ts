@@ -219,6 +219,39 @@ describe("phase shading", () => {
       CHART_COLORS.positionShort,
     );
   });
+
+  it("maps API position windows to long and short bands", () => {
+    const bands = openPositionBands([
+      {
+        position_id: "P-0001",
+        entry_ts: "2024-10-19T10:00:00Z",
+        exit_ts: "2024-10-19T10:05:00Z",
+        token: "YES",
+        side: "long",
+      },
+      {
+        position_id: "P-0002",
+        entry_ts: "2024-10-19T10:05:00Z",
+        exit_ts: "2024-10-19T10:10:00Z",
+        token: "NO",
+        side: "short",
+      },
+    ]);
+    expect(bands).toHaveLength(2);
+    expect(bands[0]).toMatchObject({
+      from: Math.floor(Date.parse("2024-10-19T10:00:00Z") / 1000),
+      to: Math.floor(Date.parse("2024-10-19T10:05:00Z") / 1000),
+      color: CHART_COLORS.positionLong,
+      token: "YES",
+    });
+    expect(bands[1].color).toBe(CHART_COLORS.positionShort);
+  });
+
+  it("returns no shading for absent or empty position windows", () => {
+    expect(openPositionBands(null)).toEqual([]);
+    expect(openPositionBands(undefined)).toEqual([]);
+    expect(openPositionBands([])).toEqual([]);
+  });
 });
 
 describe("server indicator alignment", () => {

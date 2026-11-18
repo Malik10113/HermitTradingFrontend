@@ -336,6 +336,10 @@ export function WorkspacePage() {
 
   const runController = useRun(state.runId || null);
   const run = runController.run;
+  const positionWindows = useMemo(
+    () => [...(run?.positions ?? []), ...(run?.open_positions ?? [])],
+    [run?.positions, run?.open_positions],
+  );
 
   useEffect(() => {
     if (!run || appliedRunRange.current === run.run_id) return;
@@ -642,6 +646,7 @@ export function WorkspacePage() {
                   lifecycle={lifecycle}
                   trades={run?.trades ?? []}
                   signals={run?.signals ?? []}
+                  positions={positionWindows}
                   phaseFilter={state.phase}
                   stale={stale}
                   onSelectTrade={(tradeId) => {

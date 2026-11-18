@@ -53,6 +53,10 @@ class SignalRecord:
     reason: str = ""
     phase: str = "unknown"
     condition_truths: dict[str, bool] = field(default_factory=dict)
+    # Indicator snapshot at the signal bar. Persisted so the trade inspector can
+    # show what the entry decision actually saw; empty when the row predates the
+    # field or the strategy declares no indicators.
+    indicator_values: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 @dataclass
@@ -105,7 +109,18 @@ def reconstruct_trades(
     lots: dict[str, list[Lot]] = {}
     trades: list[dict[str, Any]] = []
 
-    def close_lot(lot: Lot, qty: float, exit_price: float, exit_ts: int, fee: float, reason: str, phase: str, exit_source: str = "fixed", exit_fallback_reason: str | None = None) -> None:
+    def close_lot(
+        lot: Lot,
+        qty: float,
+        exit_price: float,
+        exit_ts: int,
+        fee: float,
+        reason: str,
+        phase: str,
+        exit_source: str | None = "fixed",
+        exit_fallback_reason: str | None = None,
+        exit_ref: float | None = None,
+    ) -> None:
         gross = (exit_price - lot.entry_price) * qty
         entry_fee_share = lot.entry_fee_usd * (qty / lot.quantity) if lot.quantity else 0.0
         fees = entry_fee_share + fee
@@ -115,6 +130,22 @@ def reconstruct_trades(
             exit_source
             if exit_fallback_reason
             else (lot.entry_execution_source or exit_source)
+        )
+        # Per-leg slippage is measured the same way as the run-level cost
+        # breakdown: BUY pays above reference, SELL receives below it. A leg
+        # without a reference price is unknown, never zero.
+        entry_slippage_usd = (
+            max(lot.entry_price - lot.entry_ref, 0.0) * qty
+            if lot.entry_ref is not None
+            else None
+        )
+        exit_slippage_usd = (
+            max(exit_ref - exit_price, 0.0) * qty if exit_ref is not None else None
+        )
+        slippage_usd = (
+            None
+            if entry_slippage_usd is None and exit_slippage_usd is None
+            else (entry_slippage_usd or 0.0) + (exit_slippage_usd or 0.0)
         )
         trades.append(
             {
@@ -144,6 +175,7 @@ def reconstruct_trades(
                 "exit_phase": phase,
                 "signal_id": lot.signal_id,
                 "entry_reference_price": lot.entry_ref,
+                "exit_reference_price": exit_ref,
                 # Per-fill provenance so a Book fallback is visible on the
                 # trade row, not only in the run-level summary.
                 "execution_source": execution_source,
@@ -152,6 +184,10 @@ def reconstruct_trades(
                 "entry_fallback_reason": lot.entry_fallback_reason,
                 "exit_execution_source": exit_source,
                 "exit_fallback_reason": exit_fallback_reason,
+                # Derived from reference vs fill prices when both are known.
+                "slippage_usd": slippage_usd,
+                "entry_slippage_usd": entry_slippage_usd,
+                "exit_slippage_usd": exit_slippage_usd,
             }
         )
 
@@ -189,6 +225,7 @@ def reconstruct_trades(
                     f.phase,
                     exit_source=f.execution_source,
                     exit_fallback_reason=f.fallback_reason,
+                    exit_ref=f.reference_price,
                 )
                 lot.quantity -= take
                 remaining -= take
@@ -202,29 +239,43 @@ def reconstruct_trades(
             if lot.quantity <= 1e-12:
                 continue
             settlement = settlements.get(lot.condition_id)
+            direction = "long" if instrument_id == primary_instrument_id else "short"
+            intent = "open_long" if direction == "long" else "open_short"
             if settlement is None:
                 open_positions.append(
                     {
                         "instrument_id": instrument_id,
                         "condition_id": lot.condition_id,
                         "token": lot.token,
+                        "side": direction,
+                        "intent": intent,
                         "quantity": lot.quantity,
                         "entry_price": lot.entry_price,
                         "entry_ts": _iso(lot.entry_ts_ns),
+                        "entry_ts_ns": lot.entry_ts_ns,
+                        "entry_execution_source": lot.entry_execution_source,
+                        "entry_fallback_reason": lot.entry_fallback_reason,
                         "status": "unsettled",
                     }
                 )
                 continue
             value = _settle_value(settlement, lot.token)
             ts = settlement.settled_ts_ns or default_settle_ts_ns.get(instrument_id) or lot.entry_ts_ns
-            close_lot(lot, lot.quantity, value, ts, 0.0, "settlement", "settled")
+            # Settlement is not a fill: there is no exit execution source.
+            close_lot(lot, lot.quantity, value, ts, 0.0, "settlement", "settled", exit_source=None)
             open_positions.append(
                 {
                     "instrument_id": instrument_id,
                     "condition_id": lot.condition_id,
                     "token": lot.token,
+                    "side": direction,
+                    "intent": intent,
                     "quantity": lot.quantity,
                     "entry_price": lot.entry_price,
+                    "entry_ts": _iso(lot.entry_ts_ns),
+                    "entry_ts_ns": lot.entry_ts_ns,
+                    "entry_execution_source": lot.entry_execution_source,
+                    "entry_fallback_reason": lot.entry_fallback_reason,
                     "settlement_value": value,
                     "settled_ts": _iso(ts),
                     "status": "settled",

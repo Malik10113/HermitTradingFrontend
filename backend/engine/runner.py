@@ -438,6 +438,7 @@ def execute_run(config_dict: dict[str, Any], prepared: dict[str, Any] | None = N
                 token=primary_row.get("token") or "YES" if action.startswith("long") else complement_row.get("token") or "NO",
                 reference_price=raw.get("ref_price"),
                 phase=lc.get("phase", "unknown"),
+                indicator_values=raw.get("indicator_values") or {},
             )
         )
     settlements: dict[str, SettlementRecord] = {}

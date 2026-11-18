@@ -25,6 +25,7 @@ import type {
   PhaseMetric,
   Preset,
   PresetListResponse,
+  PositionWindow,
   RunDetail,
   RunListResponse,
   SignalPoint,
@@ -319,10 +320,21 @@ function normaliseTrade(raw: unknown, index: number): Trade {
   const source = record(raw);
   const token: "YES" | "NO" = source.token === "NO" ? "NO" : "YES";
   const payloadSide = source.side === "SELL" ? "SELL" : "BUY";
+  const rawDirection = str(source.direction);
   const rawSide = str(source.side);
+  const direction: Trade["direction"] =
+    rawDirection === "long" || rawDirection === "short"
+      ? rawDirection
+      : rawSide === "long" || rawSide === "short"
+        ? rawSide
+        : null;
   const intent =
     str(source.intent) ??
-    (rawSide === "short" ? "open_short" : rawSide === "long" ? "open_long" : null);
+    (direction === "short"
+      ? "open_short"
+      : direction === "long"
+        ? "open_long"
+        : null);
   let entryContext: Record<string, unknown> | null = null;
   if (typeof source.entry_context === "string") {
     try {
@@ -343,6 +355,7 @@ function normaliseTrade(raw: unknown, index: number): Trade {
       source.close_side === "BUY" || source.close_side === "SELL"
         ? source.close_side
         : null,
+    direction,
     token,
     intent,
     entry_ts: str(source.entry_ts) ?? "",
@@ -365,6 +378,38 @@ function normaliseTrade(raw: unknown, index: number): Trade {
 
 export function normaliseTrades(raw: unknown): Trade[] {
   return array(raw).map(normaliseTrade);
+}
+
+/**
+ * Position windows come from the API artifact-derived list. An absent exit
+ * timestamp stays null: an open window is never closed with an inferred time.
+ */
+export function normalisePositions(raw: unknown): PositionWindow[] | null {
+  if (raw == null) return null;
+  return array(raw).map((item) => {
+    const source = record(item);
+    const side = str(source.side);
+    return {
+      ...(source as unknown as PositionWindow),
+      position_id: str(source.position_id),
+      entry_ts: str(source.entry_ts) ?? "",
+      exit_ts: str(source.exit_ts),
+      instrument_id: str(source.instrument_id),
+      token: str(source.token),
+      side: side === "long" || side === "short" ? side : null,
+      intent: str(source.intent),
+      quantity: num(source.quantity),
+      entry_price: num(source.entry_price),
+      exit_price: num(source.exit_price),
+      settlement: bool(source.settlement),
+      exit_reason: str(source.exit_reason),
+      status: str(source.status),
+      entry_execution_source: str(source.entry_execution_source),
+      entry_fallback_reason: str(source.entry_fallback_reason),
+      exit_execution_source: str(source.exit_execution_source),
+      exit_fallback_reason: str(source.exit_fallback_reason),
+    };
+  });
 }
 
 /**
@@ -548,6 +593,8 @@ export function normaliseRun(raw: unknown): RunDetail {
   const evaluation = record(config.evaluation);
   const status = (str(source.status) ?? "queued") as RunDetail["status"];
   const trades = source.trades != null ? normaliseTrades(source.trades) : null;
+  const positions = normalisePositions(source.positions);
+  const openPositions = normalisePositions(source.open_positions);
   const equitySource = source.equity ?? source.equity_index;
   const phasesSource = source.phases ?? source.phase_breakdown ?? manifest.phase_breakdown;
   const lifecycle = source.lifecycle ? (record(source.lifecycle) as unknown as LifecycleMeta) : null;
@@ -578,6 +625,8 @@ export function normaliseRun(raw: unknown): RunDetail {
     lifecycle,
     equity: equitySource != null ? normaliseEquity(equitySource) : null,
     trades,
+    positions,
+    open_positions: openPositions,
     signals: normaliseSignals(source.signals),
     config: Object.keys(config).length > 0 ? (config as unknown as RunDetail["config"]) : null,
     warnings:

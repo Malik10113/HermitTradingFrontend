@@ -424,6 +424,7 @@ export function WorkspacePage() {
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
       <MarketBar
         instruments={instruments}
+        inventoryTotal={instrumentsResource.data?.total ?? null}
         instrumentsLoading={instrumentsResource.loading}
         instrumentsError={instrumentsResource.error}
         onReloadInstruments={instrumentsResource.reload}

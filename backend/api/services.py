@@ -314,15 +314,15 @@ def indicator_preview(body: dict[str, Any]) -> dict[str, Any]:
     if not instrument_id:
         raise bad_request("missing_instrument", "instrument_id is required")
     alias = body.get("bar_type", "1m")
-    # Resolve the instrument first so an unknown id is a 404, never a 500 from
-    # the bar builder's FileNotFoundError.
-    get_instrument(instrument_id)
     start_ns, end_ns = _parse_date(body.get("from")), _parse_date(body.get("to"), end=True)
     try:
         ensure_bars(instrument_id, alias, start_ns, end_ns)
         page = readmodel.load_bars(instrument_id, alias, start_ns, end_ns, 100_000)
     except ApiError:
         raise
+    except KeyError as exc:
+        # The bar builder names an unknown instrument; that is a lookup miss.
+        raise not_found("instrument", instrument_id) from exc
     except (FileNotFoundError, ValueError) as exc:
         raise bad_request(
             "bars_unavailable", str(exc), {"instrument_id": instrument_id, "bar_type": alias}

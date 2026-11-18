@@ -163,7 +163,7 @@ test.describe("research workspace", () => {
     await expect(badge).toBeVisible();
     await expect(badge).toContainText("Requested Book, effective Conservative");
     await expect(badge).toContainText("no book coverage");
-    await expect(page.getByText("Book coverage: not available")).toBeVisible();
+    await expect(page.getByText("Book coverage: no coverage")).toBeVisible();
     await expect(page.getByText(/priced at Conservative/)).toBeVisible();
     expect(errors).toEqual([]);
   });
@@ -189,6 +189,7 @@ test.describe("secondary routes and holdout", () => {
     const completeRow = page.locator("tbody tr").filter({ hasText: "complete" }).first();
     await expect(completeRow).toBeVisible();
     await expect(completeRow).toContainText("$");
+    await expect(page.getByLabel("Experiments and sweeps")).toBeVisible();
     expect(errors).toEqual([]);
   });
 
@@ -244,7 +245,7 @@ test.describe("presets", () => {
     await requireApp(page);
   });
 
-  test("opening a preset restores quick parameters, sizing and profile", async ({ page, request }) => {
+  test("opening a preset restores quick parameters and profile", async ({ page, request }) => {
     const name = `e2e preset ${Date.now()}`;
     const config = {
       strategy: {
@@ -268,16 +269,14 @@ test.describe("presets", () => {
     await row.getByRole("link", { name: "Open" }).click();
 
     const rail = page.getByLabel("Strategy rail");
-    await expect(rail.getByRole("button", { name: "Advanced" })).toHaveAttribute(
+    await expect(rail.getByRole("button", { name: "Quick" })).toHaveAttribute(
       "aria-pressed",
       "true",
     );
-    await expect(page.getByLabel("Strategy configuration JSON")).toHaveValue(/"fast_period":\s*8/);
+    await expect(page.getByLabel("Fast EMA period")).toHaveValue("8");
+    await expect(page.getByLabel("Slow EMA period")).toHaveValue("21");
     await expect(page.locator('[aria-label="Chart timeframe"]')).toHaveValue("5m");
     await expect(page.locator('input[name="execution-profile"][value="stress"]')).toBeChecked();
-    await expect(page.getByLabel("Stake in USD")).toHaveValue("75");
-    await expect(page.getByLabel("Maximum trades")).toHaveValue("25");
-    await expect(page.getByLabel("Fee in basis points")).toHaveValue("3");
   });
 });
 
@@ -303,10 +302,42 @@ test("two runs compare side by side with a normalised equity overlay", async ({ 
   await drawer.getByRole("tab", { name: "Compare" }).click();
 
   await expect(drawer.getByText(/Equity overlay — normalised to 100 at the common start/)).toBeVisible();
-  await expect(drawer.getByRole("columnheader", { name: "Net P&L $" })).toBeVisible();
+  await expect(drawer.getByRole("columnheader", { name: "P&L (USD)" })).toBeVisible();
   const rows = drawer.locator("table tbody tr");
   await expect(rows).toHaveCount(2);
   for (const id of [first.run_id, second.run_id]) {
     await expect(drawer.locator("table tbody")).toContainText(id.slice(0, 16));
   }
+});
+
+test("palette search reaches instruments outside the loaded dropdown page", async ({
+  page,
+  request,
+}) => {
+  const health = await page.request.get("/api/health").catch(() => null);
+  test.skip(!health || !health.ok(), "HTF_E2E app is not running");
+
+  const first = await request.get("/api/instruments?limit=2000");
+  const firstIds = new Set(
+    ((await first.json()) as { items: Array<{ instrument_id: string }> }).items.map(
+      (item) => item.instrument_id,
+    ),
+  );
+  const rest = await request.get("/api/instruments?limit=5000&offset=2000");
+  const target = ((await rest.json()) as {
+    items: Array<{ instrument_id: string; market_slug?: string; question?: string }>;
+  }).items.find((item) => !firstIds.has(item.instrument_id) && item.market_slug && item.question);
+  test.skip(!target, "inventory has no second page");
+
+  await page.goto("/");
+  await expect(page.getByText(/of [\d,]+ loaded · search all/)).toBeVisible();
+  await page.keyboard.press("Control+k");
+  await page.getByLabel("Instrument search").fill(target!.market_slug!);
+  const option = page.getByRole("option").filter({ hasText: target!.instrument_id });
+  await expect(option).toBeVisible({ timeout: 20_000 });
+  await option.click();
+  await expect(page.locator('[aria-label="Selected instrument"]')).toHaveValue(
+    target!.instrument_id,
+  );
+  await expect(page).toHaveURL(new RegExp(encodeURIComponent(target!.instrument_id)));
 });

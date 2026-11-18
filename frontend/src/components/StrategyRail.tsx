@@ -154,7 +154,14 @@ export function StrategyRail(props: StrategyRailProps) {
     Record<string, Record<string, number | boolean | string>>
   >({});
   const initialQuickParamsRef = useRef(initialQuickParams ?? {});
+  const initialQuickDirectionRef = useRef(initialQuickDirection || "");
   const quickSeedRef = useRef(false);
+  if (!quickSeedRef.current) {
+    // The mount hydration effect can deliver the URL state after this rail has
+    // already rendered once; keep the seed current until it is consumed.
+    initialQuickParamsRef.current = initialQuickParams ?? {};
+    initialQuickDirectionRef.current = initialQuickDirection || "";
+  }
   const onQuickConfigRef = useRef(onQuickConfig);
   onQuickConfigRef.current = onQuickConfig;
   const [strategies, setStrategies] = useState<StrategiesResponse | null>(null);
@@ -222,8 +229,10 @@ export function StrategyRail(props: StrategyRailProps) {
       // The first catalogue entry to match the URL uses the URL's parameters
       // and direction; later user switches follow the built-in's own default.
       quickSeedRef.current = true;
-      if (!initialQuickDirection) {
-        if (builtin.direction) setDirection(builtin.direction);
+      if (initialQuickDirectionRef.current) {
+        setDirection(initialQuickDirectionRef.current as "long" | "short" | "both");
+      } else if (builtin.direction) {
+        setDirection(builtin.direction);
       }
     } else if (builtin.direction) {
       setDirection(builtin.direction);
@@ -414,7 +423,7 @@ export function StrategyRail(props: StrategyRailProps) {
     !instrumentId ||
     !from ||
     !to ||
-    from >= to ||
+    from > to ||
     submitting ||
     (advanced && (!advancedValue || advancedIssues.length > 0)) ||
     (!advanced && !builtin);
@@ -884,8 +893,8 @@ export function StrategyRail(props: StrategyRailProps) {
                 ? "Select an instrument first."
                 : !from || !to
                   ? "Set a from and to date before running."
-                  : from >= to
-                    ? "The from date must be before the to date."
+                  : from > to
+                    ? "The from date must not be after the to date."
                     : advanced
                       ? "Fix the rule JSON issues before running."
                       : "Select a built-in strategy."}

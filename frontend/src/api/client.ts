@@ -1,7 +1,9 @@
 import type {
   ApiErrorBody,
   BacktestConfig,
+  CancelExperimentResponse,
   CreateBacktestResponse,
+  CreateExperimentResponse,
   ExecutionSection,
   Experiment,
   IndicatorPreviewRequest,
@@ -283,13 +285,13 @@ export const api = {
     normaliseExperiments(await request<unknown>("/experiments", { signal })),
 
   createExperiment: (body: unknown, signal?: AbortSignal) =>
-    request<Experiment>("/experiments", { method: "POST", body, signal }),
+    request<CreateExperimentResponse>("/experiments", { method: "POST", body, signal }),
 
   experiment: (id: string, signal?: AbortSignal) =>
     request<Experiment>(`/experiments/${encodeURIComponent(id)}`, { signal }),
 
   cancelExperiment: (id: string, signal?: AbortSignal) =>
-    request<Experiment>(`/experiments/${encodeURIComponent(id)}/cancel`, {
+    request<CancelExperimentResponse>(`/experiments/${encodeURIComponent(id)}/cancel`, {
       method: "POST",
       body: {},
       signal,

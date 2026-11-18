@@ -6,6 +6,7 @@ import { ErrorState, GradeBadge } from "./ui";
 
 interface MarketBarProps {
   instruments: Instrument[];
+  inventoryTotal?: number | null;
   instrumentsLoading: boolean;
   instrumentsError: unknown | null;
   onReloadInstruments: () => void;
@@ -25,6 +26,7 @@ function selectionOf(instrument: Instrument | null): string | null {
 
 export function MarketBar({
   instruments,
+  inventoryTotal = null,
   instrumentsLoading,
   instrumentsError,
   onReloadInstruments,
@@ -136,6 +138,15 @@ export function MarketBar({
             ))}
           </select>
         </label>
+
+        {inventoryTotal != null && inventoryTotal > instruments.length ? (
+          <span
+            className="badge"
+            title="The dropdown holds the first page; Ctrl+K searches the full instrument inventory"
+          >
+            {fmtInteger(instruments.length)} of {fmtInteger(inventoryTotal)} loaded · search all
+          </span>
+        ) : null}
 
         {selection ? (
           <span

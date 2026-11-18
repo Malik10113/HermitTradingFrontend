@@ -33,5 +33,7 @@ export default defineConfig({
     setupFiles: ["./src/test/setup.ts"],
     css: false,
     restoreMocks: true,
+    // Playwright specs live in e2e/ and need the real browser runtime.
+    include: ["src/**/*.{test,spec}.{ts,tsx}"],
   },
 });

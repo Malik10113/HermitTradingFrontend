@@ -483,12 +483,19 @@ export interface Trade {
   contracts?: number | null;
   quantity?: number | null;
   entry_notional_usd?: number | null;
+  max_loss_usd?: number | null;
+  max_payout_usd?: number | null;
+  max_profit_usd?: number | null;
   gross_pnl_usd?: number | null;
   net_pnl_usd?: number | null;
   fees_usd?: number | null;
   slippage_usd?: number | null;
   execution_source?: string | null;
   fallback_reason?: string | null;
+  entry_execution_source?: string | null;
+  exit_execution_source?: string | null;
+  entry_fallback_reason?: string | null;
+  exit_fallback_reason?: string | null;
   held_to_settlement?: boolean | null;
   exit_reason?: string | null;
   holding_minutes?: number | null;
@@ -618,4 +625,15 @@ export interface Experiment {
 
 export interface ExperimentListResponse {
   experiments: Experiment[];
+}
+
+export interface CreateExperimentResponse {
+  experiment_id: string;
+  run_ids: string[];
+  total: number;
+}
+
+export interface CancelExperimentResponse {
+  experiment_id: string;
+  cancelled: string[];
 }

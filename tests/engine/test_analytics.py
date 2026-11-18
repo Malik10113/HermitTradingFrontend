@@ -50,6 +50,22 @@ def test_round_trip_trade_and_fees():
     assert positions == []
 
 
+def test_trade_row_reports_the_fallback_fill():
+    """A Book fill that fell back must be visible on the trade row."""
+    entry = _fill(0, "BUY", 0.40)
+    entry.execution_source = "conservative_fallback"
+    entry.fallback_reason = "book_snapshot_stale"
+    exit_fill = _fill(100, "SELL", 0.60)
+    exit_fill.execution_source = "book"
+    trades, _ = reconstruct_trades([entry, exit_fill], _settle(), YES)
+    trade = trades[0]
+    assert trade["entry_execution_source"] == "conservative_fallback"
+    assert trade["entry_fallback_reason"] == "book_snapshot_stale"
+    assert trade["exit_execution_source"] == "book"
+    assert trade["execution_source"] == "conservative_fallback"
+    assert trade["fallback_reason"] == "book_snapshot_stale"
+
+
 def test_settlement_closes_open_lot_with_real_value():
     fills = [_fill(0, "BUY", 0.30, fee=0.2)]
     trades, positions = reconstruct_trades(fills, _settle(1.0, 0.0), YES)

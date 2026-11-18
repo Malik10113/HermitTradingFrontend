@@ -18,6 +18,8 @@ from typing import Iterable
 from backend import config
 
 BUILDER_VERSION = "bars-1.0.0"
+# Bump when the fingerprint schema changes so cached versions are recomputed.
+VERSION_SCHEMA = "relpath-1"
 LIFECYCLE_BUILDER_VERSION = "lifecycle-1.0.0"
 SETTLEMENT_BUILDER_VERSION = "settlement-1.0.0"
 INSTRUMENT_INDEX_BUILDER_VERSION = "instruments-1.0.0"
@@ -39,10 +41,20 @@ class Fingerprint:
 
 
 def _rel(path: Path) -> str:
-    try:
-        return str(path.resolve().relative_to(config.DATA_ROOT.resolve()))
-    except ValueError:
-        return str(path.resolve())
+    """A stable, checkout-independent path component for the version hash.
+
+    Sources are relative to the data root; generated artifacts (``var/``) are
+    relative to the repository root.  Using an absolute path here made the same
+    data version differ between two clones or worktrees, which wrongly orphaned
+    every existing run after a move.
+    """
+    resolved = path.resolve()
+    for base in (config.DATA_ROOT.resolve(), config.VAR_DIR.resolve(), config.ROOT.resolve()):
+        try:
+            return str(resolved.relative_to(base))
+        except ValueError:
+            continue
+    return str(resolved)
 
 
 def fingerprint(path: Path, timestamp_column: str | None = None) -> Fingerprint:
@@ -122,6 +134,7 @@ def cached_version(key: str, datasets: list[tuple[Path, str | None]], builder_ve
         except FileNotFoundError:
             stamp.append([str(path), None, None])
     stamp.append(builder_version)
+    stamp.append(VERSION_SCHEMA)
     stamp_key = key + ":" + hashlib.sha256(json.dumps(stamp).encode()).hexdigest()[:16]
     existing = cache.get(stamp_key)
     if existing:

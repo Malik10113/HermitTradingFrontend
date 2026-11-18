@@ -22,6 +22,8 @@ const fullState: WorkspaceState = {
     { instance_id: "rsi14", type: "rsi", params: { period: 14 }, visible: false },
   ],
   builtin: "sma_trend",
+  quickParams: { trend_period: 50, filter_period: 200 },
+  quickDirection: "both",
   strategyJson: null,
   profile: "stress",
   runId: "run-123",

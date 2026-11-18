@@ -76,6 +76,8 @@ class Lot:
     entry_ref: float | None
     entry_phase: str
     signal_id: str | None = None
+    entry_execution_source: str = "fixed"
+    entry_fallback_reason: str | None = None
 
 
 def _settle_value(settlement: SettlementRecord, token: str) -> float:
@@ -103,11 +105,17 @@ def reconstruct_trades(
     lots: dict[str, list[Lot]] = {}
     trades: list[dict[str, Any]] = []
 
-    def close_lot(lot: Lot, qty: float, exit_price: float, exit_ts: int, fee: float, reason: str, phase: str) -> None:
+    def close_lot(lot: Lot, qty: float, exit_price: float, exit_ts: int, fee: float, reason: str, phase: str, exit_source: str = "fixed", exit_fallback_reason: str | None = None) -> None:
         gross = (exit_price - lot.entry_price) * qty
         entry_fee_share = lot.entry_fee_usd * (qty / lot.quantity) if lot.quantity else 0.0
         fees = entry_fee_share + fee
         direction = "long" if lot.instrument_id == primary_instrument_id else "short"
+        fallback_reason = exit_fallback_reason or lot.entry_fallback_reason
+        execution_source = (
+            exit_source
+            if exit_fallback_reason
+            else (lot.entry_execution_source or exit_source)
+        )
         trades.append(
             {
                 "entry_ts": _iso(lot.entry_ts_ns),
@@ -136,6 +144,14 @@ def reconstruct_trades(
                 "exit_phase": phase,
                 "signal_id": lot.signal_id,
                 "entry_reference_price": lot.entry_ref,
+                # Per-fill provenance so a Book fallback is visible on the
+                # trade row, not only in the run-level summary.
+                "execution_source": execution_source,
+                "fallback_reason": fallback_reason,
+                "entry_execution_source": lot.entry_execution_source,
+                "entry_fallback_reason": lot.entry_fallback_reason,
+                "exit_execution_source": exit_source,
+                "exit_fallback_reason": exit_fallback_reason,
             }
         )
 
@@ -153,6 +169,8 @@ def reconstruct_trades(
                     entry_ref=f.reference_price,
                     entry_phase=f.phase,
                     signal_id=f.signal_id,
+                    entry_execution_source=f.execution_source,
+                    entry_fallback_reason=f.fallback_reason,
                 )
             )
         else:
@@ -161,7 +179,17 @@ def reconstruct_trades(
             while remaining > 1e-12 and queue:
                 lot = queue[0]
                 take = min(remaining, lot.quantity)
-                close_lot(lot, take, f.price, f.ts_ns, f.fee_usd * (take / f.quantity), "rule_exit", f.phase)
+                close_lot(
+                    lot,
+                    take,
+                    f.price,
+                    f.ts_ns,
+                    f.fee_usd * (take / f.quantity),
+                    "rule_exit",
+                    f.phase,
+                    exit_source=f.execution_source,
+                    exit_fallback_reason=f.fallback_reason,
+                )
                 lot.quantity -= take
                 remaining -= take
                 if lot.quantity <= 1e-12:

@@ -188,3 +188,14 @@ def test_catalogue_entries_are_json_serialisable():
     payload = json.dumps(catalogue())
     assert "nautilus_ema_cross" in payload
     assert "provenance" in payload
+
+
+def test_single_day_evaluation_range_is_valid_but_a_reversed_one_is_not():
+    import pytest as _pytest
+
+    from backend.rules.schema import DateRange
+
+    same_day = DateRange(start="2026-09-19", end="2026-09-19")
+    assert same_day.start == same_day.end
+    with _pytest.raises(ValueError):
+        DateRange(start="2026-09-20", end="2026-09-19")

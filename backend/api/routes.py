@@ -218,6 +218,8 @@ def _run_payload(run: dict[str, Any], include_summary: bool = True, detail: bool
         payload["manifest"] = manifest
         payload["metrics"] = summary
         payload["phase_breakdown"] = (manifest or {}).get("phase_breakdown") if manifest else None
+        payload["warnings"] = (manifest or {}).get("warnings") if manifest else None
+        payload["quality"] = (manifest or {}).get("quality") if manifest else None
         payload["artifacts"] = [
             {"name": n, "sha256": h}
             for n, h in ((manifest or {}).get("artifacts") or {}).items()
@@ -388,6 +390,12 @@ def delete_preset(preset_id: str) -> None:
 
 
 def _prepare(req: RunRequest) -> dict[str, Any]:
+    """Expand quick authoring and validate everything before a job exists.
+
+    Every rejection here is a 422 with a stable code and the offending field,
+    never a 500: a bad parameter name, an unknown indicator or a range with no
+    bars is a request error, not a server fault.
+    """
     from backend.engine.runner import prepare_run
 
     strategy = req.strategy
@@ -396,22 +404,49 @@ def _prepare(req: RunRequest) -> dict[str, Any]:
     ):
         from backend.strategies.builtins import build as build_builtin
 
-        rules = build_builtin(
-            strategy.builtin_id,
-            strategy.instrument_id,
-            strategy.bar_type,
-            strategy.builtin_params,
-        )
+        try:
+            rules = build_builtin(
+                strategy.builtin_id,
+                strategy.instrument_id,
+                strategy.bar_type,
+                strategy.builtin_params,
+            )
+        except (ValueError, KeyError, TypeError) as exc:
+            raise bad_request(
+                "bad_builtin_params",
+                f"built-in {strategy.builtin_id!r} rejected: {exc}",
+                {"path": "strategy.builtin_params", "builtin_id": strategy.builtin_id},
+            ) from exc
         if strategy.direction:
             rules["direction"] = strategy.direction
-        strategy = StrategySection.model_validate(rules)
+        try:
+            strategy = StrategySection.model_validate(rules)
+        except Exception as exc:  # noqa: BLE001 - the catalogue itself is wrong
+            raise bad_request(
+                "bad_builtin_params",
+                f"built-in {strategy.builtin_id!r} produced an invalid rule set: {exc}",
+                {"path": "strategy.builtin_params", "builtin_id": strategy.builtin_id},
+            ) from exc
     config = RunConfig(
         strategy=strategy,
         execution=req.execution,
         risk=req.risk,
         evaluation=req.evaluation,
     )
-    return prepare_run(config)
+    try:
+        return prepare_run(config)
+    except ApiError:
+        raise
+    except ValueError as exc:
+        raise bad_request(
+            "run_rejected",
+            str(exc),
+            {
+                "path": "strategy",
+                "instrument_id": config.strategy.instrument_id,
+                "bar_type": config.strategy.bar_type,
+            },
+        ) from exc
 
 
 @router.post("/backtests", status_code=202)
@@ -621,8 +656,16 @@ def create_experiment(req: ExperimentRequest) -> dict[str, Any]:
     created = []
     for combo in combos:
         data = req.base.model_dump(mode="json", exclude_none=True)
-        for path, value in combo.items():
-            _set_path(data, path, value)
+        try:
+            for path, value in combo.items():
+                _set_path(data, path, value)
+        except (KeyError, IndexError, TypeError, ValueError) as exc:
+            state.update_experiment(experiment_id, status="failed")
+            raise bad_request(
+                "bad_axis_path",
+                f"grid path {next(iter(combo))!r} does not exist in the base config",
+                {"variant": combo, "error": str(exc)},
+            ) from exc
         try:
             prepared = _prepare(RunRequest.model_validate(data))
         except Exception as exc:  # noqa: BLE001

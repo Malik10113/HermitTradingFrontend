@@ -60,11 +60,17 @@ export function buildBacktestConfig(args: BuildConfigArgs): BacktestConfig {
     indicatorMap.set(indicator.instance_id, indicator);
   }
 
+  const strategyIndicators = Array.from(indicatorMap.values()).map((indicator) => ({
+    instance_id: indicator.instance_id,
+    type: indicator.type,
+    params: indicator.params,
+  }));
+
   const strategy: StrategySection = {
     ...(advancedStrategy as Partial<StrategySection>),
     instrument_id: args.instrumentId,
     bar_type: args.barType,
-    indicators: Array.from(indicatorMap.values()),
+    indicators: strategyIndicators,
     direction: args.direction,
   };
 

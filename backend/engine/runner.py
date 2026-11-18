@@ -107,6 +107,28 @@ def prepare_run(config: RunConfig) -> dict[str, Any]:
     cv = code_version()
     sh = strategy_hash(config)
     rh = run_hash(config, dv, cv)
+    # Record the advisory quality warnings in the manifest. Warm-up is the
+    # largest declared warm-up among the strategy's indicator instances.
+    warmup_bars: int | None = None
+    try:
+        from backend.indicators.compute import build_indicators
+
+        warmups = build_indicators(
+            [indicator.model_dump(mode="json") for indicator in config.strategy.indicators]
+        ).warmup()
+        values = [int(value) for value in warmups.values() if value is not None]
+        warmup_bars = max(values) if values else None
+    except Exception:  # noqa: BLE001 - advisory only
+        warmup_bars = None
+    quality_report: dict[str, Any] | None = None
+    quality_warnings: list[dict[str, Any]] = []
+    try:
+        from backend.data.quality import quality as quality_for
+
+        quality_report = quality_for(primary_id, start_ns, end_ns, warmup_bars=warmup_bars)
+        quality_warnings = list(quality_report.get("warnings") or [])
+    except Exception:  # noqa: BLE001 - advisory only
+        quality_report = None
     return {
         "config": config.model_dump(mode="json", exclude_none=True),
         "primary": primary,
@@ -124,6 +146,8 @@ def prepare_run(config: RunConfig) -> dict[str, Any]:
         "fallback_reason": execution.fallback_reason,
         "book_coverage": coverage,
         "execution": execution.__dict__,
+        "quality": quality_report,
+        "warnings": quality_warnings,
     }
 
 
@@ -507,6 +531,18 @@ def execute_run(config_dict: dict[str, Any], prepared: dict[str, Any] | None = N
         "risk": config.risk.model_dump(mode="json"),
         "acknowledged_warnings": list(config.acknowledged_warnings),
         "lifecycle_source": "espn_keyevents",
+        "quality": prepared.get("quality"),
+        "warnings": list(prepared.get("warnings") or [])
+        + (
+            [
+                {
+                    "code": "zero_signals",
+                    "message": "The strategy produced no entry signals in this range.",
+                }
+            ]
+            if not signals
+            else []
+        ),
         "elapsed_s": round(time.time() - started, 3),
     }
     log = "\n".join(

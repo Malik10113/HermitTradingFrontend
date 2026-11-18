@@ -156,6 +156,7 @@ export function costEstimateText(execution: EffectiveExecution | PreflightRespon
   if (typeof estimate.per_side_price_points === "number") {
     parts.push(`${estimate.per_side_price_points.toFixed(3)} pts/side`);
   }
+  if (typeof estimate.note === "string" && estimate.note) parts.push(estimate.note);
   return parts.length > 0 ? parts.join(" · ") : "not available";
 }
 

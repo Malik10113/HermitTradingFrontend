@@ -90,4 +90,23 @@ describe("backtest config builder", () => {
     expect(config.execution.slippage_bps).toBe(0);
     expect(config.execution.min_abs_slippage).toBe(0);
   });
+
+  it("strips chart-only indicator fields from the run payload", () => {
+    const config = buildBacktestConfig(
+      args({
+        indicators: [
+          {
+            instance_id: "ema20",
+            type: "ema",
+            params: { period: 20 },
+            color: "#56B4E9",
+            visible: true,
+          },
+        ],
+      }),
+    );
+    expect(config.strategy.indicators).toEqual([
+      { instance_id: "ema20", type: "ema", params: { period: 20 } },
+    ]);
+  });
 });

@@ -294,13 +294,17 @@ def load_index(index_path: Path | None = None, *, refresh: bool = True) -> list[
 def search(
     q: str | None = None,
     league: str | None = None,
-    limit: int = 25,
+    limit: int | None = 25,
     offset: int = 0,
     *,
     index_path: Path | None = None,
 ) -> list[dict[str, Any]]:
-    """Deterministic substring search across market, team and match fields."""
-    if limit < 0 or offset < 0:
+    """Deterministic substring search across market, team and match fields.
+
+    ``limit=None`` returns every match so a caller can report the true total
+    before paging.
+    """
+    if (limit is not None and limit < 0) or offset < 0:
         raise ValueError("limit and offset must be >= 0")
     rows = load_index(index_path)
     needle = (q or "").strip().lower()
@@ -333,7 +337,7 @@ def search(
             row["token_index"],
         )
     )
-    return matches[offset : offset + limit]
+    return matches[offset:] if limit is None else matches[offset : offset + limit]
 
 
 def get_instrument(

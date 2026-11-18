@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api, errorMessage } from "../api/client";
 import type {
   BacktestConfig,
@@ -34,6 +34,12 @@ interface StrategyRailProps {
   specs: IndicatorSpec[];
   builtinId: string;
   onBuiltinId: (id: string) => void;
+  initialQuickParams?: Record<string, number | boolean | string>;
+  initialQuickDirection?: "long" | "short" | "both" | "";
+  onQuickConfig?: (
+    params: Record<string, number | boolean | string>,
+    direction: "long" | "short" | "both",
+  ) => void;
   strategyJson: string | null;
   onStrategyJson: (json: string | null) => void;
   profile: ExecutionProfile;
@@ -121,6 +127,9 @@ export function StrategyRail(props: StrategyRailProps) {
     specs,
     builtinId,
     onBuiltinId,
+    initialQuickParams,
+    initialQuickDirection,
+    onQuickConfig,
     strategyJson,
     onStrategyJson,
     profile,
@@ -138,10 +147,23 @@ export function StrategyRail(props: StrategyRailProps) {
   const [feeBps, setFeeBps] = useState(defaults.feeBps);
   const [sizing, setSizing] = useState<SizingState>(defaults.sizing);
   const [maxTrades, setMaxTrades] = useState(defaults.maxTrades);
-  const [direction, setDirection] = useState<"long" | "short" | "both">("long");
+  const [direction, setDirection] = useState<"long" | "short" | "both">(
+    initialQuickDirection || "long",
+  );
   const [paramsByBuiltin, setParamsByBuiltin] = useState<
     Record<string, Record<string, number | boolean | string>>
   >({});
+  const initialQuickParamsRef = useRef(initialQuickParams ?? {});
+  const initialQuickDirectionRef = useRef(initialQuickDirection || "");
+  const quickSeedRef = useRef(false);
+  if (!quickSeedRef.current) {
+    // The mount hydration effect can deliver the URL state after this rail has
+    // already rendered once; keep the seed current until it is consumed.
+    initialQuickParamsRef.current = initialQuickParams ?? {};
+    initialQuickDirectionRef.current = initialQuickDirection || "";
+  }
+  const onQuickConfigRef = useRef(onQuickConfig);
+  onQuickConfigRef.current = onQuickConfig;
   const [strategies, setStrategies] = useState<StrategiesResponse | null>(null);
   const [strategiesLoading, setStrategiesLoading] = useState(true);
   const [strategiesError, setStrategiesError] = useState<unknown | null>(null);
@@ -150,6 +172,7 @@ export function StrategyRail(props: StrategyRailProps) {
   const [preflightError, setPreflightError] = useState<unknown | null>(null);
   const [acknowledged, setAcknowledged] = useState(false);
   const [advancedIssues, setAdvancedIssues] = useState<ValidationIssue[]>([]);
+  const [quickSeeded, setQuickSeeded] = useState(false);
   const [presetName, setPresetName] = useState("");
   const [presetState, setPresetState] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const advanced = strategyJson !== null;
@@ -193,11 +216,29 @@ export function StrategyRail(props: StrategyRailProps) {
 
   useEffect(() => {
     if (!builtin) return;
-    setParamsByBuiltin((previous) =>
-      previous[builtin.id] ? previous : { ...previous, [builtin.id]: defaultsFor(builtin) },
-    );
-    if (builtin.direction) setDirection(builtin.direction);
-  }, [builtin]);
+    // Capture the seed before React runs the updater; setting the ref below
+    // would otherwise hide it from the deferred updater.
+    const canSeed = !quickSeedRef.current && builtin.id === builtinId;
+    const seed = canSeed ? initialQuickParamsRef.current : null;
+    setParamsByBuiltin((previous) => {
+      if (previous[builtin.id]) return previous;
+      const base = defaultsFor(builtin);
+      return { ...previous, [builtin.id]: seed ? { ...base, ...seed } : base };
+    });
+    if (canSeed) {
+      // The first catalogue entry to match the URL uses the URL's parameters
+      // and direction; later user switches follow the built-in's own default.
+      quickSeedRef.current = true;
+      if (initialQuickDirectionRef.current) {
+        setDirection(initialQuickDirectionRef.current as "long" | "short" | "both");
+      } else if (builtin.direction) {
+        setDirection(builtin.direction);
+      }
+    } else if (builtin.direction) {
+      setDirection(builtin.direction);
+    }
+    setQuickSeeded(true);
+  }, [builtin, builtinId, initialQuickDirection]);
 
   useEffect(() => {
     if (strategiesLoading || builtins.length === 0) return;
@@ -213,6 +254,13 @@ export function StrategyRail(props: StrategyRailProps) {
     () => paramsByBuiltin[builtinId] ?? defaultsFor(builtin),
     [paramsByBuiltin, builtinId, builtin],
   );
+
+  // Publish quick-authoring values so the shareable URL carries the strategy
+  // parameters, not just the built-in id.
+  useEffect(() => {
+    if (advanced || !builtin || !quickSeeded) return;
+    onQuickConfigRef.current?.(builtinParams, direction);
+  }, [advanced, builtin, builtinParams, direction, quickSeeded]);
 
   const selectBuiltin = (id: string) => {
     const next = builtins.find((item) => item.id === id) ?? null;
@@ -240,6 +288,47 @@ export function StrategyRail(props: StrategyRailProps) {
       return null;
     }
   }, [advanced, strategyJson]);
+
+  // A preset or a shared URL loads a full config. Seed the rail controls from
+  // it once so sizing, fee, max trades and direction survive the round trip
+  // instead of silently reverting to remembered defaults.
+  const [hydratedAdvanced, setHydratedAdvanced] = useState(false);
+  useEffect(() => {
+    if (hydratedAdvanced || !advancedValue) return;
+    const asRecord = (value: unknown): Record<string, unknown> =>
+      typeof value === "object" && value !== null && !Array.isArray(value)
+        ? (value as Record<string, unknown>)
+        : {};
+    const root = asRecord(advancedValue);
+    const strategy = asRecord(root.strategy);
+    const execution = asRecord(root.execution);
+    const risk = asRecord(root.risk);
+    const sizingValue = asRecord(risk.sizing);
+
+    if (strategy.direction === "long" || strategy.direction === "short" || strategy.direction === "both") {
+      setDirection(strategy.direction);
+    }
+    if (typeof execution.fee_bps === "number" && Number.isFinite(execution.fee_bps)) {
+      setFeeBps(execution.fee_bps);
+    }
+    const mode = sizingValue.mode === "risk_pct" ? "risk_pct" : "fixed_stake";
+    if (typeof sizingValue.value === "number" && Number.isFinite(sizingValue.value)) {
+      setSizing({
+        mode,
+        value: sizingValue.value,
+        bankroll:
+          typeof sizingValue.bankroll_usd === "number" && Number.isFinite(sizingValue.bankroll_usd)
+            ? sizingValue.bankroll_usd
+            : typeof sizingValue.bankroll === "number"
+              ? sizingValue.bankroll
+              : 1000,
+      });
+    }
+    if (typeof risk.max_trades === "number" && risk.max_trades >= 1) {
+      setMaxTrades(risk.max_trades);
+    }
+    setHydratedAdvanced(true);
+  }, [advancedValue, hydratedAdvanced]);
 
   const config: BacktestConfig = useMemo(
     () =>
@@ -334,7 +423,7 @@ export function StrategyRail(props: StrategyRailProps) {
     !instrumentId ||
     !from ||
     !to ||
-    from >= to ||
+    from > to ||
     submitting ||
     (advanced && (!advancedValue || advancedIssues.length > 0)) ||
     (!advanced && !builtin);
@@ -754,7 +843,11 @@ export function StrategyRail(props: StrategyRailProps) {
             <div>
               <dt className="text-ink-faint">Settlement</dt>
               <dd className="numeric text-ink-muted">
-                {quality ? "see market bar" : "not available"}
+                {quality
+                  ? quality.settlement_known && quality.settlement_value != null
+                    ? `settled ${quality.settlement_value}`
+                    : "not available"
+                  : "not available"}
               </dd>
             </div>
           </dl>
@@ -800,8 +893,8 @@ export function StrategyRail(props: StrategyRailProps) {
                 ? "Select an instrument first."
                 : !from || !to
                   ? "Set a from and to date before running."
-                  : from >= to
-                    ? "The from date must be before the to date."
+                  : from > to
+                    ? "The from date must not be after the to date."
                     : advanced
                       ? "Fix the rule JSON issues before running."
                       : "Select a built-in strategy."}

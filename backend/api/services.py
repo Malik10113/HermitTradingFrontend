@@ -124,7 +124,14 @@ def list_instruments(q: str | None, league: str | None, limit: int, offset: int)
                 items = [serialize_instrument(r) for r in out.get("items", [])]
                 return {"items": items, "instruments": items, "total": int(out.get("total", len(items)))}
             items = [serialize_instrument(r) for r in _records(out)]
-            return {"items": items, "instruments": items, "total": len(items)}
+            total = len(items)
+            try:
+                # The page is limited; report the true match count so the UI
+                # never claims a truncated inventory is complete.
+                total = len(search(q=q, league=league, limit=None, offset=0))
+            except TypeError:
+                pass
+            return {"items": items, "instruments": items, "total": total}
         except TypeError:
             pass
     rows = _index_rows()
@@ -218,6 +225,14 @@ def _bar_alias(alias: str) -> str:
 def ensure_bars(instrument_id: str, alias: str, start_ns: int | None = None, end_ns: int | None = None) -> None:
     from backend.data import bars, readmodel
 
+    try:
+        bars.parse_bar_alias(alias, instrument_id)
+    except (ValueError, KeyError) as exc:
+        raise bad_request(
+            "bad_bar_type",
+            str(exc),
+            {"path": "bar_type", "bar_type": alias, "instrument_id": instrument_id},
+        ) from exc
     loader = getattr(readmodel, "load_bars", None)
     if loader is not None:
         try:
@@ -292,21 +307,38 @@ def indicator_registry() -> dict[str, Any]:
 def indicator_preview(body: dict[str, Any]) -> dict[str, Any]:
     from backend.data import readmodel
     from backend.indicators.compute import compute_series
-    from backend.rules.schema import IndicatorInstance
     from backend.indicators.registry import validate_params
+    from backend.rules.schema import IndicatorInstance
 
     instrument_id = body.get("instrument_id")
     if not instrument_id:
         raise bad_request("missing_instrument", "instrument_id is required")
     alias = body.get("bar_type", "1m")
     start_ns, end_ns = _parse_date(body.get("from")), _parse_date(body.get("to"), end=True)
-    ensure_bars(instrument_id, alias, start_ns, end_ns)
-    page = readmodel.load_bars(instrument_id, alias, start_ns, end_ns, 100_000)
+    try:
+        ensure_bars(instrument_id, alias, start_ns, end_ns)
+        page = readmodel.load_bars(instrument_id, alias, start_ns, end_ns, 100_000)
+    except ApiError:
+        raise
+    except KeyError as exc:
+        # The bar builder names an unknown instrument; that is a lookup miss.
+        raise not_found("instrument", instrument_id) from exc
+    except (FileNotFoundError, ValueError) as exc:
+        raise bad_request(
+            "bars_unavailable", str(exc), {"instrument_id": instrument_id, "bar_type": alias}
+        ) from exc
     rows = _records(page.get("bars")) if isinstance(page, dict) else _records(page)
     instances = []
-    for raw in body.get("indicators", []):
-        inst = IndicatorInstance.model_validate(raw)
-        validate_params(inst.type, inst.params)
+    for index, raw in enumerate(body.get("indicators", [])):
+        try:
+            inst = IndicatorInstance.model_validate(raw)
+            validate_params(inst.type, inst.params)
+        except Exception as exc:  # noqa: BLE001 - both carry a field path
+            raise bad_request(
+                "bad_indicator",
+                str(exc),
+                {"path": f"indicators.{index}", "indicator": raw if isinstance(raw, dict) else None},
+            ) from exc
         instances.append({"instance_id": inst.instance_id, "type": inst.type, "params": inst.params})
     if not instances:
         raise bad_request("no_indicators", "at least one indicator is required")
@@ -314,8 +346,18 @@ def indicator_preview(body: dict[str, Any]) -> dict[str, Any]:
     from backend.indicators.compute import build_indicators
 
     data_version = run_data_version()
-    key = make_key(data_version, alias, instances)
-    series = thaw_series(get_or_compute(key, lambda: compute_series(rows, instances)))
+    # The cache key must identify this instrument's bar file, not just the
+    # semantic alias: two instruments share "1m" and the tape version.
+    key_data_version = (
+        str(page.get("data_version") or data_version) if isinstance(page, dict) else data_version
+    )
+    key_bar_type = str(page.get("bar_type") or alias) if isinstance(page, dict) else alias
+    series = thaw_series(
+        get_or_compute(
+            make_key(key_data_version, key_bar_type, instances),
+            lambda: compute_series(rows, instances),
+        )
+    )
     warmup = build_indicators(instances).warmup()
     return {
         "instrument_id": instrument_id,
@@ -399,12 +441,36 @@ def preflight(body: dict[str, Any]) -> dict[str, Any]:
 
     row = get_instrument(instrument_id)
     coverage = book_coverage(instrument_id, row.get("match_key") if row else None)
-    effective = resolve_profile(cfg, has_book_coverage=bool(coverage.get("has_coverage")), coverage_window=None)
+    # Expose the window as ISO dates at the top level: the UI and the
+    # documented CoverageWindow shape read `from`/`to`, not raw nanoseconds.
+    window = coverage.get("window") or {}
+    if window.get("start_ns") is not None:
+        coverage["from"] = _iso(window["start_ns"])
+    if window.get("end_ns") is not None:
+        coverage["to"] = _iso(window["end_ns"])
+    coverage["snapshots"] = window.get("snapshots")
+    try:
+        effective = resolve_profile(
+            cfg, has_book_coverage=bool(coverage.get("has_coverage")), coverage_window=None
+        )
+    except ValueError as exc:
+        raise bad_request(
+            "invalid_execution",
+            str(exc),
+            {"path": "execution", "profile": getattr(cfg, "profile", None)},
+        ) from exc
     ref = None
     for r in rows:
         if r.get("close") is not None:
             ref = float(r["close"])
-    estimate = calculate_cost_estimate(ref, effective, 1.0) if ref is not None else None
+    estimate = None
+    if ref is not None and 0.0 < ref < 1.0:
+        try:
+            estimate = calculate_cost_estimate(ref, effective, 1.0)
+        except ValueError as exc:
+            raise bad_request(
+                "bad_cost_estimate", str(exc), {"path": "execution", "reference_price": ref}
+            ) from exc
     if estimate is not None:
         if estimate.get("slippage_bps") is not None:
             estimate["per_side_bps"] = round(float(estimate.get("fee_bps") or 0) + float(estimate["slippage_bps"]), 4)

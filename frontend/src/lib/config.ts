@@ -33,6 +33,7 @@ export interface BuildConfigArgs {
   from: string;
   to: string;
   split?: EvaluationSection["split"];
+  acknowledgedWarnings?: string[];
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -109,7 +110,13 @@ export function buildBacktestConfig(args: BuildConfigArgs): BacktestConfig {
     ...(args.split ? { split: args.split } : {}),
   };
 
-  return { strategy, execution, risk, evaluation };
+  return {
+    strategy,
+    execution,
+    risk,
+    evaluation,
+    acknowledged_warnings: args.acknowledgedWarnings ?? [],
+  };
 }
 
 export function prettyConfig(config: unknown): string {

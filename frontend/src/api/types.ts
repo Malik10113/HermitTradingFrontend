@@ -340,6 +340,7 @@ export interface BacktestConfig {
   execution: ExecutionSection;
   risk: RiskSection;
   evaluation: EvaluationSection;
+  acknowledged_warnings?: string[];
 }
 
 export interface BuiltinStrategy {

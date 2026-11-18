@@ -148,6 +148,7 @@ export function StrategyRail(props: StrategyRailProps) {
   const [preflight, setPreflight] = useState<PreflightResponse | null>(null);
   const [preflightLoading, setPreflightLoading] = useState(false);
   const [preflightError, setPreflightError] = useState<unknown | null>(null);
+  const [acknowledged, setAcknowledged] = useState(false);
   const [advancedIssues, setAdvancedIssues] = useState<ValidationIssue[]>([]);
   const [presetName, setPresetName] = useState("");
   const [presetState, setPresetState] = useState<"idle" | "saving" | "saved" | "error">("idle");
@@ -257,6 +258,7 @@ export function StrategyRail(props: StrategyRailProps) {
         maxTrades,
         from,
         to,
+        acknowledgedWarnings: acknowledged ? warnings : [],
       }),
     [
       instrumentId,
@@ -757,13 +759,24 @@ export function StrategyRail(props: StrategyRailProps) {
             </div>
           </dl>
           {warnings.length > 0 ? (
-            <ul className="space-y-0.5">
-              {warnings.map((warning) => (
-                <li key={warning} className="text-[10px] leading-snug text-warn">
-                  ⚠ {warning}
-                </li>
-              ))}
-            </ul>
+            <>
+              <ul className="space-y-0.5">
+                {warnings.map((warning) => (
+                  <li key={warning} className="text-[10px] leading-snug text-warn">
+                    ⚠ {warning}
+                  </li>
+                ))}
+              </ul>
+              <label className="flex items-start gap-1.5 text-[10px] text-ink-muted">
+              <input
+                type="checkbox"
+                className="mt-0.5"
+                checked={acknowledged}
+                onChange={(event) => setAcknowledged(event.target.checked)}
+              />
+                I acknowledge these data warnings; they will be recorded in the manifest.
+              </label>
+            </>
           ) : (
             <p className="text-[10px] text-ink-faint">
               Warnings are advisory and do not block a run; acknowledged warnings are recorded in

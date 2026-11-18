@@ -80,3 +80,20 @@ def test_holdout_variant_counter_tracks_strategy_hashes(tmp_path, monkeypatch):
     assert again["variant_index"] == 1
     assert again["warning"] is True
     assert variant["variant_index"] == 2
+
+
+def test_reap_orphans_terminates_a_live_worker(tmp_path, monkeypatch):
+    import subprocess
+
+    _init(tmp_path, monkeypatch)
+    proc = subprocess.Popen(["sleep", "30"], start_new_session=True)
+    try:
+        state.create_run("run_live", {}, "sha256:s", "sha256:r", "sha256:d", "conservative", "conservative")
+        state.update_run("run_live", status="running", pid=proc.pid)
+        reaped = state.reap_orphans()
+        assert "run_live" in reaped
+        assert proc.wait(timeout=5) != 0
+        assert state.get_run("run_live")["status"] == "failed"
+    finally:
+        if proc.poll() is None:
+            proc.kill()

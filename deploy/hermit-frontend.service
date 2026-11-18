@@ -1,0 +1,22 @@
+[Unit]
+Description=Hermit Trading Frontend (tailnet research dashboard)
+After=network.target tailscaled.service
+Wants=tailscaled.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/HermitTradingFrontend
+Environment=HTF_HOST=127.0.0.1
+Environment=HTF_PORT=8787
+# Optional shared secret; set it in the environment, never in git.
+# Environment=HTF_APP_TOKEN=change-me
+ExecStart=/root/HermitTradingFrontend/.venv/bin/uvicorn backend.main:app --host 127.0.0.1 --port 8787
+Restart=on-failure
+RestartSec=3
+# Workers are separate process groups; allow a run to finish or be terminated.
+KillMode=mixed
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

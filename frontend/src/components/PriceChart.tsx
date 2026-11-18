@@ -176,7 +176,7 @@ export function PriceChart({
         crosshair: { mode: CrosshairMode.Normal },
         rightPriceScale: {
           borderColor: dark ? "#212b36" : "#d6dde5",
-          scaleMargins: { top: 0.06, bottom: 0.24 },
+          scaleMargins: { top: 0.06, bottom: 0.02 },
         },
         timeScale: {
           borderColor: dark ? "#212b36" : "#d6dde5",

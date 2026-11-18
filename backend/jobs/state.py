@@ -408,7 +408,22 @@ def reap_orphans() -> list[str]:
                     alive = True
                 except OSError:
                     alive = False
-            if not alive:
+            if alive and pid and int(pid) != os.getpid():
+                # A worker survived an API restart. Terminate it so it cannot
+                # write into a run the restarted API now considers failed.
+                try:
+                    os.killpg(int(pid), 15)
+                except (ProcessLookupError, PermissionError):
+                    try:
+                        os.kill(int(pid), 15)
+                    except (ProcessLookupError, PermissionError):
+                        pass
+                conn.execute(
+                    "UPDATE runs SET status='failed', error=?, updated_at=? WHERE run_id=?",
+                    ("worker process survived an API restart; terminated as an orphan", utcnow(), row["run_id"]),
+                )
+                reaped.append(row["run_id"])
+            elif not alive:
                 conn.execute(
                     "UPDATE runs SET status='failed', error=?, updated_at=? WHERE run_id=?",
                     ("worker process was lost; run reaped on startup", utcnow(), row["run_id"]),

@@ -89,6 +89,10 @@ v1 sources (see the brief for the full table):
 - `polymarket/epl/epl_moneyline_tape.parquet`
 - `polymarket/sii/markets.parquet`
 - `results/polymarket_events.parquet`, `results/big4_matches.parquet`
+- `events/espn/summary` (2026 cache) → derived
+  `var/lifecycle/match_lifecycle.parquet` from ESPN `keyEvents` kickoff and
+  end-regular-time wallclock. Pre-2026 is backfilled via the ESPN scoreboard
+  API; missing rows mean `phase = unknown`.
 
 Kalshi and Betfair are v2. Do not add their readers before the adapter lands.
 
@@ -96,8 +100,14 @@ Kalshi and Betfair are v2. Do not add their readers before the adapter lands.
 
 - Instruments are Nautilus `BinaryOption` instances, one per outcome token.
 - Prices are 0–1 probabilities. Venue precision is recorded, never assumed.
-- "Short YES" compiles to "buy NO". The executed token is always visible.
+- Order intents are explicit: open long = BUY token; close long = SELL token;
+  open short YES = BUY NO; close short = SELL NO. Buying NO is not an exit for
+  YES. A market sell is fill-and-kill at the bid, and no naked short is ever
+  simulated. The trade list shows the actual side and token.
 - Settlement is 0 or 1 at expiry, from the mapped results table.
+- Lifecycle phases come only from `match_lifecycle` (ESPN `keyEvents` kickoff /
+  end-regular-time wallclock). No row → `phase = unknown`, filter disabled, no
+  nominal duration.
 - Canonical bar fields: `instrument_id, bar_type, ts_event, ts_init, open,
   high, low, close, volume, trade_count, source, data_version`.
 - 1-minute bars are the base (`...-1-MINUTE-LAST-EXTERNAL`). Higher timeframes
@@ -134,60 +144,90 @@ source file (sibling strategy or Nautilus example). v1 set: `nautilus_ema_cross`
 `donchian_breakout`, `atr_vol_breakout`, `vwap_reversion`, `buy_and_hold`,
 `random_entry`.
 
-**Rules** are declarative JSON:
+**Rules** are declarative JSON, split into four sections:
 
-- operands: price fields, `indicator:<id>:<output>` with parameters, constants;
-- comparators: `gt`, `gte`, `lt`, `lte`, `crosses_above`, `crosses_below`;
-- boolean: `all`, `any`, `not`, with capped depth and node count;
-- entry/exit for long and short, sizing, costs, settlement.
+- `strategy`: indicator instances, entry/exit rules, direction, lifecycle
+  filters;
+- `execution`: profile, fill timing, fees, slippage, book options;
+- `risk`: sizing, maximum position, maximum trades;
+- `evaluation`: date range, train/test split.
+
+Operands are price fields, `indicator:<instance_id>:<output>`, lifecycle
+variables and constants. Comparators are `gt`, `gte`, `lt`, `lte`,
+`crosses_above`, `crosses_below`; boolean nodes are `all`, `any`, `not`, with
+capped depth and node count.
 
 Validation happens before a job exists: unknown indicator, out-of-range
 parameter, empty tree or malformed operand returns `422` with a field path.
-Canonicalise the JSON (sorted keys) and hash it; the hash identifies the run.
+Canonicalise the JSON (sorted keys). The **strategy_hash** covers the strategy
+section; the **run_hash** covers strategy + execution + risk + evaluation +
+data version + code version.
 
 Execution:
 
 - One `RuleStrategy` Nautilus class interprets the validated JSON at runtime.
-- Market orders at the signal bar close, filled at the next bar open by default;
-  the convention is configurable and recorded.
-- Sizing: fixed stake, percent of bankroll, or fractional Kelly with a hard cap.
+- Market orders. Buys walk asks; sells walk bids and are fill-and-kill. Default
+  fill timing is the next bar's open; the convention is recorded.
+- Sizing: Fixed stake (£) or Risk % of bankroll, with stake/contracts/max loss/
+  max payout/max profit shown. Fractional Kelly is deferred to v1.1; it needs a
+  calibrated probability.
 - One position per instrument; no pyramiding in v1.
 
-### 7.1 Execution awareness
+### 7.1 Execution profiles
 
-Three tiers. Every run records the **requested** and **effective** tier; the UI
-shows both.
+One user-facing set of five profiles. Each resolves to an internal cost source
+(`none`, `fixed`, `dynamic`) recorded in the manifest, never shown as a second
+set of labels.
 
-- `none` — zero fees and slippage. Frictionless research baseline, labelled as
-  such. Never an automatic fallback.
-- `fixed` — `fee_bps` + `slippage_bps` applied to entry and exit notional. Works
-  on any period; this is the safe floor.
-- `dynamic` — priced from the latest L2 snapshot with `ts <= decision_ts`:
-  buy at ask / sell at bid, walk visible depth (default 10 levels), impact =
-  `(VWAP − mid) / mid`, partial fill at visible depth. Requires 2026 book
-  coverage. No queue position; this is a bounded estimate, not a fill simulator.
+| Profile | Cost source | Fee | Slippage | Minimum absolute | Fallback |
+|---|---|---|---|---|---|
+| Frictionless | `none` | 0 | 0 | 0 | none |
+| Optimistic | `fixed` | venue | 0 | 0 | — |
+| Conservative | `fixed` | venue | 10 bps | 0.001 | — |
+| Stress | `fixed` | venue | 25 bps | 0.002 | — |
+| Book | `dynamic` | venue | book walk | — | Conservative |
 
-Fallback ladder: **dynamic → fixed**. Never fall back to `none`.
+Fill price for a token at `c`:
 
-- Run-level: no book coverage for the instrument/range → effective `fixed`, with
-  `reason: no_book_coverage` and the coverage window in the manifest. The API
+```
+slip      = max(c * slippage_bps / 10_000, min_abs_slippage)
+buy_fill  = clamp(c + slip, tick, 1 - tick)
+sell_fill = clamp(c - slip, tick, 1 - tick)
+```
+
+The formula applies to YES and NO because each token is its own instrument; the
+side comes from the open/close intent.
+
+Book uses the latest L2 snapshot with `ts <= decision_ts`, walks asks for buys
+and bids for sells up to `max_depth_levels` (default 10), prices impact as
+`(VWAP − mid) / mid`, and records partial fills. No queue position.
+
+Fallback is Book → Conservative, never to Frictionless.
+
+- Run-level: no book coverage → effective Conservative with
+  `reason: no_book_coverage` and the coverage window in the manifest. The
   preflight warns before submission.
 - Fill-level: missing or stale snapshot (older than `book_staleness_s`, default
-  60) → that fill is priced at fixed, `execution_source: fixed_fallback`, and
-  the summary reports the fallback rate.
-- Invalid fixed parameters reject the run; they never downgrade it to none.
+  60) → that fill at Conservative, `execution_source: conservative_fallback`,
+  and the summary reports the fallback rate.
+- Invalid profile parameters reject the run; never downgrade to Frictionless.
 
 Results report gross and net, fees/spread/impact, total cost in bps, and the
-fallback rate. Net is never shown without its tier badge.
+fallback rate. Net is never shown without its profile badge.
 
 ## 8. Backtest contract
 
 - Every run stores `config.json`, `summary.json`, `equity.parquet`,
-  `trades.parquet`, `positions.parquet`, `costs.parquet`, `log.txt`,
-  `manifest.json`.
-- The manifest records: rule hash, data version, source paths, bar type and
-  aggregation chain, requested/effective execution tier, fallback reason and
-  rate, book coverage window, git SHA, Nautilus version, artifact hashes.
+  `trades.parquet`, `positions.parquet`, `signals.parquet`, `costs.parquet`,
+  `diagnostics.json`, `log.txt`, `manifest.json`.
+- The manifest records: strategy hash, run hash, data version, lifecycle
+  version, source paths, bar type and aggregation chain, requested/effective
+  execution profile, fallback reason and rate, book coverage window, evaluation
+  split, holdout reveal count, git SHA, Nautilus version, artifact hashes.
+- Out-of-sample results are hidden behind an explicit reveal. Each reveal
+  appends to the holdout ledger; the second reveal for the same
+  `(universe, strategy_hash, split)` warns. Execution and sizing changes do not
+  reset the count; the experiment records the variant count.
 - Workers are separate processes. Nautilus engines are never shared across
   threads or requests. Concurrency defaults to 1.
 - Queued → running → complete/failed/cancelled. Progress and logs stream over
@@ -204,10 +244,11 @@ fallback rate. Net is never shown without its tier badge.
 - The chart renders server-computed series only. URL state carries instrument,
   bar type, range, indicator specs and run id, so a view is shareable and
   reproducible.
-- `POST /api/execution/preflight` returns the requested/effective tier, book
+- `POST /api/execution/preflight` returns the requested/effective profile, book
   coverage and a cost estimate before a run is submitted.
 - Every page shows the data version; every result page shows the run hash, the
-  execution tier and, when they differ, the fallback reason.
+  execution profile, the holdout state and, when they differ, the fallback
+  reason.
 - Empty, loading, stale and error states are designed, not incidental.
 - Accessibility: keyboard navigation, colour-blind-safe palette, sufficient
   contrast in both themes.
@@ -231,7 +272,13 @@ Until it lands, run the suite for the area you touched directly:
 - Unit: Vitest for `frontend`; pytest for `backend`, `data`, `indicators`.
 - E2E: Playwright against a built app with a small fixture catalog.
 - Golden fixtures: one indicator fixture per indicator; one deterministic
-  backtest fixture with a known equity curve and trade count.
+  backtest fixture with a known equity curve and trade count; one fixture per
+  execution profile (Frictionless, Optimistic, Conservative, Stress, Book) and
+  one for Book's Conservative fallback.
+- Intent tests: close-long sells the held token, open-short buys NO, and no
+  complement purchase is treated as an exit.
+- Lifecycle tests: a missing `match_lifecycle` row yields `unknown`; a delayed
+  kickoff uses the observed wallclock; no nominal duration is ever substituted.
 - Tests never reach the network or the sibling repo. A test that needs data
   uses a checked-in fixture or skips with a reason.
 - A test may not pass by mocking the thing under test.
@@ -262,14 +309,17 @@ Until it lands, run the suite for the area you touched directly:
 | Date | Decision | Answer |
 |---|---|---|
 | 2026-11-18 | Data | Polymarket only for the MVP; Kalshi and Betfair are v2 |
-| 2026-11-18 | Instrument model | One `BinaryOption` per outcome token; "short YES" = "buy NO"; no naked shorting (confirmed) |
+| 2026-11-18 | Instrument model | One `BinaryOption` per outcome token; explicit open/close intents; buying NO is not an exit for YES; no naked shorting |
 | 2026-11-18 | Bars | 1-minute base with resampling, plus tick/volume/value/Renko |
-| 2026-11-18 | Frontend | React + TypeScript + Vite |
+| 2026-11-18 | Frontend | React + TypeScript + Vite; single Research Workspace with secondary Data/Runs/Presets |
 | 2026-11-18 | Authoring | Declarative rules **and** a curated built-in catalogue sourced from the sibling strategies and Nautilus examples |
 | 2026-11-18 | Indicators | Nautilus/Python for both chart and backtest |
 | 2026-11-18 | Hosting | `tailscale serve`, tailnet-only |
 | 2026-11-18 | Backtests | Single instrument, long and short |
-| 2026-11-18 | Execution | None / Fixed / Dynamic; Dynamic prices from L2 and falls back to Fixed, never to None |
+| 2026-11-18 | Execution | Five profiles: Frictionless, Optimistic, Conservative, Stress, Book; Book falls back to Conservative, never Frictionless |
+| 2026-11-18 | Lifecycle | ESPN `keyEvents` kickoff / end-regular-time wallclock; no row means `unknown`, no nominal duration |
+| 2026-11-18 | Sizing | Fixed stake (£) or Risk % of bankroll; Kelly deferred to v1.1 |
+| 2026-11-18 | Holdout | Soft warning plus append-only ledger, keyed by strategy hash and split |
 
 <!-- trail:start -->
 ## Trail — repo context graph

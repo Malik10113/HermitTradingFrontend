@@ -26,6 +26,7 @@ The 2026 boundary is also a **collection boundary**: Predexon backfill starts
 | Polymarket L2 books (`cache/orderbooks_compact`) | 2026-01-01 → 2026-10-21, 17.18M rows, 1,013 matches | L2 snapshot: best bid/ask, depth, ladder, no queue | **No** | Yes |
 | Kalshi EPL L1 (`kalshi/epl_2025`) | 2025-05-11 → 2025-12-30, 579 markets / 193 matches | 1-minute `yes_bid` / `yes_ask`, no size, no ladder | Yes (2025 only) | Upstream 2026 exists (612/204), not local |
 | ESPN in-play events (`events/match_events.parquet`) | 2026-01-01 → 2026-10-21, 7,678 events / 1,006 matches | Goals, cards, VAR; wallclock + 30 s publication bound | **No** | Yes |
+| ESPN key events (`events/espn/summary`) | 2026 cache, 1,006/1,007 fixtures; pre-2026 backfill | Actual `kickoff` and `end-regular-time` UTC wallclock | Yes (backfill) | Yes |
 | Betfair historic (`data/betfair`) | 2015-05 and 2015-06-12, 14,992 files | Last-traded price only | Neither useful side | Neither useful side |
 
 Notes:
@@ -33,6 +34,12 @@ Notes:
 - `orderbooks_compact` has no 2026-06 or 2026-07 partitions. The Big-4 seasons
   are off in June–July; it is a seasonal gap, not missing data.
 - The EPL tape holds 3,517,070 fills from 2024-10-08 to 2026-10-05.
+- Lifecycle phases use ESPN `keyEvents`, not an assumed duration. A fixture
+  without a verified kickoff/end row reports `phase = unknown`.
+- Lifecycle source: `https://site.api.espn.com/apis/site/v2/sports/soccer/{league}/summary?event={id}`;
+  discover event ids with `.../scoreboard?dates=YYYYMMDD`. Read
+  `keyEvents[].type.type` in `{kickoff, end-regular-time}` and
+  `keyEvents[].wallclock` (UTC). Leagues: `eng.1`, `esp.1`, `ger.1`, `fra.1`.
 - Kalshi is a **quote proxy**, not an exchange substitute: L1 only, no ladder,
   no size, no queue.
 - Betfair's free historical tier is last-traded price; depth is a paid tier.
@@ -81,11 +88,11 @@ pre/post split.
 
 1. **Bars and backtests can use the full tape**, 2024-10 → 2026-10. The fills are
    clean enough for OHLCV construction.
-2. **Execution awareness has three tiers.** `none` is an explicit frictionless
-   baseline; `fixed` (absolute bps) works on any period; `dynamic` (L2 walk,
-   spread, impact) is 2026-only and falls back to `fixed` with the reason
-   recorded. A pre-2026 run can never be priced dynamically, and the UI must say
-   so before submission.
+2. **Execution has five profiles.** Frictionless is an explicit zero-cost
+   baseline; Optimistic, Conservative and Stress use absolute bps with a minimum
+   absolute slippage; Book alone needs the 2026 L2 data and falls back to
+   Conservative, with the reason recorded. A pre-2026 run can never be priced
+   as Book, and the UI says so before submission.
 3. **The MVP can ship without books.** v1 is price/indicator/backtest work;
    L2 replay is already v2.
 4. **Show coverage, not just candles.** The UI must render the June–July seasonal

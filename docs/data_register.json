@@ -1,1 +1,14 @@
-[]
+[
+  {
+    "name": "espn_match_lifecycle",
+    "kind": "derived",
+    "path": "var/lifecycle/match_lifecycle.parquet",
+    "source": "Derived from ESPN public site/core API keyEvents (kickoff and end-regular-time wallclock)",
+    "source_url": "https://site.api.espn.com/apis/site/v2/sports/soccer/eng.1/summary",
+    "retrieved": "2026-11-18",
+    "size_bytes": 0,
+    "license": "ESPN terms of service; personal research use only, not redistributable",
+    "rebuild": "python scripts/build_match_lifecycle.py",
+    "notes": "One row per match: actual_kickoff_utc, actual_end_utc, source=espn_keyevents, precision=observed. 2026 fixtures use the existing data/events/espn cache and fixture map (1,006/1,007 with both events); pre-2026 is backfilled via the ESPN scoreboard API. Rows without wallclock are omitted and phase is unknown, never a nominal duration. Not built yet: the derived path is absent until the lifecycle builder lands."
+  }
+]

@@ -6,14 +6,30 @@ This file is generated from [`docs/data_register.json`](data_register.json). Do 
 
 `data/` is gitignored, so a clone contains no datasets. Every path below must be restored from its source or rebuilt from the recorded command. `verify` reports `MISSING` when a path is absent and `SIZE_DRIFT` when the measured size differs from the registered size by more than 10%.
 
-Registered: **0 datasets** (0 raw, 0 derived), **0 B** on disk at registration.
+Registered: **1 datasets** (0 raw, 1 derived), **0 B** on disk at registration.
 
 ## Datasets
 
 | Name | Kind | Path | Size | Source | Retrieved | License |
 |---|---|---|---:|---|---|---|
+| `espn_match_lifecycle` | derived | `var/lifecycle/match_lifecycle.parquet` | 0 B | Derived from ESPN public site/core API keyEvents (kickoff and end-regular-time wallclock) | 2026-11-18 | ESPN terms of service; personal research use only, not redistributable |
 
 ## Re-download and rebuild notes
+
+### `espn_match_lifecycle`
+
+- **Path:** `var/lifecycle/match_lifecycle.parquet`
+- **Kind:** derived
+- **Source:** Derived from ESPN public site/core API keyEvents (kickoff and end-regular-time wallclock) <https://site.api.espn.com/apis/site/v2/sports/soccer/eng.1/summary>
+- **Retrieved:** 2026-11-18
+- **Size:** 0 B (0 bytes)
+- **License:** ESPN terms of service; personal research use only, not redistributable
+- **Re-download / rebuild:**
+
+  ```bash
+  python scripts/build_match_lifecycle.py
+  ```
+- **Notes:** One row per match: actual_kickoff_utc, actual_end_utc, source=espn_keyevents, precision=observed. 2026 fixtures use the existing data/events/espn cache and fixture map (1,006/1,007 with both events); pre-2026 is backfilled via the ESPN scoreboard API. Rows without wallclock are omitted and phase is unknown, never a nominal duration. Not built yet: the derived path is absent until the lifecycle builder lands.
 
 ---
 

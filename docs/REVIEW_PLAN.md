@@ -1,21 +1,20 @@
 # Review plan — response to the UX/backtesting review
 
-> Status: **proposal, not yet binding.** This maps each review suggestion to a
-> decision, an implementation shape and a phase. Once the open decisions in §7
-> are answered, the accepted parts move into `docs/BRIEF.md` and `AGENTS.md`.
+> Status: **accepted 2026-11-18.** The decisions in §7 are folded into
+> `docs/BRIEF.md` and `AGENTS.md`; this file remains the implementation map.
 
 ## 1. Verdict
 
 - **Adopt:** the single Research Workspace, command-palette market search,
   quick/advanced split, shared indicator instances, signal-vs-fill chart markers,
   run comparison, experiment presets, inline data quality, remembered defaults,
-  execution presets, lifecycle filters, chronological train/test, prediction-
+  execution profiles, lifecycle filters, chronological train/test, prediction-
   market metrics, sizing transparency, diagnostics, config separation,
   experiment queue, and caching.
-- **Reconcile:** execution profiles (review §10) are presets over the existing
-  None/Fixed/Dynamic tiers, not a second execution system. Sizing labels (review
-  §18) collapse for a single long binary token. Lifecycle phases (review §12–13)
-  are exact only where ESPN events exist (2026); pre-2026 ends are nominal.
+- **Reconcile:** execution uses one user-facing set of five profiles, not a
+  tier-plus-preset vocabulary. Sizing labels collapse for a single long binary
+  token. Lifecycle phases come from verified ESPN key events, not an assumed
+  duration.
 - **Defer:** full L2 fill simulation with queue position, walk-forward/CPCV,
   multi-instrument portfolios, and fractional Kelly until a probability source
   exists.
@@ -24,31 +23,33 @@
 
 ## 2. The three reconciliations
 
-### 2.1 Execution: tiers stay, profiles become presets
+### 2.1 Execution: one set of five profiles
 
-The tier is *where the cost comes from*; the preset is *a named bundle of
-parameters*. This avoids a 3×3 matrix of engines.
+No tiers in the UI or the docs. Each profile resolves internally to a cost
+source (`none`, `fixed`, `dynamic`) that is recorded in the manifest but never
+shown as a second vocabulary.
 
-| Preset | Tier | Fee | Slippage | Minimum absolute | Use |
+| Profile | Cost source | Fee | Slippage | Minimum absolute | Fallback |
 |---|---|---|---|---|---|
-| `frictionless` | `none` | 0 | 0 | 0 | null baseline |
-| `optimistic` | `fixed` | venue | 0 | 0 | best case |
-| `conservative` | `fixed` | venue | 10 bps | 0.001 | default |
-| `stress` | `fixed` | venue | 25 bps | 0.002 | robustness |
-| `book` | `dynamic` | venue | book walk | — | 2026 only |
+| Frictionless | `none` | 0 | 0 | 0 | none |
+| Optimistic | `fixed` | venue | 0 | 0 | — |
+| Conservative | `fixed` | venue | 10 bps | 0.001 | — |
+| Stress | `fixed` | venue | 25 bps | 0.002 | — |
+| Book | `dynamic` | venue | book walk | — | Conservative |
 
-Fill price for a buy on token price `c`:
+Fill price for a token at `c`:
 
 ```
-slip = max(c * slippage_bps / 10_000, min_abs_slippage)
-fill = clamp(c + slip, tick, 1 - tick)      # sell: c - slip
+slip      = max(c * slippage_bps / 10_000, min_abs_slippage)
+buy_fill  = clamp(c + slip, tick, 1 - tick)
+sell_fill = clamp(c - slip, tick, 1 - tick)
 ```
 
-The same formula applies to YES and NO because each token is its own instrument;
-the economic direction is carried by the position side, not by a short flag.
+The same formula applies to YES and NO because each token is its own instrument.
+The side comes from the open/close intent: closing a long is a sell of the held
+token, not a purchase of the complement.
 
-`dynamic` falls back to `conservative`, not to a bare fixed config, and never to
-`frictionless`. This makes the fallback explicit and comparable.
+Book falls back to Conservative, never to Frictionless.
 
 ### 2.2 Sizing: show the binary arithmetic, drop redundant labels
 
@@ -71,21 +72,23 @@ calibrated probability. Using the full-sample win rate is lookahead. v1
 therefore omits Kelly; v1.1 may add it with an explicit probability source
 (trailing win rate with warm-up, or a calibrated model) and a hard cap.
 
-### 2.3 Lifecycle: exact in 2026, nominal before it
+### 2.3 Lifecycle: verified key events, never a nominal duration
 
-Kickoff is available for every match in `big4_matches.parquet`. Event end is
-exact only from the 2026 ESPN cache. Define:
+Source of truth: ESPN `keyEvents` entries of type `kickoff` and
+`end-regular-time`, with their UTC `wallclock`. The 2026 cache covers 1,006 of
+1,007 fixtures with both; pre-2026 is backfilled from the ESPN scoreboard API.
+The observed kickoff handles delayed matches.
 
 | Phase | Rule | Source |
 |---|---|---|
-| `pre_match` | `t < kickoff` | exact |
-| `in_play` | `kickoff <= t < kickoff + duration` | ESPN end in 2026; nominal 120 min before |
-| `post_match` | `end <= t < settlement` | derived |
-| `settled` | `t >= settlement` | exact from market metadata |
+| `pre_match` | `t < actual_kickoff` | ESPN kickoff wallclock |
+| `in_play` | `actual_kickoff <= t < actual_end` | ESPN end-regular-time wallclock |
+| `post_match` | `actual_end <= t < settlement` | derived |
+| `settled` | `t >= settlement` | market metadata |
+| `unknown` | no verified row | no phase filter |
 
-Every bar carries `phase` and `phase_source` (`espn` | `nominal`). A pre-2026
-in-play result is labelled approximate; the UI says so. Do not silently present
-a nominal phase as measured.
+No 120-minute fallback. A fixture without a verified row reports `unknown` and
+disables the phase filter; the UI says why.
 
 ## 3. Suggestion → implementation map
 
@@ -100,9 +103,9 @@ a nominal phase as measured.
 | 7 | Adopt | Save complete experiment config as a preset; load into workspace; no folders/projects | P3 |
 | 8 | Adopt | Precompute coverage/quality per instrument; badge in selector and workspace; preflight warnings | P1/P2 |
 | 9 | Adopt | localStorage for last UI state + server presets; URL encodes meaningful state; reset control | P1 |
-| 10 | Reconcile | Presets over tiers (§2.1); `min_abs_slippage`; fill timing explicit | P2 |
-| 12 | Adopt | Lifecycle operands in rules: `time_to_kickoff_minutes`, `time_since_kickoff_minutes`, `time_to_settlement_minutes`, `phase` | P3 |
-| 13 | Adopt | All/Pre/In-play/Post toggle, kickoff marker, phase metrics table | P3 |
+| 10 | Reconcile | One set of five profiles (§2.1); `min_abs_slippage`; explicit fill timing; sell exits are sells of the held token | P2 |
+| 12 | Adopt | Lifecycle operands from `match_lifecycle`: `time_to_kickoff_minutes`, `time_since_kickoff_minutes`, `time_to_settlement_minutes`, `phase` | P3 |
+| 13 | Adopt | All/Pre/In-play/Post toggle, kickoff marker, phase metrics table; unknown phase disables the filter | P3 |
 | 14 | Adopt | Chronological split + embargo; in/out metrics; holdout-use ledger with warning | P3 |
 | 16 | Adopt (bounded) | Experiment grid, max runs/time, heatmap, all runs retained; no optimiser | P4 |
 | 17 | Adopt | Core + PM metrics (§4); gross/net separate; method shown in tooltip | P2 |
@@ -135,6 +138,7 @@ the fill price; fees are a separate line. Do not subtract either twice.
 | Indicator series | `bars_key + spec_hash + indicator_impl_version` |
 | Signals | `bars_key + strategy_hash + warmup + indicator_impl_version` |
 | Settlement | `instrument + settlement_version` |
+| Lifecycle | `match_key + lifecycle_version` |
 
 Signals are independent of execution, sizing and the evaluation date, so a
 sweep or a compare reuses them. Compute the full series with a warm-up buffer
@@ -147,9 +151,9 @@ endpoint.
 quality; workspace shell; chart; shared indicator instances; URL state/defaults;
 bar and indicator caches.
 
-**P2 — First end-to-end run.** Quick/advanced; execution presets + min absolute
-slippage; sizing transparency; single-run backtest; diagnostics; signal/fill
-markers; trade inspector; core metrics; signal cache.
+**P2 — First end-to-end run.** Quick/advanced; five execution profiles + minimum
+absolute slippage; sizing transparency; single-run backtest; diagnostics;
+signal/fill markers; trade inspector; core metrics; signal cache.
 
 **P3 — Evaluation.** Chronological split + holdout ledger; lifecycle operands,
 phase toggle and phase metrics; compare runs; experiment presets.
@@ -164,21 +168,18 @@ Dependency order is deliberate: the split config schema lands before any run
 artifact; execution and sizing land before results are trusted; the sweep lands
 only after the queue and signal cache exist.
 
-## 7. Decisions required
+## 7. Decisions
 
-1. **Kelly:** confirm deferral to v1.1, or name the probability source now.
-2. **Sizing labels:** confirm two modes (fixed £ stake, risk % of bankroll) and
-   drop "fixed risk" as a separate label.
-3. **Pre-2026 phases:** confirm nominal 120-minute in-play end with a visible
-   `phase_source: nominal` flag.
-4. **Holdout:** confirm a one-shot ledger per `(universe, strategy_hash, split)`
-   that warns on the second reveal.
-5. **Sharpe:** confirm daily, 365-day annualisation, flat days included.
-6. **Sweep limits:** confirm default 50 runs / 15 min, hard caps 200 / 60 min.
-7. **Dynamic fallback:** confirm `book → conservative` (fixed) rather than a bare
-   fixed config.
-8. **Compare:** confirm 3-run limit and equity normalised to 100 at the common
-   start.
+| # | Decision | Outcome |
+|---|---|---|
+| 1 | Kelly | Deferred to v1.1; no calibrated probability source in v1 |
+| 2 | Sizing labels | Two modes: Fixed stake (£) and Risk % of bankroll |
+| 3 | Lifecycle source | ESPN `keyEvents` kickoff / end-regular-time wallclock; unknown when absent; no nominal duration |
+| 4 | Holdout | Soft warning plus append-only ledger, keyed by strategy hash and split |
+| 5 | Sharpe | Daily, 365-day annualisation, flat days included |
+| 6 | Sweep limits | Default 50 runs / 15 min; hard caps 200 / 60 min |
+| 7 | Book fallback | Book → Conservative, never Frictionless |
+| 8 | Compare | 3-run limit, equity normalised to 100 at the common start |
 
 ## 8. Deferred or declined
 

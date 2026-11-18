@@ -341,3 +341,49 @@ test("palette search reaches instruments outside the loaded dropdown page", asyn
   );
   await expect(page).toHaveURL(new RegExp(encodeURIComponent(target!.instrument_id)));
 });
+
+test("a two-axis sweep renders the heatmap", async ({ page, request }) => {
+  const health = await page.request.get("/api/health").catch(() => null);
+  test.skip(!health || !health.ok(), "HTF_E2E app is not running");
+
+  const name = `e2e sweep ${Date.now()}`;
+  const created = await request.post("/api/experiments", {
+    data: {
+      name,
+      base: {
+        strategy: {
+          instrument_id: INSTRUMENT,
+          bar_type: "1m",
+          builtin_id: "nautilus_ema_cross",
+          builtin_params: { fast_period: 6, slow_period: 21 },
+          direction: "long",
+        },
+        execution: { profile: "conservative" },
+        risk: { sizing: { mode: "fixed_stake", value: 50 }, max_trades: 50 },
+        evaluation: { date_range: { from: "2026-09-18", to: "2026-09-19" } },
+      },
+      axes: [
+        { path: "strategy.builtin_params.fast_period", values: [6, 10] },
+        { path: "strategy.builtin_params.slow_period", values: [21, 26] },
+      ],
+    },
+  });
+  expect(created.status()).toBe(202);
+  const { experiment_id: experimentId } = (await created.json()) as { experiment_id: string };
+
+  let complete = 0;
+  let total = 4;
+  for (let attempt = 0; attempt < 90 && complete < total; attempt += 1) {
+    await page.waitForTimeout(1000);
+    const detail = await request.get(`/api/experiments/${experimentId}`);
+    const body = (await detail.json()) as { completed?: number; total?: number; status?: string };
+    complete = body.completed ?? 0;
+    total = body.total ?? total;
+    if (body.status === "failed") break;
+  }
+  expect(complete).toBe(total);
+
+  await page.goto("/runs");
+  await page.getByRole("button", { name: `Expand experiment ${name}` }).click();
+  await expect(page.locator('[data-testid="sweep-heatmap"]')).toBeVisible({ timeout: 30_000 });
+});

@@ -89,7 +89,8 @@ v1 sources (see the brief for the full table):
 - `polymarket/epl/epl_moneyline_tape.parquet`
 - `polymarket/sii/markets.parquet`
 - `results/polymarket_events.parquet`, `results/big4_matches.parquet`
-- `kalshi/epl_2025/quotes.parquet`, `kalshi/epl_2025/markets.parquet`
+
+Kalshi and Betfair are v2. Do not add their readers before the adapter lands.
 
 ## 5. Instrument and bar contract
 
@@ -104,8 +105,9 @@ v1 sources (see the brief for the full table):
 - Non-time bars: `TICK`, `VOLUME`, `VALUE`, `RENKO`, and imbalance/runs
   variants. Nautilus 2.x has no range bars; do not promise them.
 - Polymarket bars are built from fills: OHLC is last trade, volume is USD
-  notional, and `trade_count` is retained. Kalshi bars come from its one-minute
-  quotes and retain bid/ask separately.
+  notional, and `trade_count` is retained.
+- Kalshi (v2) will use the same canonical schema from its one-minute quotes,
+  retaining bid/ask separately.
 - No bar is fabricated for an interval with no trades.
 
 ## 6. Indicator contract
@@ -229,7 +231,8 @@ Until it lands, run the suite for the area you touched directly:
 
 | Date | Decision | Answer |
 |---|---|---|
-| 2026-11-18 | Data | Prediction markets from the sibling repo (Polymarket, Kalshi; Betfair in v2) |
+| 2026-11-18 | Data | Polymarket only for the MVP; Kalshi and Betfair are v2 |
+| 2026-11-18 | Instrument model | One `BinaryOption` per outcome token; "short YES" = "buy NO"; no naked shorting (confirmed) |
 | 2026-11-18 | Bars | 1-minute base with resampling, plus tick/volume/value/Renko |
 | 2026-11-18 | Frontend | React + TypeScript + Vite |
 | 2026-11-18 | Authoring | Declarative rules **and** a curated built-in catalogue sourced from the sibling strategies and Nautilus examples |

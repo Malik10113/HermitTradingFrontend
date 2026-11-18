@@ -31,10 +31,12 @@ claim, surfaces no live prices beyond the stored data, and never places an order
 
 ### In scope (v1)
 
-- Venues: Polymarket and Kalshi. Betfair is a later adapter because its prices
-  are decimal odds (1.01–1000), not 0–1 probabilities.
+- Venue: **Polymarket only** for the MVP. Kalshi is deferred to v2 even though
+  its one-minute quotes are easy to ingest; keeping one venue keeps the bar
+  semantics, token mapping and settlement path unambiguous. Betfair is also v2
+  because its prices are decimal odds (1.01–1000), not 0–1 probabilities.
 - Binary contracts priced 0–1, settling to 0 or 1.
-- 1-minute time bars built from trades/quotes; 5m/15m/1h/1d derived by
+- 1-minute time bars built from Polymarket fills; 5m/15m/1h/1d derived by
   aggregation.
 - Non-time bars: tick, volume, value (dollar) and Renko, built from trade ticks.
 - Technical indicators computed server-side with Nautilus indicator classes.
@@ -50,7 +52,7 @@ claim, surfaces no live prices beyond the stored data, and never places an order
 - Multi-instrument portfolio backtests (planned v2).
 - Arbitrary Python upload or in-browser code execution.
 - Tick-by-tick L2 order-book replay (v2; L2 data exists but is not replayed).
-- Betfair venue adapter (v2).
+- Kalshi and Betfair venue adapters (v2).
 - Mobile-native app, multi-user accounts, public hosting.
 - Range bars (Nautilus 2.x has no range aggregation).
 
@@ -67,10 +69,12 @@ This project registers only the datasets it actually reads, in its own
 | Polymarket markets | `polymarket/sii/markets.parquet` | 4.05M market rows | Metadata, token mapping |
 | Polymarket mapped events | `results/polymarket_events.parquet` | 1,961 rows | Match / settlement spine |
 | Polymarket snapshots | `results/polymarket_snapshots.parquet` | 102k rows | 24h/6h/1h pre-match reference |
-| Kalshi EPL quotes | `kalshi/epl_2025/quotes.parquet` | 1.06M one-minute rows | Native 1m OHLC, bid/ask |
-| Kalshi markets | `kalshi/epl_2025/markets.parquet` | 579 markets | Metadata, settlement |
 | Match results | `results/big4_matches.parquet` | 47,628 matches | Settlement outcomes |
 | Polymarket books | `cache/orderbooks_compact/` | 17.2M L2 rows | v2 execution-aware work |
+
+Deferred to v2: `kalshi/epl_2025/quotes.parquet`,
+`kalshi/epl_2025/markets.parquet`, and the Betfair historic tree. They are
+registered when their adapters land, not before.
 
 Rules:
 
@@ -86,18 +90,20 @@ Rules:
 
 - Nautilus `BinaryOption` is the instrument type; it explicitly supports
   prediction markets and yes/no contracts.
-- One instrument per **outcome token**, not per market:
-  - Polymarket: `token1` (YES) and `token2` (NO) are separate instruments.
-  - Kalshi: the YES and NO sides of a market are separate instruments.
-- Price range 0–1; price precision comes from the venue (0.001 Polymarket,
-  0.01 Kalshi) and is recorded, never assumed.
-- "Short YES" in the UI means "buy NO"; it is not a naked short. The compiler
-  translates the intent and the trade list shows the token actually traded.
+- **Confirmed 2026-11-18:** one instrument per **outcome token**, not per market.
+  Polymarket `token1` (YES) and `token2` (NO) are separate `BinaryOption`
+  instruments.
+- Price range 0–1; Polymarket price precision (0.001) is recorded from the
+  market metadata, never assumed.
+- **Confirmed 2026-11-18:** "short YES" in the UI means "buy NO". It is not a
+  naked short and the system never simulates one. The compiler translates the
+  intent and the trade list shows the token actually traded.
 - Expiry is the market's `end_date`; settlement value is 0 or 1 from the mapped
   results table. A run that holds to expiry settles; a run that exits early
   closes at the bar price minus costs.
-- Betfair is excluded from v1 precisely because odds ≠ probability. Its adapter
-  will use `BettingInstrument` and a separate price scale.
+- Kalshi and Betfair are v2. Betfair in particular cannot share this model: it
+  quotes decimal odds, so it will use `BettingInstrument` and a separate price
+  scale.
 
 ## 6. Bar model
 
@@ -117,8 +123,8 @@ source, data_version
   `RENKO`, and the imbalance/runs variants. Range bars are not available.
 - Polymarket has no native OHLC: bars are built from fills. Open/high/low/close
   are last-trade prices; volume is USD notional; `trade_count` is recorded.
-- Kalshi ships one-minute quotes: OHLC uses the quote price and bid/ask are
-  retained separately for execution-aware work.
+- Kalshi (v2) ships one-minute quotes; its builder will use the same canonical
+  schema, retaining bid/ask separately.
 - Empty intervals produce **no bar**, not a zero-volume bar. Charts may
   forward-fill for display only; strategies never see a filled bar.
 - A bar whose source data is stale is flagged `is_stale`; the UI shows the flag.
@@ -313,8 +319,8 @@ data version is no longer present is marked `orphaned`, not silently re-run.
 ## 16. Milestones
 
 0. **Scaffold** — repo, AGENTS.md, trail, CI-less test runner, data register.
-1. **Data** — canonical bar builder for Polymarket/Kalshi, data versioning,
-   catalog writer, coverage endpoint.
+1. **Data** — canonical Polymarket bar builder, data versioning, catalog writer,
+   coverage endpoint.
 2. **Chart** — instruments, bars, candles, volume, range controls, URL state.
 3. **Indicators** — registry, Nautilus adapter, cache, chart overlays/panes,
    parity fixtures.
@@ -345,7 +351,8 @@ data version is no longer present is marked `orphaned`, not silently re-run.
 | Risk | Mitigation |
 |---|---|
 | Prediction-market prices are not a continuous tradable series | Model tokens explicitly; no bar when no trade; settlement at expiry |
-| Polymarket/Kalshi bar semantics differ | One canonical schema with `source` and per-venue builder tests |
+| Venue bar semantics diverge when Kalshi lands | One canonical schema with `source`, plus per-venue builder tests in v2 |
+| Token mapping is wrong (YES/NO swapped) | Assert `token1`/`token2` against market metadata; settlement reconciliation test |
 | Chart and backtest indicator drift | Single Python implementation + parity fixtures |
 | Nautilus 2.x is a pre-release (rc9) | Pin the exact version; adapter boundary isolates upgrades |
 | Long backtests block the API | Process isolation, queue, SSE, cancellation |
@@ -355,5 +362,7 @@ data version is no longer present is marked `orphaned`, not silently re-run.
 
 - Whether Betfair is normalised to probability for charting before its v2
   adapter lands.
+- Whether Kalshi reuses the Polymarket `BinaryOption` mapping or brings its own
+  settlement adapter (default: reuse the instrument model, separate adapter).
 - Whether v2 portfolio backtests share one bankroll or run sleeve-per-instrument.
 - Whether saved strategies are per-user files or SQLite rows (default: SQLite).

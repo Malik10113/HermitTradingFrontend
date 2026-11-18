@@ -1,0 +1,56 @@
+# Dependencies
+node_modules/
+.pnp/
+.pnp.js
+
+# Build output
+dist/
+build/
+out/
+*.tsbuildinfo
+
+# Test output
+coverage/
+playwright-report/
+test-results/
+blob-report/
+.nyc_output/
+
+# Env and credentials — never track
+.env
+.env.*
+!.env.example
+*.pem
+*.crt
+*.key
+
+# Logs and scratch
+*.log
+logs/
+tmp/
+.tmp/
+
+# Caches
+.cache/
+.parquet-cache/
+.vite/
+.turbo/
+.eslintcache
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+__pycache__/
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# Local agent/tool worktrees
+.kilo/
+
+# The sibling research data source is read-only and lives outside this repo.
+# If a local symlink or copy is ever used, keep it out of git:
+/data/

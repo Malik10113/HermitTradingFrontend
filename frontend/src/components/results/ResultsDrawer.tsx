@@ -62,12 +62,14 @@ export function ResultsDrawer({
   onCompareChange,
   focusTradeId = null,
 }: ResultsDrawerProps) {
-  const [tab, setTab] = useState<Tab>("overview");
+  const [tab, setTab] = useState<Tab>(compareIds.length >= 2 ? "compare" : "overview");
   const [selectedTradeId, setSelectedTradeId] = useState<string | null>(null);
 
   useEffect(() => {
     setSelectedTradeId(null);
-    setTab("overview");
+    setTab(compareIds.length >= 2 ? "compare" : "overview");
+    // compareIds is intentionally read only on a new run selection.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runId]);
 
   useEffect(() => {

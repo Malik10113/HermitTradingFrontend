@@ -225,6 +225,14 @@ def _bar_alias(alias: str) -> str:
 def ensure_bars(instrument_id: str, alias: str, start_ns: int | None = None, end_ns: int | None = None) -> None:
     from backend.data import bars, readmodel
 
+    try:
+        bars.parse_bar_alias(alias, instrument_id)
+    except (ValueError, KeyError) as exc:
+        raise bad_request(
+            "bad_bar_type",
+            str(exc),
+            {"path": "bar_type", "bar_type": alias, "instrument_id": instrument_id},
+        ) from exc
     loader = getattr(readmodel, "load_bars", None)
     if loader is not None:
         try:

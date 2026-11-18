@@ -258,3 +258,15 @@ def test_indicator_preview_uses_the_cache(monkeypatch):
     assert stats["misses"] == 1
     assert stats["hits"] == 1
     DEFAULT_CACHE.clear()
+
+
+def test_unknown_bar_alias_is_422(client):
+    r = client.get(
+        "/api/bars",
+        params={
+            "instrument_id": "fixture-other-2024-10-19-other-YES.POLYMARKET",
+            "bar_type": "3w",
+        },
+    )
+    assert r.status_code == 422
+    assert r.json()["code"] == "bad_bar_type"

@@ -218,6 +218,8 @@ def _run_payload(run: dict[str, Any], include_summary: bool = True, detail: bool
         payload["manifest"] = manifest
         payload["metrics"] = summary
         payload["phase_breakdown"] = (manifest or {}).get("phase_breakdown") if manifest else None
+        payload["warnings"] = (manifest or {}).get("warnings") if manifest else None
+        payload["quality"] = (manifest or {}).get("quality") if manifest else None
         payload["artifacts"] = [
             {"name": n, "sha256": h}
             for n, h in ((manifest or {}).get("artifacts") or {}).items()

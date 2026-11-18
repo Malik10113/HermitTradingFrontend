@@ -16,6 +16,50 @@ measured. Keep entries short enough to scan; link the commit or PR.
 
 ---
 
+## 2026-11-18  Signals: persistent plan store so workers share plans
+
+- **Changed:** The signal cache gained a disk tier under `var/cache/signals/`.
+  Each plan is one `<signal_spec_hash>.parquet` plus a metadata JSON written
+  last with temp-file + `os.replace`; lookups go memory → disk and promote a
+  disk hit into the memory LRU. Eviction is LRU by metadata mtime, capped at
+  128 plans and 256 MiB. The runner manifest and `log.txt` record
+  `hit`/`source` (`memory|disk|none`); `/api/cache/stats` reports memory and
+  disk entries/bytes/hits/misses.
+- **Why:** API-triggered runs execute in separate worker processes, so the
+  in-process LRU could never satisfy acceptance criterion 19 in the real path.
+- **Measured:** `uv run pytest tests/engine tests/api -q` and the full suite
+  pass. `tests/engine/test_signal_store.py` proves a second, memory-empty cache
+  instance and a real subprocess load the persisted plan with the same
+  `plan_hash`; a profile-only change hits disk; corrupt/partial files are
+  deleted and missed; eviction removes the LRU entry, not the newest.
+- **Notes:** lifecycle-version mismatch is a miss but keeps the entry (the
+  plan is still valid for its data version); malformed or content-hash
+  mismatched entries are deleted. Writes are best-effort: a failed cache write
+  never fails a backtest. Cross-process eviction relies on atomic rename and
+  the metadata commit marker, not on a cross-process file lock.
+
+## 2026-11-18  Signals: execution-independent plan cache (criterion 19)
+
+- **Changed:** Added `backend/engine/signals.py` — a per-bar `SignalPlan` of
+  condition truths plus indicator snapshots, an LRU `SignalCache`, and runner
+  integration. `RuleStrategy` consumes a plan when supplied and still owns the
+  entry/exit state machine; the runtime-evaluation path is unchanged when no
+  plan is given.
+- **Why:** re-running one strategy under another execution profile must reuse
+  the same signals (`docs/BRIEF.md` §8.6 and acceptance criterion 19); only net
+  costs may move.
+- **Measured:** `uv run pytest tests/engine tests/api -q` passes, including
+  plan/runtime parity over crosses and warm-up nulls, profile-only cache hits,
+  miss on every key component, runner manifest hit/miss and identical
+  `signals` across a conservative and frictionless run with different net PnL.
+- **Notes:** key is `(data_version, bar_type, strategy_hash, warmup_bars,
+  indicator_impl_version)`; the instrument is covered by `strategy_hash`.
+  `lifecycle_version` is stored and checked, not keyed, because
+  `run_data_version()` already fingerprints the lifecycle parquet. Plans are
+  built from `bar_to_dict(bars_p)` so indicator and comparison inputs carry the
+  same venue price precision as the runtime path. The cache is in-process;
+  cross-process reuse would need a persisted plan store.
+
 ## 2026-11-18  v1: data layer, versions and bar builders
 
 - **Changed:** Added read-only source adapters, content-derived data versions,

@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Any, Callable, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Mapping, Sequence
 
 from nautilus_trader.model import (
     Bar,
@@ -44,6 +44,9 @@ from backend.rules.schema import (
     RunConfig,
     SizingConfig,
 )
+
+if TYPE_CHECKING:  # pragma: no cover - annotation-only to avoid an import cycle
+    from backend.engine.signals import SignalPlan
 
 ACTIONS = ("long_entry", "long_exit", "short_entry", "short_exit")
 _COMPARATORS = ("gt", "gte", "lt", "lte")
@@ -302,6 +305,9 @@ class RuleStrategyConfig:
     fill_sink: list[dict[str, Any]] | None = None
     fill_metadata: Callable[[], Mapping[str, Any]] | None = None
     indicator_set_factory: Callable[[Sequence[Any]], Any] | None = None
+    #: Precomputed execution-independent truths (backend.engine.signals); when
+    #: absent the strategy evaluates the rule trees itself.
+    signal_plan: "SignalPlan | None" = None
 
 
 def _default_indicator_factory(instances: Sequence[Any]) -> Any:
@@ -321,6 +327,28 @@ class _EmptyIndicators:
 
     def values(self) -> dict[str, dict[str, Any]]:
         return {}
+
+
+def normalise_indicator_values(result: Any) -> dict[str, dict[str, Any]]:
+    """``instance_id -> {output: value}`` from an indicator set or its result.
+
+    Shared with :mod:`backend.engine.signals` so a plan snapshot and a runtime
+    snapshot have exactly the same shape.
+    """
+    values = getattr(result, "values", None)
+    if callable(values):
+        raw = values()
+    elif isinstance(result, Mapping):
+        raw = result
+    else:
+        raw = {}
+    out: dict[str, dict[str, Any]] = {}
+    for instance_id, instance_values in (raw or {}).items():
+        if isinstance(instance_values, Mapping):
+            out[str(instance_id)] = dict(instance_values)
+        else:
+            out[str(instance_id)] = {"value": instance_values}
+    return out
 
 
 class RuleStrategy(Strategy):
@@ -345,6 +373,7 @@ class RuleStrategy(Strategy):
         *,
         indicator_set_factory: Callable[[Sequence[Any]], Any] | None = None,
         nautilus_config: StrategyConfig | None = None,
+        signal_plan: "SignalPlan | None" = None,
         subscribe: bool = True,
     ) -> None:
         super().__init__(nautilus_config or StrategyConfig())
@@ -362,6 +391,7 @@ class RuleStrategy(Strategy):
                 fill_sink=fill_sink,
                 fill_metadata=fill_metadata,
                 indicator_set_factory=indicator_set_factory,
+                signal_plan=signal_plan,
             )
 
         self._subscribe = bool(subscribe)
@@ -394,6 +424,18 @@ class RuleStrategy(Strategy):
             rule_config.indicator_set_factory or _default_indicator_factory
         )
         self._indicators: Any = _NO_INDICATORS
+        self.signal_plan = rule_config.signal_plan
+        if self.signal_plan is not None:
+            # A plan computed for another strategy would silently change the
+            # decisions this strategy takes; refuse it instead.
+            from backend.rules.schema import strategy_hash as _strategy_hash  # noqa: PLC0415
+
+            expected = _strategy_hash(self.run_config)
+            if self.signal_plan.strategy_hash != expected:
+                raise ValueError(
+                    "signal plan is for a different strategy: "
+                    f"{self.signal_plan.strategy_hash} != {expected}"
+                )
 
         self._trees = {
             "long_entry": self.strategy_config.long_entry,
@@ -454,6 +496,7 @@ class RuleStrategy(Strategy):
         fill_sink: list[dict[str, Any]] | None = None,
         indicator_set_factory: Callable[[Sequence[Any]], Any] | None = None,
         nautilus_config: StrategyConfig | None = None,
+        signal_plan: "SignalPlan | None" = None,
         subscribe: bool = True,
     ) -> "RuleStrategy":
         """Positional-argument constructor for the runner."""
@@ -467,6 +510,7 @@ class RuleStrategy(Strategy):
             fill_sink=fill_sink,
             indicator_set_factory=indicator_set_factory,
             nautilus_config=nautilus_config,
+            signal_plan=signal_plan,
             subscribe=subscribe,
         )
 
@@ -552,25 +596,55 @@ class RuleStrategy(Strategy):
                 self._in_market_ns += ts_ns - self._last_bar_ts_ns
         self._last_bar_ts_ns = ts_ns
 
-        indicator_values = self._update_indicators(bar_dict)
+        plan = self.signal_plan
+        if plan is not None:
+            # Execution-independent path: consume the precomputed truths and
+            # the indicator snapshot instead of recomputing either.
+            row = plan.row_at(ts_ns)
+            if row is None:
+                raise ValueError(
+                    f"bar {ts_ns} is not in the signal plan for "
+                    f"{plan.bar_type} ({len(plan)} rows)"
+                )
+            indicator_values = {
+                instance_id: dict(values)
+                for instance_id, values in row.indicator_values.items()
+            }
+            lifecycle = dict(row.lifecycle)
+            if not lifecycle:
+                self._diagnostics["missing_lifecycle_bars"] += 1
+            truth = row.truth
+            bar_close = row.close
+        else:
+            indicator_values = self._update_indicators(bar_dict)
+            lifecycle = self._lifecycle(ts_ns)
+            resolver = OperandResolver(bar_dict, indicator_values, lifecycle)
+            current_cross_values = {
+                operand: resolver.value(operand) for operand in self._cross_operands
+            }
+
+            def truth(action: str, *, _resolver: OperandResolver = resolver) -> bool:
+                tree = self._trees[action]
+                return tree is not None and evaluate_condition(
+                    tree, _resolver, self._previous_operands
+                )
+
+            bar_close = _as_number(bar_dict.get("close"))
+
         if indicator_values and self._any_missing(indicator_values):
             self._diagnostics["indicator_not_ready_bars"] += 1
-        lifecycle = self._lifecycle(ts_ns)
-        resolver = OperandResolver(bar_dict, indicator_values, lifecycle)
-        current_cross_values = {
-            operand: resolver.value(operand) for operand in self._cross_operands
-        }
 
         intent = self._decide(
             ts_ns=ts_ns,
             ready_ts_ns=int(bar_dict.get("ts_init") or ts_ns),
-            resolve=resolver,
             lifecycle=lifecycle,
             indicator_values=indicator_values,
-            bar_close=_as_number(bar_dict.get("close")),
+            bar_close=bar_close,
+            truth=truth,
         )
 
-        self._previous_operands = current_cross_values
+        if plan is None:
+            self._previous_operands = current_cross_values
         self._pending = intent
 
     def on_quote(self, quote: QuoteTick) -> None:
@@ -666,10 +740,10 @@ class RuleStrategy(Strategy):
         *,
         ts_ns: int,
         ready_ts_ns: int,
-        resolve: OperandResolver,
         lifecycle: Mapping[str, Any],
         indicator_values: Mapping[str, Mapping[str, Any]],
         bar_close: float | None,
+        truth: Callable[[str], bool],
     ) -> OrderIntent | None:
         direction = self.strategy_config.direction
         settlement = self.strategy_config.settlement
@@ -681,7 +755,7 @@ class RuleStrategy(Strategy):
             tree = self._trees[action]
             if tree is None:
                 return None
-            if evaluate_condition(tree, resolve, self._previous_operands):
+            if truth(action):
                 intent = self._intent_for(action, ready_ts_ns=ready_ts_ns)
                 self._record_signal(ts_ns, action, bar_close, indicator_values)
                 return intent
@@ -697,12 +771,12 @@ class RuleStrategy(Strategy):
         long_ok = (
             direction in ("long", "both")
             and long_tree is not None
-            and evaluate_condition(long_tree, resolve, self._previous_operands)
+            and truth("long_entry")
         )
         short_ok = (
             direction in ("short", "both")
             and short_tree is not None
-            and evaluate_condition(short_tree, resolve, self._previous_operands)
+            and truth("short_entry")
         )
 
         if long_ok and short_ok:
@@ -889,20 +963,7 @@ class RuleStrategy(Strategy):
         result = self._indicators.update(dict(bar_dict))
         if result is None:
             result = self._indicators
-        values = getattr(result, "values", None)
-        if callable(values):
-            raw = values()
-        elif isinstance(result, Mapping):
-            raw = result
-        else:
-            raw = {}
-        out: dict[str, dict[str, Any]] = {}
-        for instance_id, instance_values in (raw or {}).items():
-            if isinstance(instance_values, Mapping):
-                out[str(instance_id)] = dict(instance_values)
-            else:
-                out[str(instance_id)] = {"value": instance_values}
-        return out
+        return normalise_indicator_values(result)
 
     def _any_missing(self, values: Mapping[str, Mapping[str, Any]]) -> bool:
         return any(
@@ -979,6 +1040,7 @@ __all__ = [
     "collect_cross_operands",
     "compute_sizing",
     "evaluate_condition",
+    "normalise_indicator_values",
     "position_sizing",
     "stake_for",
 ]

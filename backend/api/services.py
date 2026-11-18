@@ -162,7 +162,13 @@ def serialize_instrument(row: dict[str, Any]) -> dict[str, Any]:
         "settlement_value": row.get("settlement_value"),
         "first_ts": _iso(row.get("first_ts_utc") or row.get("first_ts")),
         "last_ts": _iso(row.get("last_ts_utc") or row.get("last_ts")),
+        "coverage": {
+            "from": _iso(row.get("first_ts_utc") or row.get("first_ts")),
+            "to": _iso(row.get("last_ts_utc") or row.get("last_ts")),
+        },
+        "trade_count": row.get("trade_count"),
         "bar_count": row.get("bar_count"),
+        "settlement_known": row.get("settlement_value") in (0, 1, 0.0, 1.0),
     }
 
 
@@ -335,7 +341,16 @@ def quality(instrument_id: str, start: str | None, end: str | None) -> dict[str,
         out = fn(instrument_id, _parse_date(start), _parse_date(end, end=True))
     except TypeError:
         out = fn(instrument_id)
-    return out if isinstance(out, dict) else {"instrument_id": instrument_id, "quality": out}
+    if not isinstance(out, dict):
+        return {"instrument_id": instrument_id, "quality": out}
+    out.setdefault("available_from", out.get("available_from_utc"))
+    out.setdefault("available_to", out.get("available_to_utc"))
+    out.setdefault("active_minute_pct", out.get("active_minutes_pct"))
+    out.setdefault("longest_gap_s", (out.get("longest_gap_minutes") or 0) * 60 if out.get("longest_gap_minutes") is not None else None)
+    out.setdefault("median_trade_usd", out.get("median_trade_size_usd"))
+    out.setdefault("from", out.get("available_from_utc"))
+    out.setdefault("to", out.get("available_to_utc"))
+    return out
 
 
 def lifecycle(instrument_id: str) -> dict[str, Any]:

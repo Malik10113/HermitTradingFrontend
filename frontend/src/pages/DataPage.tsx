@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../api/client";
 import type { Instrument } from "../api/types";
+import { instrumentLabel, tokenOf } from "../api/normalise";
 import { useApiResource } from "../hooks/useApi";
 import { fmtDate, fmtDuration, fmtInteger, fmtPct, fmtUsd } from "../lib/format";
 import { workspaceSearchString, DEFAULT_WORKSPACE_STATE } from "../lib/urlState";
@@ -138,13 +139,7 @@ export function DataPage() {
                 </thead>
                 <tbody>
                   {filtered.map((instrument) => {
-                    const selection =
-                      instrument.selection ??
-                      (instrument.instrument_id.endsWith("-YES.POLYMARKET")
-                        ? "YES"
-                        : instrument.instrument_id.endsWith("-NO.POLYMARKET")
-                          ? "NO"
-                          : "—");
+                    const selection = tokenOf(instrument);
                     return (
                       <tr
                         key={instrument.instrument_id}
@@ -161,7 +156,7 @@ export function DataPage() {
                             onClick={() => setSelectedId(instrument.instrument_id)}
                             title={instrument.instrument_id}
                           >
-                            {instrument.question ?? instrument.market_slug ?? instrument.instrument_id}
+                            {instrumentLabel(instrument)}
                           </button>
                           <span className="numeric block truncate text-[9px] text-ink-faint">
                             {instrument.instrument_id}
@@ -170,7 +165,7 @@ export function DataPage() {
                         <td className="px-2 py-1 text-ink-muted">{instrument.league ?? "not available"}</td>
                         <td className="px-2 py-1">
                           <span className={selection === "NO" ? "badge-warn" : "badge-accent"}>
-                            {selection}
+                            {selection ?? "—"}
                           </span>
                         </td>
                         <td className="numeric whitespace-nowrap px-2 py-1 text-[10px] text-ink-muted">
@@ -282,9 +277,14 @@ export function DataPage() {
                   },
                   {
                     label: "Settlement",
-                    value: selected?.settlement_known
-                      ? `${selected.settlement_value}`
-                      : "not available",
+                    value:
+                      qualityResource.data.settlement_known != null
+                        ? qualityResource.data.settlement_known
+                          ? `${qualityResource.data.settlement_value ?? "not available"}`
+                          : "not available"
+                        : selected?.settlement_known
+                          ? `${selected.settlement_value ?? "not available"}`
+                          : "not available",
                   },
                 ]}
               />
@@ -302,8 +302,9 @@ export function DataPage() {
                 <h3 className="label mb-1">Gaps</h3>
                 {(qualityResource.data.gaps ?? []).length === 0 ? (
                   <p className="text-[10px] text-ink-faint">
-                    No gaps reported in the stored window. Absence of a gap list is shown here, not
-                    assumed.
+                    {qualityResource.data.gaps == null
+                      ? "Gap list not available in the quality record."
+                      : "No gaps reported in the stored window."}
                   </p>
                 ) : (
                   <div className="max-h-40 overflow-auto rounded border border-line">

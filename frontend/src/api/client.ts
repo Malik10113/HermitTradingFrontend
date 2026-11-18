@@ -1,8 +1,6 @@
 import type {
   ApiErrorBody,
   BacktestConfig,
-  BarsResponse,
-  CompareResponse,
   CreateBacktestResponse,
   ExecutionSection,
   Experiment,
@@ -10,22 +8,24 @@ import type {
   IndicatorPreviewRequest,
   IndicatorPreviewResponse,
   IndicatorSpec,
-  Instrument,
-  InstrumentListResponse,
-  InstrumentQuality,
   MetaResponse,
   PreflightRequest,
   PreflightResponse,
-  Preset,
-  PresetListResponse,
-  RunDetail,
-  RunListResponse,
-  RunSummary,
-  SavedStrategy,
-  SearchResponse,
-  StrategiesResponse,
   StrategySection,
 } from "./types";
+import {
+  normaliseBars,
+  normaliseCompare,
+  normaliseIndicatorSpecs,
+  normaliseInstrument,
+  normaliseInstrumentList,
+  normalisePresets,
+  normaliseQuality,
+  normaliseRun,
+  normaliseRunList,
+  normaliseSearch,
+  normaliseStrategies,
+} from "./normalise";
 
 const API_BASE = "/api";
 
@@ -141,30 +141,6 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
   }
 }
 
-function normaliseStrategies(raw: unknown): StrategiesResponse {
-  if (Array.isArray(raw)) {
-    const builtins = raw.filter(
-      (item): item is Record<string, unknown> =>
-        !!item && typeof item === "object" && "id" in item && !("strategy" in item),
-    );
-    const saved = raw.filter(
-      (item): item is Record<string, unknown> =>
-        !!item && typeof item === "object" && "strategy" in item,
-    );
-    return {
-      builtins: builtins as unknown as StrategiesResponse["builtins"],
-      saved: saved as unknown as SavedStrategy[],
-    };
-  }
-  const record = (raw ?? {}) as Partial<StrategiesResponse>;
-  return {
-    builtins: Array.isArray(record.builtins)
-      ? record.builtins
-      : ((record as { strategies?: StrategiesResponse["builtins"] }).strategies ?? []),
-    saved: Array.isArray(record.saved) ? record.saved : [],
-  };
-}
-
 export interface BarsQuery {
   instrument_id: string;
   bar_type: string;
@@ -186,38 +162,44 @@ export const api = {
 
   meta: (signal?: AbortSignal) => request<MetaResponse>("/meta", { signal }),
 
-  instruments: (query: InstrumentsQuery = {}, signal?: AbortSignal) =>
-    request<InstrumentListResponse>(
-      `/instruments${buildQuery({
-        league: query.league,
-        q: query.q,
-        limit: query.limit,
-        offset: query.offset,
-      })}`,
-      { signal },
+  instruments: async (query: InstrumentsQuery = {}, signal?: AbortSignal) =>
+    normaliseInstrumentList(
+      await request<unknown>(
+        `/instruments${buildQuery({
+          league: query.league,
+          q: query.q,
+          limit: query.limit,
+          offset: query.offset,
+        })}`,
+        { signal },
+      ),
     ),
 
-  instrument: (instrumentId: string, signal?: AbortSignal) =>
-    request<Instrument>(`/instruments/${encodeURIComponent(instrumentId)}`, { signal }),
+  instrument: async (instrumentId: string, signal?: AbortSignal) =>
+    normaliseInstrument(
+      await request<unknown>(`/instruments/${encodeURIComponent(instrumentId)}`, { signal }),
+    ),
 
-  quality: (
+  quality: async (
     instrumentId: string,
     query: { from?: string; to?: string } = {},
     signal?: AbortSignal,
   ) =>
-    request<InstrumentQuality>(
-      `/instruments/${encodeURIComponent(instrumentId)}/quality${buildQuery(query)}`,
-      { signal },
+    normaliseQuality(
+      await request<unknown>(
+        `/instruments/${encodeURIComponent(instrumentId)}/quality${buildQuery(query)}`,
+        { signal },
+      ),
     ),
 
-  search: (q: string, signal?: AbortSignal) =>
-    request<SearchResponse>(`/search${buildQuery({ q })}`, { signal }),
+  search: async (q: string, signal?: AbortSignal) =>
+    normaliseSearch(await request<unknown>(`/search${buildQuery({ q })}`, { signal })),
 
-  bars: (query: BarsQuery, signal?: AbortSignal) =>
-    request<BarsResponse>(`/bars${buildQuery({ ...query })}`, { signal }),
+  bars: async (query: BarsQuery, signal?: AbortSignal) =>
+    normaliseBars(await request<unknown>(`/bars${buildQuery({ ...query })}`, { signal })),
 
-  indicators: (signal?: AbortSignal) =>
-    request<IndicatorSpec[] | { indicators: IndicatorSpec[] }>("/indicators", { signal }),
+  indicators: async (signal?: AbortSignal) =>
+    normaliseIndicatorSpecs(await request<unknown>("/indicators", { signal })),
 
   previewIndicator: (body: IndicatorPreviewRequest, signal?: AbortSignal) =>
     request<IndicatorPreviewResponse>("/indicators/preview", {
@@ -232,36 +214,46 @@ export const api = {
   strategies: async (signal?: AbortSignal) =>
     normaliseStrategies(await request<unknown>("/strategies", { signal })),
 
-  saveStrategy: (body: { label: string; strategy: StrategySection }, signal?: AbortSignal) =>
-    request<SavedStrategy>("/strategies", { method: "POST", body, signal }),
+  saveStrategy: (body: { name: string; config: StrategySection }, signal?: AbortSignal) =>
+    request<{ id: string; name: string }>("/strategies", { method: "POST", body, signal }),
 
-  presets: (signal?: AbortSignal) => request<PresetListResponse>("/presets", { signal }),
+  presets: async (signal?: AbortSignal) =>
+    normalisePresets(await request<unknown>("/presets", { signal })),
 
   createPreset: (body: { name: string; config: BacktestConfig }, signal?: AbortSignal) =>
-    request<Preset>("/presets", { method: "POST", body, signal }),
+    request<{ id: string; name: string }>("/presets", { method: "POST", body, signal }),
 
   createBacktest: (body: BacktestConfig, signal?: AbortSignal) =>
     request<CreateBacktestResponse>("/backtests", { method: "POST", body, signal }),
 
-  runs: (
+  runs: async (
     query: { status?: string; limit?: number; offset?: number } = {},
     signal?: AbortSignal,
-  ) => request<RunListResponse>(`/backtests${buildQuery(query)}`, { signal }),
+  ) => normaliseRunList(await request<unknown>(`/backtests${buildQuery(query)}`, { signal })),
 
-  run: (runId: string, signal?: AbortSignal) =>
-    request<RunDetail>(`/backtests/${encodeURIComponent(runId)}`, { signal }),
+  run: async (runId: string, signal?: AbortSignal) =>
+    normaliseRun(
+      await request<unknown>(`/backtests/${encodeURIComponent(runId)}`, { signal }),
+    ),
 
   revealHoldout: (runId: string, signal?: AbortSignal) =>
-    request<RunDetail>(`/backtests/${encodeURIComponent(runId)}/reveal-holdout`, {
+    request<{
+      reveal_count: number;
+      variant_index?: number;
+      warning?: boolean;
+      message?: string;
+      revealed_at?: string;
+      revealed?: boolean;
+    }>(`/backtests/${encodeURIComponent(runId)}/reveal-holdout`, {
       method: "POST",
       body: {},
       signal,
     }),
 
-  compare: (ids: string[], signal?: AbortSignal) =>
-    request<CompareResponse | RunSummary[]>(`/runs/compare${buildQuery({ ids: ids.join(",") })}`, {
-      signal,
-    }),
+  compare: async (ids: string[], signal?: AbortSignal) =>
+    normaliseCompare(
+      await request<unknown>(`/runs/compare${buildQuery({ ids: ids.join(",") })}`, { signal }),
+    ),
 
   artifact: (runId: string, name: string, signal?: AbortSignal) =>
     request<unknown>(

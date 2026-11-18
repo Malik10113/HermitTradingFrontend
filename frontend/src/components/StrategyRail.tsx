@@ -95,8 +95,19 @@ function defaultsFor(builtin: BuiltinStrategy | null): Record<string, number | b
   return { ...params, ...(builtin.defaults ?? {}) };
 }
 
+function warningText(warning: unknown): string {
+  if (typeof warning === "string") return warning;
+  if (warning && typeof warning === "object") {
+    const record = warning as { code?: unknown; message?: unknown };
+    const message = typeof record.message === "string" ? record.message : "";
+    const code = typeof record.code === "string" ? record.code : "";
+    return message || code || "data warning";
+  }
+  return String(warning);
+}
+
 function qualityWarnings(quality: InstrumentQuality | null): string[] {
-  return quality?.warnings ?? [];
+  return (quality?.warnings ?? []).map(warningText);
 }
 
 export function StrategyRail(props: StrategyRailProps) {
@@ -318,6 +329,8 @@ export function StrategyRail(props: StrategyRailProps) {
 
   const runDisabled =
     !instrumentId ||
+    !from ||
+    !to ||
     submitting ||
     (advanced && (!advancedValue || advancedIssues.length > 0)) ||
     (!advanced && !builtin);
@@ -536,7 +549,7 @@ export function StrategyRail(props: StrategyRailProps) {
               }
               aria-label="Sizing mode"
             >
-              <option value="fixed_stake">Fixed stake £</option>
+              <option value="fixed_stake">Fixed stake USD</option>
               <option value="risk_pct">Risk % of bankroll</option>
             </select>
             <input
@@ -548,12 +561,12 @@ export function StrategyRail(props: StrategyRailProps) {
               onChange={(event) =>
                 setSizing((current) => ({ ...current, value: Number(event.target.value) }))
               }
-              aria-label={sizing.mode === "fixed_stake" ? "Stake in GBP" : "Risk percent"}
+              aria-label={sizing.mode === "fixed_stake" ? "Stake in USD" : "Risk percent"}
             />
           </div>
           {sizing.mode === "risk_pct" ? (
             <label className="block">
-              <span className="label">Bankroll £</span>
+              <span className="label">Bankroll USD</span>
               <input
                 className="input-numeric mt-1"
                 type="number"
@@ -563,7 +576,7 @@ export function StrategyRail(props: StrategyRailProps) {
                 onChange={(event) =>
                   setSizing((current) => ({ ...current, bankroll: Number(event.target.value) }))
                 }
-                aria-label="Bankroll in GBP"
+                aria-label="Bankroll in USD"
               />
             </label>
           ) : null}
@@ -681,8 +694,8 @@ export function StrategyRail(props: StrategyRailProps) {
                   : "not available"}
               </p>
               {(preflight.warnings ?? []).map((warning) => (
-                <p key={warning} className="text-[10px] text-warn">
-                  {warning}
+                <p key={warningText(warning)} className="text-[10px] text-warn">
+                  {warningText(warning)}
                 </p>
               ))}
               {fallback ? (
@@ -775,9 +788,11 @@ export function StrategyRail(props: StrategyRailProps) {
             <p className="text-[10px] text-ink-faint">
               {!instrumentId
                 ? "Select an instrument first."
-                : advanced
-                  ? "Fix the rule JSON issues before running."
-                  : "Select a built-in strategy."}
+                : !from || !to
+                  ? "Set a from and to date before running."
+                  : advanced
+                    ? "Fix the rule JSON issues before running."
+                    : "Select a built-in strategy."}
             </p>
           ) : null}
           {submitError ? (

@@ -195,11 +195,11 @@ export function MetricsGrid({
           <MetricCard label="Held to settlement" value={fmtInteger(heldCount)} />
           <MetricCard label="Early exits" value={fmtInteger(earlyExits)} />
           <MetricCard
-            label="Return per £ capital"
+            label="Return per $ capital"
             value={fmtPct(returnCapital, 2, { signed: true })}
           />
           <MetricCard
-            label="Return per £ notional"
+            label="Return per $ notional"
             value={fmtPct(returnNotional, 2, { signed: true })}
           />
         </dl>

@@ -57,7 +57,7 @@ export function fmtGbp(value: unknown, options: { digits?: number; signed?: bool
       maximumFractionDigits: digits,
     });
     const sign = v < 0 ? "-" : signed && v > 0 ? "+" : "";
-    return `${sign}£${absolute}`;
+    return `${sign}$${absolute}`;
   });
 }
 

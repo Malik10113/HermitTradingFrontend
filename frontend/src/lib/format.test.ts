@@ -37,7 +37,7 @@ describe("formatting with units and missing values", () => {
     expect(fmtUsd(1234.5)).toBe("$1,234.50");
     expect(fmtUsd(-12.3)).toBe("-$12.30");
     expect(fmtUsd(12.3, { signed: true })).toBe("+$12.30");
-    expect(fmtGbp(100)).toBe("£100.00");
+    expect(fmtGbp(100)).toBe("$100.00");
   });
 
   it("distinguishes percent values from 0–1 ratios", () => {

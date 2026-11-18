@@ -220,7 +220,10 @@ export function ComparePanel({
                         {fmtUsd(run.costs?.fees_usd ?? netMetric(run.metrics, "fees_usd"))}
                       </td>
                       <td className="numeric px-2 py-1 text-right">
-                        {fmtBps(run.costs?.total_cost_bps)}
+                        {fmtBps(
+                          run.costs?.total_cost_bps ??
+                            netMetric(run.metrics, "cost_bps_of_notional"),
+                        )}
                       </td>
                     </tr>
                   );

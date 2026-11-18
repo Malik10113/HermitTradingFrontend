@@ -13,6 +13,7 @@ import {
 } from "../lib/urlState";
 import { profileLabel } from "../lib/execution";
 import { fmtTimestamp } from "../lib/format";
+import { isoDateOnly } from "../lib/date";
 import { validateConfigJson } from "../lib/strategyValidation";
 import {
   EmptyState,
@@ -30,12 +31,15 @@ export function presetWorkspaceSearch(preset: Preset): string {
     typeof config?.execution?.profile === "string" && isExecutionProfile(config.execution.profile)
       ? config.execution.profile
       : "conservative";
+  const dateRange = config?.evaluation?.date_range as
+    | { from?: string; to?: string; start?: string; end?: string }
+    | undefined;
   const state: WorkspaceState = {
     ...DEFAULT_WORKSPACE_STATE,
     instrument: strategy?.instrument_id ?? "",
     barType,
-    from: config?.evaluation?.date_range?.from ?? "",
-    to: config?.evaluation?.date_range?.to ?? "",
+    from: isoDateOnly(dateRange?.from ?? dateRange?.start),
+    to: isoDateOnly(dateRange?.to ?? dateRange?.end),
     indicators: sanitiseIndicators(strategy?.indicators ?? []),
     builtin: strategy?.builtin_id || DEFAULT_WORKSPACE_STATE.builtin,
     strategyJson: strategy?.builtin_id ? null : JSON.stringify(config),

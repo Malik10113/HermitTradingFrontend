@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
 import { api } from "../api/client";
 import type { Instrument, SearchHit } from "../api/types";
+import { instrumentLabel } from "../api/normalise";
 import { useDebouncedValue } from "../hooks/useApi";
 import { fmtDate, fmtInteger } from "../lib/format";
 import { EmptyState, ErrorState } from "./ui";
@@ -27,8 +28,7 @@ interface Candidate {
 function fromInstrument(instrument: Instrument): Candidate {
   return {
     instrument_id: instrument.instrument_id,
-    label:
-      instrument.question ?? instrument.market_slug ?? instrument.instrument_id,
+    label: instrumentLabel(instrument),
     league: instrument.league ?? null,
     selection: instrument.selection ?? null,
     coverageFrom: instrument.coverage?.from ?? null,

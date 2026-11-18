@@ -83,7 +83,7 @@ export function buildBacktestConfig(args: BuildConfigArgs): BacktestConfig {
     sizing: {
       mode: args.sizing.mode,
       value: args.sizing.value,
-      ...(args.sizing.mode === "risk_pct" ? { bankroll_gbp: args.sizing.bankroll } : {}),
+      ...(args.sizing.mode === "risk_pct" ? { bankroll_usd: args.sizing.bankroll } : {}),
     },
     max_trades: args.maxTrades,
   };

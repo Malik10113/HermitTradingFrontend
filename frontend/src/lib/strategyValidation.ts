@@ -17,8 +17,8 @@ export interface ValidationResult {
   value?: unknown;
 }
 
-export const MAX_RULE_DEPTH = 6;
-export const MAX_RULE_NODES = 64;
+export const MAX_RULE_DEPTH = 8;
+export const MAX_RULE_NODES = 200;
 
 const COMPARATORS = new Set(["gt", "gte", "lt", "lte", "crosses_above", "crosses_below"]);
 const BOOLEAN_KEYS = new Set(["all", "any", "not"]);
@@ -28,7 +28,6 @@ const PRICE_FIELDS = new Set([
   "low",
   "close",
   "volume",
-  "volume_usd",
   "trade_count",
 ]);
 const LIFECYCLE_FIELDS = new Set([
@@ -226,6 +225,13 @@ function instanceIssues(
       issues.push({ path: `${path}.instance_id`, message: "instance_id is required" });
       return;
     }
+    if (!/^[a-z][a-z0-9_]{0,31}$/.test(instanceId)) {
+      issues.push({
+        path: `${path}.instance_id`,
+        message: "instance_id must match ^[a-z][a-z0-9_]{0,31}$",
+      });
+      return;
+    }
     if (typeof type !== "string" || !type.trim()) {
       issues.push({ path: `${path}.type`, message: "type is required" });
       return;
@@ -328,6 +334,50 @@ export function validateBacktestConfig(
         const maxTrades = risk.max_trades;
         if (typeof maxTrades !== "number" || !Number.isInteger(maxTrades) || maxTrades < 1) {
           issues.push({ path: "risk.max_trades", message: "max_trades must be a positive integer" });
+        }
+      }
+    }
+  }
+
+  const evaluation = raw.evaluation;
+  if (evaluation !== undefined) {
+    if (!isRecord(evaluation)) {
+      issues.push({ path: "evaluation", message: "evaluation section must be an object" });
+    } else {
+      const dateRange = isRecord(evaluation.date_range) ? evaluation.date_range : null;
+      if (dateRange) {
+        const start = dateRange.from ?? dateRange.start;
+        const end = dateRange.to ?? dateRange.end;
+        if (start !== undefined && typeof start !== "string") {
+          issues.push({ path: "evaluation.date_range.from", message: "must be an ISO date" });
+        } else if (typeof start === "string" && !/^\d{4}-\d{2}-\d{2}$/.test(start)) {
+          issues.push({ path: "evaluation.date_range.from", message: "must be YYYY-MM-DD" });
+        }
+        if (end !== undefined && typeof end !== "string") {
+          issues.push({ path: "evaluation.date_range.to", message: "must be an ISO date" });
+        } else if (typeof end === "string" && !/^\d{4}-\d{2}-\d{2}$/.test(end)) {
+          issues.push({ path: "evaluation.date_range.to", message: "must be YYYY-MM-DD" });
+        }
+        if (typeof start === "string" && typeof end === "string" && start >= end) {
+          issues.push({
+            path: "evaluation.date_range",
+            message: "start must be before end",
+          });
+        }
+      }
+      const split = evaluation.split;
+      if (split !== undefined && split !== null) {
+        if (!isRecord(split)) {
+          issues.push({ path: "evaluation.split", message: "split must be an object" });
+        } else if (
+          typeof split.train_end !== "string" ||
+          typeof split.test_start !== "string" ||
+          split.test_start <= split.train_end
+        ) {
+          issues.push({
+            path: "evaluation.split",
+            message: "train_end and test_start must be ISO dates with test_start after train_end",
+          });
         }
       }
     }

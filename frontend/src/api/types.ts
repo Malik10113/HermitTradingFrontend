@@ -1,7 +1,7 @@
 /**
  * Wire types for the v1 API contract (docs/IMPLEMENTATION.md §"API contract").
  *
- * Units are part of every field name: `_usd` is USD notional, `_gbp` is GBP
+ * Units are part of every field name: `_usd` is USD notional
  * capital, `_bps` is basis points, `_pct` is a percentage (0–100), `_ns` is
  * UTC nanoseconds. Probabilities are 0–1. Timestamps are ISO-8601 UTC strings.
  *
@@ -75,6 +75,11 @@ export interface MetaResponse {
 export interface CoverageWindow {
   from?: string | null;
   to?: string | null;
+  first_month?: string | null;
+  last_month?: string | null;
+  has_coverage?: boolean | null;
+  snapshots?: number | null;
+  reason?: string | null;
 }
 
 export interface Instrument {
@@ -89,12 +94,26 @@ export interface Instrument {
   condition_id?: string | null;
   end_date?: string | null;
   price_tick?: number | null;
+  price_precision?: number | null;
   coverage?: CoverageWindow | null;
+  first_ts?: string | null;
+  last_ts?: string | null;
+  event_date?: string | null;
+  home_name?: string | null;
+  away_name?: string | null;
+  token_index?: number | null;
   trade_count?: number | null;
+  bar_count?: number | null;
   quality_grade?: string | null;
   settlement_value?: 0 | 1 | null;
   settlement_known?: boolean | null;
   settled_ts?: string | null;
+  settlement?: {
+    yes_settlement?: 0 | 1 | null;
+    no_settlement?: 0 | 1 | null;
+    settled_ts_utc?: string | null;
+    source?: string | null;
+  } | null;
   lifecycle?: LifecycleMeta | null;
 }
 
@@ -111,13 +130,17 @@ export interface InstrumentQuality {
   available_from?: string | null;
   available_to?: string | null;
   trade_count?: number | null;
+  bar_count?: number | null;
   active_minutes?: number | null;
   active_minute_pct?: number | null;
   longest_gap_s?: number | null;
   median_trade_usd?: number | null;
   quality_grade?: string | null;
   warnings?: string[];
-  gaps?: Array<{ from: string; to: string; duration_s?: number | null }>;
+  gaps?: Array<{ from: string; to: string; duration_s?: number | null }> | null;
+  settlement_known?: boolean | null;
+  settlement_value?: 0 | 1 | null;
+  data_version?: string | null;
 }
 
 export interface SearchHit {
@@ -277,7 +300,7 @@ export type RuleNode =
 export interface Sizing {
   mode: "fixed_stake" | "risk_pct";
   value: number;
-  bankroll_gbp?: number;
+  bankroll_usd?: number;
 }
 
 export interface RiskSection {
@@ -373,6 +396,17 @@ export interface MetricSet {
   trading_pnl_usd?: number | null;
   held_to_settlement_count?: number | null;
   early_exit_count?: number | null;
+  /* Aliases used by the backend summary artifact. */
+  avg_entry_prob?: number | null;
+  avg_exit_prob?: number | null;
+  avg_yes_points_captured?: number | null;
+  avg_holding_minutes?: number | null;
+  cost_bps_of_notional?: number | null;
+  starting_cash_usd?: number | null;
+  final_equity_usd?: number | null;
+  signal_count?: number | null;
+  fill_count?: number | null;
+  reject_count?: number | null;
 }
 
 export interface Metrics extends MetricSet {
@@ -401,8 +435,12 @@ export interface CostBreakdown {
   fees_usd?: number | null;
   spread_usd?: number | null;
   impact_usd?: number | null;
+  slippage_usd?: number | null;
   total_cost_usd?: number | null;
   total_cost_bps?: number | null;
+  fee_bps?: number | null;
+  slippage_bps?: number | null;
+  fallback_fill_count?: number | null;
   fallback_rate?: number | null;
   requested_profile?: ExecutionProfile | null;
   effective_profile?: ExecutionProfile | null;
@@ -430,13 +468,16 @@ export interface Trade {
   instrument_id?: string;
   side: "BUY" | "SELL";
   close_side?: "BUY" | "SELL" | null;
+  order_side?: string | null;
   token: "YES" | "NO";
-  intent?: "open_long" | "close_long" | "open_short" | "close_short" | string;
+  intent?: "open_long" | "close_long" | "open_short" | "close_short" | string | null;
   entry_ts: string;
   exit_ts?: string | null;
   entry_price: number;
   exit_price?: number | null;
   contracts?: number | null;
+  quantity?: number | null;
+  entry_notional_usd?: number | null;
   gross_pnl_usd?: number | null;
   net_pnl_usd?: number | null;
   fees_usd?: number | null;
@@ -444,7 +485,11 @@ export interface Trade {
   execution_source?: string | null;
   fallback_reason?: string | null;
   held_to_settlement?: boolean | null;
+  exit_reason?: string | null;
+  holding_minutes?: number | null;
   phase?: LifecyclePhase | null;
+  entry_phase?: string | null;
+  exit_phase?: string | null;
   entry_context?: Record<string, unknown> | null;
 }
 
@@ -490,25 +535,32 @@ export interface RunSummary {
   created_at?: string | null;
   started_at?: string | null;
   completed_at?: string | null;
+  updated_at?: string | null;
   progress?: number | null;
   error?: ApiErrorBody | string | null;
   requested_profile?: ExecutionProfile | null;
   effective_profile?: ExecutionProfile | null;
-  execution?: EffectiveExecution | null;
   fallback_reason?: string | null;
+  fallback_rate?: number | null;
+  execution?: EffectiveExecution | null;
   config?: BacktestConfig | null;
   metrics?: Metrics | null;
+  summary?: Metrics | null;
+  manifest?: Record<string, unknown> | null;
   diagnostics?: Diagnostics | null;
   costs?: CostBreakdown | null;
   phases?: PhaseMetric[] | null;
+  phase_breakdown?: Record<string, MetricSet> | null;
   holdout?: HoldoutState | null;
   artifact_hashes?: Record<string, string> | null;
+  artifacts?: Array<{ name: string; sha256?: string | null }> | null;
   warnings?: Array<string | { code: string; message: string }> | null;
   label?: string | null;
 }
 
 export interface RunDetail extends RunSummary {
   equity?: EquityPoint[] | null;
+  equity_index?: Array<{ ts: string; equity_index: number | null }> | null;
   drawdown?: Array<{ ts: string; drawdown_pct: number }> | null;
   trades?: Trade[] | null;
   signals?: SignalPoint[] | null;

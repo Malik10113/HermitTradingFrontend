@@ -94,6 +94,9 @@ export function useRun(runId: string | null): RunState {
             if (isTerminal(raw.status)) {
               source?.close();
               if (timer) window.clearTimeout(timer);
+              // The status frame is small; fetch the detail that carries
+              // metrics, equity and trades once the run is terminal.
+              void load();
             }
           } catch {
             // Ignore keep-alives and malformed frames; polling still applies.
@@ -129,14 +132,30 @@ export function useRun(runId: string | null): RunState {
     setRevealing(true);
     setRevealError(null);
     try {
-      const next = await api.revealHoldout(runId);
-      setRun((previous) => ({ ...(previous ?? {}), ...next }) as RunDetail);
+      const result = await api.revealHoldout(runId);
+      setRun((previous) =>
+        previous
+          ? {
+              ...previous,
+              holdout: {
+                revealed: true,
+                reveal_count: result.reveal_count,
+                split: previous.holdout?.split ?? null,
+                revealed_at: result.revealed_at ?? previous.holdout?.revealed_at ?? null,
+                warning: result.warning
+                  ? result.message ?? "This window has already been revealed; it is no longer clean."
+                  : previous.holdout?.warning ?? null,
+              },
+            }
+          : previous,
+      );
+      await load();
     } catch (caught) {
       setRevealError(caught);
     } finally {
       setRevealing(false);
     }
-  }, [runId]);
+  }, [runId, load]);
 
   return { run, loading, error, refresh, reveal, revealing, revealError };
 }

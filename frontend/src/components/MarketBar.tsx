@@ -1,5 +1,6 @@
 import { useMemo } from "react";
 import type { Instrument, InstrumentQuality } from "../api/types";
+import { instrumentLabel, tokenOf } from "../api/normalise";
 import { fmtDate, fmtInteger } from "../lib/format";
 import { ErrorState, GradeBadge } from "./ui";
 
@@ -19,11 +20,7 @@ interface MarketBarProps {
 }
 
 function selectionOf(instrument: Instrument | null): string | null {
-  if (!instrument) return null;
-  if (instrument.selection) return instrument.selection.toUpperCase();
-  if (instrument.instrument_id.endsWith("-YES.POLYMARKET")) return "YES";
-  if (instrument.instrument_id.endsWith("-NO.POLYMARKET")) return "NO";
-  return null;
+  return tokenOf(instrument);
 }
 
 export function MarketBar({
@@ -65,7 +62,13 @@ export function MarketBar({
   const to = quality?.available_to ?? selected?.coverage?.to ?? null;
   const trades = quality?.trade_count ?? selected?.trade_count ?? null;
   const grade = quality?.quality_grade ?? selected?.quality_grade ?? null;
-  const warnings = quality?.warnings ?? [];
+  const warnings = (quality?.warnings ?? []).map((warning: unknown) =>
+    typeof warning === "string"
+      ? warning
+      : (warning as { message?: string; code?: string })?.message ||
+        (warning as { code?: string })?.code ||
+        "data warning",
+  );
 
   return (
     <section className="border-b border-line bg-surface-raised" aria-label="Market bar">
@@ -82,9 +85,7 @@ export function MarketBar({
               ⌕
             </span>
             <span className="truncate">
-              {selected
-                ? selected.question ?? selected.market_slug ?? selected.instrument_id
-                : "Search instruments…"}
+              {selected ? instrumentLabel(selected) : "Search instruments…"}
             </span>
           </span>
           <kbd className="numeric rounded border border-line px-1 text-[9px] text-ink-faint">
@@ -123,8 +124,7 @@ export function MarketBar({
             </option>
             {filtered.map((instrument) => (
               <option key={instrument.instrument_id} value={instrument.instrument_id}>
-                {instrument.question ?? instrument.market_slug ?? instrument.instrument_id} ·{" "}
-                {instrument.selection ?? instrument.instrument_id.slice(-20)}
+                {instrumentLabel(instrument)}
               </option>
             ))}
           </select>

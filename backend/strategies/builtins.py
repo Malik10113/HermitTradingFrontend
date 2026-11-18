@@ -47,6 +47,7 @@ class ParamDef:
     def to_json(self) -> dict[str, Any]:
         return {
             "key": self.key,
+            "name": self.key,
             "label": self.label,
             "type": self.type,
             "default": self.default,

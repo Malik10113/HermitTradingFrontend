@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useSearchParams } from "react-router-dom";
 import { api, indicatorList } from "../api/client";
+import { instrumentLabel } from "../api/normalise";
 import type {
   BacktestConfig,
   Bar,
@@ -20,7 +21,7 @@ import {
 } from "../lib/urlState";
 import { BAR_ALIASES, BAR_DURATION_MS, CHART_RANGES, barTypeLabel } from "../lib/barTypes";
 import { buildChartIndicators } from "../lib/chartIndicators";
-import { addDaysIso, maxIso } from "../lib/date";
+import { addDaysIso, isoDateOnly, maxIso } from "../lib/date";
 import { fmtInteger, fmtTimestamp, fmtVersion } from "../lib/format";
 import { useMeta } from "../state/meta";
 import { CommandPalette } from "../components/CommandPalette";
@@ -117,6 +118,17 @@ export function WorkspacePage() {
   );
   const instruments = instrumentsResource.data?.instruments ?? [];
 
+  useEffect(() => {
+    if (state.instrument || instruments.length === 0) return;
+    const first =
+      instruments.find((instrument) => (instrument.trade_count ?? 0) >= 100) ??
+      instruments[0];
+    if (first?.instrument_id) selectInstrument(first.instrument_id);
+    // selectInstrument is intentionally not a dependency: it closes over the
+    // setter and would re-run on every state change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [instruments, state.instrument]);
+
   const selectedFromList = useMemo(
     () => instruments.find((instrument) => instrument.instrument_id === state.instrument) ?? null,
     [instruments, state.instrument],
@@ -199,8 +211,7 @@ export function WorkspacePage() {
     !!state.instrument && state.indicators.length > 0,
   );
 
-  const bars: Bar[] = barsResource.data?.bars ?? [];
-  const chartIndicators = useMemo(
+  const bars: Bar[] = barsResource.data?.bars ?? [];  const chartIndicators = useMemo(
     () =>
       buildChartIndicators({
         bars,
@@ -211,6 +222,37 @@ export function WorkspacePage() {
     [bars, state.indicators, previewResource.data, specs],
   );
 
+  useEffect(() => {
+    if (!state.instrument) return;
+    if (state.from && state.to) return;
+    const from = isoDateOnly(
+      qualityResource.data?.available_from ??
+        instrumentDetail.data?.coverage?.from ??
+        selectedFromList?.coverage?.from ??
+        null,
+    );
+    const to = isoDateOnly(
+      qualityResource.data?.available_to ??
+        instrumentDetail.data?.coverage?.to ??
+        selectedFromList?.coverage?.to ??
+        null,
+    );
+    if ((!state.from && from) || (!state.to && to)) {
+      setState((current) => ({
+        ...current,
+        from: current.from || from || "",
+        to: current.to || to || "",
+      }));
+    }
+  }, [
+    state.instrument,
+    state.from,
+    state.to,
+    qualityResource.data,
+    instrumentDetail.data,
+    selectedFromList,
+  ]);
+
   const runController = useRun(state.runId || null);
   const run = runController.run;
   const lifecycle = selected?.lifecycle ?? run?.lifecycle ?? null;
@@ -219,18 +261,20 @@ export function WorkspacePage() {
   const applyPresetRanges = (rangeId: string) => {
     if (rangeId === "all") {
       patch({
-        from: qualityResource.data?.available_from ?? selected?.coverage?.from ?? "",
-        to: qualityResource.data?.available_to ?? selected?.coverage?.to ?? "",
+        from: isoDateOnly(qualityResource.data?.available_from ?? selected?.coverage?.from),
+        to: isoDateOnly(qualityResource.data?.available_to ?? selected?.coverage?.to),
       });
       return;
     }
     const days = RANGE_DAYS[rangeId];
     if (!days) return;
-    const anchor = maxIso(
-      state.to || null,
+    const anchor = isoDateOnly(
       maxIso(
-        qualityResource.data?.available_to ?? null,
-        selected?.coverage?.to ?? bars[bars.length - 1]?.ts_event?.slice(0, 10) ?? null,
+        state.to || null,
+        maxIso(
+          qualityResource.data?.available_to ?? null,
+          selected?.coverage?.to ?? bars[bars.length - 1]?.ts_event?.slice(0, 10) ?? null,
+        ),
       ),
     );
     if (!anchor) return;
@@ -346,6 +390,28 @@ export function WorkspacePage() {
                 ))}
               </select>
             </label>
+            <label className="flex items-center gap-1">
+              <span className="label">From</span>
+              <input
+                type="date"
+                className="input w-auto py-0.5 text-[11px]"
+                value={state.from}
+                onChange={(event) => patch({ from: event.target.value })}
+                aria-label="From date (UTC)"
+                max={state.to || undefined}
+              />
+            </label>
+            <label className="flex items-center gap-1">
+              <span className="label">To</span>
+              <input
+                type="date"
+                className="input w-auto py-0.5 text-[11px]"
+                value={state.to}
+                onChange={(event) => patch({ to: event.target.value })}
+                aria-label="To date (UTC)"
+                min={state.from || undefined}
+              />
+            </label>
             <div className="flex items-center gap-0.5" role="group" aria-label="Lifecycle phase filter">
               {PHASE_OPTIONS.map((phase) => (
                 <button
@@ -392,7 +458,7 @@ export function WorkspacePage() {
               <div className="panel-title">
                 <span className="flex flex-wrap items-center gap-2 normal-case tracking-normal">
                   <span className="font-mono text-[11px] text-ink">
-                    {selected?.question ?? selected?.market_slug ?? state.instrument ?? "No instrument"}
+                    {selected ? instrumentLabel(selected) : "No instrument"}
                   </span>
                   <span className="badge">{barTypeLabel(state.barType)}</span>
                   {barDuration ? (

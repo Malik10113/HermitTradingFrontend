@@ -120,4 +120,10 @@ def parquet_rows(run_id: str, name: str, limit: int = 2000) -> list[dict[str, An
     path = read_artifact(run_id, name)
     if path is None:
         return []
-    return pq.read_table(path).slice(0, limit).to_pylist()
+    table = pq.read_table(path)
+    # PyArrow's Table.slice fabricates empty rows on a zero-column table (the
+    # shape written for an empty artifact), so guard before slicing: a run with
+    # no trades must return no trades.
+    if table.num_rows == 0 or table.num_columns == 0:
+        return []
+    return table.slice(0, limit).to_pylist()

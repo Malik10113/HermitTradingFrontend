@@ -355,8 +355,10 @@ Response: `{"series": {"ema20": {"value": [null, …]}}, "warmup": {"ema20": 19}
 
 `POST /api/execution/preflight` body is the same `execution` block as a run
 plus instrument/date; response carries `requested`, `effective`,
-`fallback_reason`, `book_coverage` and a `cost_estimate` (per side, in bps and
-price points), never a profitability claim.
+`fallback_reason`, `book_coverage` (with ISO `from`/`to`, snapshot count and
+window) and a `cost_estimate` (per side, in bps and price points), never a
+profitability claim. A dynamic (Book) estimate reports fee only, with
+`total_cost_bps: null` and a note that the walk is not known before execution.
 
 `POST /api/backtests` accepts the full config (`strategy`, `execution`,
 `risk`, `evaluation`). It returns `{run_id, status, run_hash, strategy_hash}`.

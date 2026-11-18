@@ -225,10 +225,12 @@ fallback rate. Net is never shown without its profile badge.
   `trades.parquet`, `positions.parquet`, `signals.parquet`, `costs.parquet`,
   `diagnostics.json`, `log.txt`, `manifest.json`.
 - The manifest records: strategy hash, run hash, data version, lifecycle
+- The manifest records: strategy hash, run hash, data version, lifecycle
   version, signal cache key/hit/source/plan hash, source paths, bar type and
   aggregation chain, requested/effective execution profile, fallback reason and
   rate, book coverage window, evaluation split, holdout reveal count, git SHA,
-  Nautilus version, artifact hashes.
+  Nautilus version, artifact hashes, and the advisory data-quality warnings
+  (including `zero_signals`).
 - Signal plans are cached in two tiers: the process LRU and
   `var/cache/signals/` (one parquet plus metadata JSON per
   `signal_spec_hash`, atomic temp-file + replace, LRU capped at 128 plans /

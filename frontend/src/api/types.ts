@@ -368,8 +368,30 @@ export interface StrategiesResponse {
   saved: SavedStrategy[];
 }
 
+/**
+ * P&L basis, echoed by the API per run.
+ *
+ * `gross_pnl_usd` uses executed fill prices: spread and slippage are already
+ * inside it and fees are excluded. `net_pnl_usd` is gross less `fees_usd`;
+ * slippage is not subtracted twice.
+ */
+export interface MetricSemantics {
+  gross_pnl_usd?: string;
+  net_pnl_usd?: string;
+  gross_return_pct?: string;
+  net_return_pct?: string;
+  fees_usd?: string;
+  slippage_usd?: string;
+  cost_bps_of_notional?: string;
+  settlement_pnl_usd?: string;
+  trading_pnl_usd?: string;
+  [key: string]: string | undefined;
+}
+
 export interface MetricSet {
+  /** Executed fill prices, spread/slippage embedded, fees excluded. */
   gross_pnl_usd?: number | null;
+  /** Gross less fees; slippage remains embedded in the fills. */
   net_pnl_usd?: number | null;
   gross_return_pct?: number | null;
   net_return_pct?: number | null;
@@ -574,6 +596,8 @@ export interface RunSummary {
   config?: BacktestConfig | null;
   metrics?: Metrics | null;
   summary?: Metrics | null;
+  /** Definitions of gross, net, fees and slippage for this run's numbers. */
+  metric_semantics?: MetricSemantics | null;
   /** "in_sample" when an unrevealed holdout keeps out-of-sample metrics hidden. */
   metrics_scope?: "in_sample" | "all" | string | null;
   oos_hidden?: boolean | null;

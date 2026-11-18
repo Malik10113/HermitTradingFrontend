@@ -108,7 +108,12 @@ export function MetricsGrid({
     <div className="space-y-3">
       <div className="flex flex-wrap items-end gap-4 rounded border border-line bg-surface-raised px-3 py-2">
         <div>
-          <div className="label">Net P&L · historical simulation</div>
+          <div
+            className="label"
+            title="Net = gross less fees. Gross uses executed fill prices, so spread and slippage are already inside it."
+          >
+            Net P&amp;L · historical simulation
+          </div>
           <div
             className="numeric text-[22px] font-semibold leading-tight"
             style={{
@@ -126,8 +131,11 @@ export function MetricsGrid({
           </div>
           <div className="mt-1 flex flex-wrap items-center gap-1.5">
             <ProfileBadge profile={profile} prefix="Net" />
-            <span className="numeric text-[10px] text-ink-faint">
-              gross {fmtUsd(grossPnl, { signed: true })}
+            <span
+              className="numeric text-[10px] text-ink-faint"
+              title="Gross is after spread and slippage embedded in fill prices, before fees"
+            >
+              gross {fmtUsd(grossPnl, { signed: true })} · after spread, before fees
             </span>
           </div>
         </div>
@@ -135,7 +143,8 @@ export function MetricsGrid({
           <MetricCard
             label="Net return"
             value={fmtPct(netReturn, 2, { signed: true })}
-            sub={`gross ${fmtPct(grossReturn, 2, { signed: true })}`}
+            sub={`gross ${fmtPct(grossReturn, 2, { signed: true })} before fees`}
+            title="Net return is after fees; gross return is after spread, before fees"
             tone={metricTone(netReturn)}
           />
           <MetricCard label="Sharpe (daily, 365)" value={fmtNumber(sharpe, 2)} />
@@ -164,11 +173,15 @@ export function MetricsGrid({
           <MetricCard label="Average loss" value={fmtUsd(avgLoss, { signed: true })} />
           <MetricCard label="Average holding" value={fmtDuration(holding)} />
           <MetricCard label="Time in market" value={exposure(exposurePct)} />
-          <MetricCard label="Fees" value={fmtUsd(fees)} title="Charged separately from slippage" />
+          <MetricCard
+            label="Fees"
+            value={fmtUsd(fees)}
+            title="A separate cash line: excluded from gross P&L, subtracted from net P&L"
+          />
           <MetricCard
             label="Slippage (embedded)"
             value={fmtUsd(slippage)}
-            title="Embedded in fill prices, not a separate cash line"
+            title="Embedded in fill prices: both gross and net P&L already include it, so it is not subtracted again"
           />
           <MetricCard
             label="Settlement vs trading"
@@ -206,9 +219,10 @@ export function MetricsGrid({
       </div>
 
       <SourceNote>
-        Gross excludes fees and slippage; net includes both and is always shown with its effective
-        execution profile. These are historical simulation outputs from stored data, not a
-        profitability claim or trading advice.
+        Gross is after spread and slippage embedded in the executed fill prices, before fees. Net
+        subtracts the separate fee line; it does not subtract slippage twice. Net is always shown
+        with its effective execution profile. These are historical simulation outputs from stored
+        data, not a profitability claim or trading advice.
       </SourceNote>
     </div>
   );

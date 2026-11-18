@@ -63,6 +63,23 @@ anywhere in the acquired data. v1 therefore sizes, charges and reports in
 This corrects the £ wording in the brief rather than inventing an exchange
 rate. Do not add an FX assumption to make old labels true.
 
+## API filters and P&L basis
+
+- `GET /api/instruments` and `GET /api/search` accept `venue`, `league`,
+  `date`, `from`+`to`, `q`, `limit` and `offset`, and report the true matching
+  `total`. v1 accepts `venue=polymarket` only; other values are `422
+  bad_venue`. Dates are strict `YYYY-MM-DD`; `date` and `from`/`to` are
+  mutually exclusive.
+- `GET /api/backtests?status=` filters server-side, including `orphaned`
+  (a complete run whose data version is no longer current), and reports a true
+  `total`.
+- `gross_pnl_usd` is from executed fill prices: spread and slippage are
+  embedded, fees are excluded. `net_pnl_usd` subtracts the separate fee line;
+  slippage is not subtracted twice. Run payloads carry `metric_semantics`
+  beside the numbers, and the UI labels gross as "after spread, before fees".
+- `GET /api/meta` uses `polymarket/sii/markets.parquet` for market metadata and
+  computes catalog coverage from the stored instrument index only.
+
 ## Nautilus 2.0 rc9 gotchas (verified)
 
 1. **Size precision is load-bearing.** Every quantity supplied as data or an
@@ -139,10 +156,10 @@ uv run python scripts/data_register.py verify
   heatmap component exists. Acceptance criterion 18 is partial.
 - There is no signal cache. `docs/BRIEF.md` §8.6 and acceptance criterion 19
   describe one; the code recomputes indicator/signal state per run.
-- `GET /api/meta` names the markets dataset as
-  `results/polymarket_markets.parquet`; the reader actually uses
-  `polymarket/sii/markets.parquet`. The register is correct; the meta label is
-  not.
+- `GET /api/meta` now names the market metadata dataset as
+  `polymarket/sii/markets.parquet` and settlement as
+  `results/polymarket_markets.parquet`; its `catalog` block is computed from the
+  instrument index and claims no bar or book coverage.
 - `AGENTS.md` and `docs/BRIEF.md` show the composite bar with an inner
   `-1-MINUTE-LAST-EXTERNAL`; rc9 renders it without the inner `-LAST`. The
   parser accepts both, and `docs/IMPLEMENTATION.md` records the canonical form.

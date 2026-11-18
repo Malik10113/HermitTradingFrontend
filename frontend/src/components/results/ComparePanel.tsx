@@ -102,9 +102,10 @@ function CostSummary({ rows }: { rows: CompareRow[] }) {
         </span>
       </div>
       <p className="mt-1">
-        Net is gross less fees and slippage; slippage is embedded in fill prices, fees are a
-        separate cash line. Comparing the same strategy hash across profiles isolates cost, not
-        skill. Net figures are historical simulation output and imply no profitability.
+        Gross is after spread and slippage embedded in the executed fill prices, before fees. Net
+        is gross less the separate fee line; slippage is not subtracted twice. Comparing the same
+        strategy hash across profiles isolates cost, not skill. Net figures are historical
+        simulation output and imply no profitability.
       </p>
     </div>
   );
@@ -322,12 +323,48 @@ export function ComparePanel({
                   </th>
                 </tr>
                 <tr className="border-b border-line">
-                  <th scope="col" className="table-head px-2 py-1 text-right">Gross</th>
-                  <th scope="col" className="table-head px-2 py-1 text-right">Net</th>
-                  <th scope="col" className="table-head px-2 py-1 text-right">Gross</th>
-                  <th scope="col" className="table-head px-2 py-1 text-right">Net</th>
-                  <th scope="col" className="table-head px-2 py-1 text-right">Gross</th>
-                  <th scope="col" className="table-head px-2 py-1 text-right">Net</th>
+                  <th
+                    scope="col"
+                    className="table-head px-2 py-1 text-right"
+                    title="After spread and slippage embedded in fill prices, before fees"
+                  >
+                    Gross
+                  </th>
+                  <th
+                    scope="col"
+                    className="table-head px-2 py-1 text-right"
+                    title="Gross less fees; slippage remains embedded in the fills"
+                  >
+                    Net
+                  </th>
+                  <th
+                    scope="col"
+                    className="table-head px-2 py-1 text-right"
+                    title="After spread and slippage embedded in fill prices, before fees"
+                  >
+                    Gross
+                  </th>
+                  <th
+                    scope="col"
+                    className="table-head px-2 py-1 text-right"
+                    title="Gross less fees; slippage remains embedded in the fills"
+                  >
+                    Net
+                  </th>
+                  <th
+                    scope="col"
+                    className="table-head px-2 py-1 text-right"
+                    title="After spread and slippage embedded in fill prices, before fees"
+                  >
+                    Gross
+                  </th>
+                  <th
+                    scope="col"
+                    className="table-head px-2 py-1 text-right"
+                    title="Gross less fees; slippage remains embedded in the fills"
+                  >
+                    Net
+                  </th>
                 </tr>
               </thead>
               <tbody>

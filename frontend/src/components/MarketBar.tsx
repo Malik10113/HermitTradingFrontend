@@ -220,6 +220,7 @@ export function MarketBar({
         <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-line px-3 py-1 text-[10px] text-ink-faint">
           <span className="numeric">{selected.instrument_id}</span>
           {selected.league ? <span>league {selected.league}</span> : null}
+          {selected.event_date ? <span>event {fmtDate(selected.event_date)}</span> : null}
           {selected.match_key ? <span className="numeric">match {selected.match_key}</span> : null}
           {selected.end_date ? <span>market end {fmtDate(selected.end_date)}</span> : null}
           {selected.price_tick != null ? (

@@ -291,6 +291,125 @@ def load_index(index_path: Path | None = None, *, refresh: bool = True) -> list[
     return rows
 
 
+def _event_date_value(value: Any) -> "date | None":
+    """Normalise a stored ``event_date`` to a date for range comparisons."""
+    from datetime import date, datetime
+
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    text = str(value)
+    try:
+        return date.fromisoformat(text[:10])
+    except ValueError:
+        return None
+
+
+def row_venue(row: dict[str, Any]) -> str | None:
+    """The venue encoded in the instrument id, e.g. ``POLYMARKET`` -> polymarket.
+
+    A row without a venue suffix has no venue rather than an assumed one.
+    """
+    instrument_id = str(row.get("instrument_id") or "")
+    if "." not in instrument_id:
+        return None
+    suffix = instrument_id.rsplit(".", 1)[-1].strip().lower()
+    return suffix or None
+
+
+def _matches(
+    row: dict[str, Any],
+    *,
+    needle: str,
+    league_filter: str | None,
+    venue_filter: str | None,
+    event_date: "date | None",
+    date_from: "date | None",
+    date_to: "date | None",
+) -> bool:
+    if league_filter and (row.get("league") or "").lower() != league_filter:
+        return False
+    if venue_filter and row_venue(row) != venue_filter:
+        return False
+    if event_date is not None or date_from is not None or date_to is not None:
+        observed = _event_date_value(row.get("event_date"))
+        # A date filter cannot match an unknown date: the index has no value
+        # to compare, and guessing one would violate the no-invented-data rule.
+        if observed is None:
+            return False
+        if event_date is not None and observed != event_date:
+            return False
+        if date_from is not None and observed < date_from:
+            return False
+        if date_to is not None and observed > date_to:
+            return False
+    if needle:
+        haystack = " ".join(
+            str(row.get(field) or "")
+            for field in (
+                "question",
+                "slug",
+                "match_key",
+                "home_name",
+                "away_name",
+                "selection",
+                "instrument_id",
+            )
+        ).lower()
+        if not all(token in haystack for token in needle.split()):
+            return False
+    return True
+
+
+def _matching_rows(
+    q: str | None,
+    league: str | None,
+    *,
+    index_path: Path | None,
+    venue: str | None,
+    event_date: Any,
+    date_from: Any,
+    date_to: Any,
+) -> list[dict[str, Any]]:
+    from datetime import date
+
+    rows = load_index(index_path)
+    needle = (q or "").strip().lower()
+    league_filter = league.strip().lower() if league else None
+    venue_filter = venue.strip().lower() if venue else None
+    on_date = event_date if isinstance(event_date, date) else _event_date_value(event_date)
+    lower = date_from if isinstance(date_from, date) else _event_date_value(date_from)
+    upper = date_to if isinstance(date_to, date) else _event_date_value(date_to)
+    matches = [
+        row
+        for row in rows
+        if _matches(
+            row,
+            needle=needle,
+            league_filter=league_filter,
+            venue_filter=venue_filter,
+            event_date=on_date,
+            date_from=lower,
+            date_to=upper,
+        )
+    ]
+    def sort_key(row: dict[str, Any]) -> tuple[int, str, str, int, str]:
+        observed = _event_date_value(row.get("event_date"))
+        return (
+            -(observed.toordinal()) if observed else 0,
+            row.get("match_key") or "",
+            row.get("selection") or "",
+            row["token_index"],
+            row.get("instrument_id") or "",
+        )
+
+    matches.sort(key=sort_key)
+    return matches
+
+
 def search(
     q: str | None = None,
     league: str | None = None,
@@ -298,46 +417,55 @@ def search(
     offset: int = 0,
     *,
     index_path: Path | None = None,
+    venue: str | None = None,
+    event_date: Any = None,
+    date_from: Any = None,
+    date_to: Any = None,
 ) -> list[dict[str, Any]]:
     """Deterministic substring search across market, team and match fields.
 
-    ``limit=None`` returns every match so a caller can report the true total
-    before paging.
+    Filters are conjunctive: ``q``, ``league``, ``venue``, an exact
+    ``event_date`` and/or an inclusive ``date_from``/``date_to`` range over the
+    stored ``event_date``. A row with no ``event_date`` never matches a date
+    filter. ``limit=None`` returns every match so a caller can report the true
+    total before paging.
     """
     if (limit is not None and limit < 0) or offset < 0:
         raise ValueError("limit and offset must be >= 0")
-    rows = load_index(index_path)
-    needle = (q or "").strip().lower()
-    league_filter = league.strip().lower() if league else None
-    matches: list[dict[str, Any]] = []
-    for row in rows:
-        if league_filter and (row.get("league") or "").lower() != league_filter:
-            continue
-        if needle:
-            haystack = " ".join(
-                str(row.get(field) or "")
-                for field in (
-                    "question",
-                    "slug",
-                    "match_key",
-                    "home_name",
-                    "away_name",
-                    "selection",
-                    "instrument_id",
-                )
-            ).lower()
-            if not all(token in haystack for token in needle.split()):
-                continue
-        matches.append(row)
-    matches.sort(
-        key=lambda row: (
-            -(row["event_date"].toordinal()) if row.get("event_date") else 0,
-            row.get("match_key") or "",
-            row.get("selection") or "",
-            row["token_index"],
-        )
+    matches = _matching_rows(
+        q,
+        league,
+        index_path=index_path,
+        venue=venue,
+        event_date=event_date,
+        date_from=date_from,
+        date_to=date_to,
     )
     return matches[offset:] if limit is None else matches[offset : offset + limit]
+
+
+def count(
+    q: str | None = None,
+    league: str | None = None,
+    *,
+    index_path: Path | None = None,
+    venue: str | None = None,
+    event_date: Any = None,
+    date_from: Any = None,
+    date_to: Any = None,
+) -> int:
+    """True number of rows matching the same filters as :func:`search`."""
+    return len(
+        _matching_rows(
+            q,
+            league,
+            index_path=index_path,
+            venue=venue,
+            event_date=event_date,
+            date_from=date_from,
+            date_to=date_to,
+        )
+    )
 
 
 def get_instrument(

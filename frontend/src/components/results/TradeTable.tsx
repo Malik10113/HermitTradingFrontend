@@ -59,8 +59,20 @@ export function TradeTable({
             <th scope="col" className="table-head px-2 py-1 text-right">Entry</th>
             <th scope="col" className="table-head px-2 py-1 text-right">Exit</th>
             <th scope="col" className="table-head px-2 py-1 text-right">Contracts</th>
-            <th scope="col" className="table-head px-2 py-1 text-right">Gross $</th>
-            <th scope="col" className="table-head px-2 py-1 text-right">Net $</th>
+            <th
+              scope="col"
+              className="table-head px-2 py-1 text-right"
+              title="After spread and slippage embedded in fill prices, before fees"
+            >
+              Gross $
+            </th>
+            <th
+              scope="col"
+              className="table-head px-2 py-1 text-right"
+              title="Gross less fees"
+            >
+              Net $
+            </th>
             <th scope="col" className="table-head px-2 py-1 text-right">Fees $</th>
             <th scope="col" className="table-head px-2 py-1">Source</th>
             <th scope="col" className="table-head px-2 py-1">Phase</th>
@@ -244,8 +256,11 @@ export function TradeInspector({
           { label: "Max loss", value: fmtUsd(trade.max_loss_usd) },
           { label: "Max payout", value: fmtUsd(trade.max_payout_usd) },
           { label: "Max profit", value: fmtUsd(trade.max_profit_usd) },
-          { label: "Gross P&L", value: fmtUsd(trade.gross_pnl_usd, { signed: true }) },
-          { label: "Net P&L", value: fmtUsd(trade.net_pnl_usd, { signed: true }) },
+          {
+            label: "Gross P&L (after spread, before fees)",
+            value: fmtUsd(trade.gross_pnl_usd, { signed: true }),
+          },
+          { label: "Net P&L (after fees)", value: fmtUsd(trade.net_pnl_usd, { signed: true }) },
           { label: "Fees", value: fmtUsd(trade.fees_usd) },
           { label: "Slippage", value: fmtUsd(trade.slippage_usd) },
           {

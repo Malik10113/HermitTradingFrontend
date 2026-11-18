@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { api } from "../api/client";
 import type { RunSummary } from "../api/types";
@@ -20,18 +20,21 @@ const STATUSES = ["all", "queued", "running", "complete", "failed", "cancelled",
 
 export function RunsPage() {
   const navigate = useNavigate();
-  const runsResource = useApiResource(
-    (signal) => api.runs({ limit: 200 }, signal),
-    [],
-  );
   const [status, setStatus] = useState<(typeof STATUSES)[number]>("all");
+  // Status is filtered by the API so `total` is the true matching count, not
+  // the length of a client-side slice.
+  const runsResource = useApiResource(
+    (signal) =>
+      api.runs(
+        { status: status === "all" ? undefined : status, limit: 200 },
+        signal,
+      ),
+    [status],
+  );
   const [selected, setSelected] = useState<string[]>([]);
 
   const runs = runsResource.data?.runs ?? [];
-  const filtered = useMemo(
-    () => (status === "all" ? runs : runs.filter((run) => run.status === status)),
-    [runs, status],
-  );
+  const total = runsResource.data?.total ?? runs.length;
 
   const toggle = (runId: string) => {
     setSelected((current) =>
@@ -84,7 +87,14 @@ export function RunsPage() {
       </header>
 
       <div className="flex flex-wrap items-center gap-2">
-        <span className="badge">{fmtInteger(filtered.length)} run(s)</span>
+        <span className="badge" title="True count for the active server-side status filter">
+          {fmtInteger(total)} run(s)
+        </span>
+        {runs.length !== total ? (
+          <span className="badge" title="The table shows one page of the run history">
+            showing {fmtInteger(runs.length)}
+          </span>
+        ) : null}
         {selected.map((id) => (
           <span key={id} className="chip">
             <span className="numeric text-[10px]" title={id}>
@@ -124,7 +134,7 @@ export function RunsPage() {
           <LoadingState rows={7} label="Loading runs" />
         ) : runsResource.error ? (
           <ErrorState error={runsResource.error} title="Run history unavailable" onRetry={runsResource.reload} />
-        ) : filtered.length === 0 ? (
+        ) : runs.length === 0 ? (
           <EmptyState
             title="No runs"
             message="No backtest matches this filter. Runs appear after POST /api/backtests and are stored with their manifest and artifacts."
@@ -149,7 +159,7 @@ export function RunsPage() {
                 </tr>
               </thead>
               <tbody>
-                {filtered.map((run) => {
+                {runs.map((run) => {
                   const execution = resolveExecution(run as RunSummary);
                   const net = netMetric(run.metrics, "net_pnl_usd");
                   return (

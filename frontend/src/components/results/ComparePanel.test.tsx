@@ -159,7 +159,10 @@ describe("ComparePanel", () => {
     expect(screen.getByText("+$25.00")).toBeInTheDocument();
 
     expect(screen.getAllByText(/no book coverage/).length).toBeGreaterThan(0);
-    expect(screen.getByText(/Net is gross less fees and slippage/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/Gross is after spread and slippage embedded/),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/Net is gross less the separate fee line/)).toBeInTheDocument();
     expect(screen.getByText(/Comparing the same strategy hash across profiles isolates cost/)).toBeInTheDocument();
     expect(screen.getByText(/Fill fallback rate 25.0%/)).toBeInTheDocument();
     expect(screen.getAllByText(/Conservative/).length).toBeGreaterThan(0);

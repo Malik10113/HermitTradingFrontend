@@ -1,9 +1,9 @@
-import { useMemo, useState } from "react";
-import { Link } from "react-router-dom";
+import { useEffect, useState } from "react";
+import { Link, useSearchParams } from "react-router-dom";
 import { api } from "../api/client";
 import type { Instrument } from "../api/types";
 import { instrumentLabel, tokenOf } from "../api/normalise";
-import { useApiResource } from "../hooks/useApi";
+import { useApiResource, useDebouncedValue } from "../hooks/useApi";
 import { fmtDate, fmtDuration, fmtInteger, fmtPct, fmtUsd } from "../lib/format";
 import { workspaceSearchString, DEFAULT_WORKSPACE_STATE } from "../lib/urlState";
 import {
@@ -16,37 +16,70 @@ import {
 } from "../components/ui";
 
 export function DataPage() {
-  const instrumentsResource = useApiResource(
-    (signal) => api.instruments({ limit: 2000 }, signal),
-    [],
-  );
-  const [query, setQuery] = useState("");
-  const [league, setLeague] = useState("");
+  const [searchParams, setSearchParams] = useSearchParams();
+  const league = searchParams.get("league") ?? "";
+  const venue = searchParams.get("venue") ?? "";
+  const from = searchParams.get("from") ?? "";
+  const to = searchParams.get("to") ?? "";
+  const exactDate = searchParams.get("date") ?? "";
+
+  const [query, setQuery] = useState(searchParams.get("q") ?? "");
+  const debouncedQuery = useDebouncedValue(query, 250);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [knownLeagues, setKnownLeagues] = useState<string[]>([]);
+
+  const instrumentsResource = useApiResource(
+    (signal) =>
+      api.instruments(
+        {
+          q: debouncedQuery.trim() || undefined,
+          league: league || undefined,
+          venue: venue || undefined,
+          date: exactDate || undefined,
+          from: from || undefined,
+          to: to || undefined,
+          limit: 500,
+        },
+        signal,
+      ),
+    [debouncedQuery, league, venue, exactDate, from, to],
+  );
 
   const instruments = instrumentsResource.data?.instruments ?? [];
-  const leagues = useMemo(
-    () =>
-      Array.from(
-        new Set(
-          instruments
-            .map((instrument) => instrument.league)
-            .filter((value): value is string => !!value),
-        ),
-      ).sort(),
-    [instruments],
-  );
+  const total = instrumentsResource.data?.total ?? instruments.length;
 
-  const filtered = useMemo(() => {
-    const needle = query.trim().toLowerCase();
-    return instruments.filter((instrument) => {
-      if (league && instrument.league !== league) return false;
-      if (!needle) return true;
-      return [instrument.instrument_id, instrument.question, instrument.market_slug, instrument.league]
-        .filter(Boolean)
-        .some((field) => field!.toLowerCase().includes(needle));
+  // Accumulate league names so selecting one does not erase the alternatives
+  // from the dropdown. The current league is always present.
+  useEffect(() => {
+    setKnownLeagues((current) => {
+      const seen = new Set(current);
+      for (const instrument of instruments) {
+        if (instrument.league) seen.add(instrument.league);
+      }
+      if (league) seen.add(league);
+      const next = Array.from(seen).sort();
+      return next.length === current.length && next.every((item, i) => item === current[i])
+        ? current
+        : next;
     });
-  }, [instruments, league, query]);
+  }, [instruments, league]);
+
+  const leagues = knownLeagues;
+
+  const patchFilters = (patch: Record<string, string>) => {
+    const next = new URLSearchParams(searchParams);
+    for (const [key, value] of Object.entries(patch)) {
+      if (value) next.set(key, value);
+      else next.delete(key);
+    }
+    setSearchParams(next, { replace: true });
+  };
+
+  const clearFilters = () => {
+    const next = new URLSearchParams();
+    if (query) next.set("q", query);
+    setSearchParams(next, { replace: true });
+  };
 
   const selected: Instrument | null =
     instruments.find((instrument) => instrument.instrument_id === selectedId) ?? null;
@@ -67,11 +100,11 @@ export function DataPage() {
             nothing is repaired or inferred here.
           </p>
         </div>
-        <div className="ml-auto flex items-end gap-2">
+        <div className="ml-auto flex flex-wrap items-end gap-2">
           <label>
             <span className="label">Search</span>
             <input
-              className="input mt-1 w-64"
+              className="input mt-1 w-56"
               value={query}
               onChange={(event) => setQuery(event.target.value)}
               placeholder="instrument, team, league…"
@@ -79,11 +112,24 @@ export function DataPage() {
             />
           </label>
           <label>
+            <span className="label">Venue</span>
+            <select
+              className="input mt-1 w-auto"
+              value={venue}
+              onChange={(event) => patchFilters({ venue: event.target.value })}
+              aria-label="Filter by venue"
+              title="v1 reads Polymarket only; Kalshi and Betfair are v2"
+            >
+              <option value="">All venues</option>
+              <option value="polymarket">Polymarket</option>
+            </select>
+          </label>
+          <label>
             <span className="label">League</span>
             <select
               className="input mt-1 w-auto"
               value={league}
-              onChange={(event) => setLeague(event.target.value)}
+              onChange={(event) => patchFilters({ league: event.target.value })}
               aria-label="Filter by league"
             >
               <option value="">All leagues</option>
@@ -94,6 +140,42 @@ export function DataPage() {
               ))}
             </select>
           </label>
+          <label>
+            <span className="label">Event from</span>
+            <input
+              className="input mt-1 w-[130px]"
+              type="date"
+              value={from}
+              onChange={(event) => patchFilters({ from: event.target.value })}
+              aria-label="Filter from event date"
+            />
+          </label>
+          <label>
+            <span className="label">Event to</span>
+            <input
+              className="input mt-1 w-[130px]"
+              type="date"
+              value={to}
+              onChange={(event) => patchFilters({ to: event.target.value })}
+              aria-label="Filter to event date"
+            />
+          </label>
+          {exactDate ? (
+            <span className="badge" title="Exact event date from the URL">
+              date {exactDate}
+              <button
+                type="button"
+                className="btn-ghost ml-1 px-1 text-[10px]"
+                onClick={() => patchFilters({ date: "" })}
+                aria-label="Clear exact event date"
+              >
+                ✕
+              </button>
+            </span>
+          ) : null}
+          <button type="button" className="btn" onClick={clearFilters}>
+            Clear
+          </button>
           <button type="button" className="btn" onClick={instrumentsResource.reload}>
             Refresh
           </button>
@@ -104,8 +186,11 @@ export function DataPage() {
         <section className="panel overflow-hidden" aria-label="Instrument inventory">
           <div className="panel-title">
             <span>Instruments</span>
-            <span className="normal-case tracking-normal text-[10px]">
-              {fmtInteger(filtered.length)} / {fmtInteger(instruments.length)}
+            <span
+              className="normal-case tracking-normal text-[10px]"
+              title="Page length / true match count for the active server-side filters"
+            >
+              {fmtInteger(instruments.length)} of {fmtInteger(total)}
             </span>
           </div>
           {instrumentsResource.loading ? (
@@ -116,7 +201,7 @@ export function DataPage() {
               title="Instrument inventory unavailable"
               onRetry={instrumentsResource.reload}
             />
-          ) : filtered.length === 0 ? (
+          ) : instruments.length === 0 ? (
             <EmptyState
               title="No instruments match"
               message="The catalog is empty or the filters exclude every market. Build the instrument index before searching, or clear the filters."
@@ -128,7 +213,9 @@ export function DataPage() {
                 <thead className="sticky top-0 bg-surface-raised">
                   <tr className="border-b border-line">
                     <th scope="col" className="table-head px-2 py-1">Instrument</th>
+                    <th scope="col" className="table-head px-2 py-1">Venue</th>
                     <th scope="col" className="table-head px-2 py-1">League</th>
+                    <th scope="col" className="table-head px-2 py-1">Event date</th>
                     <th scope="col" className="table-head px-2 py-1">Token</th>
                     <th scope="col" className="table-head px-2 py-1">Coverage</th>
                     <th scope="col" className="table-head px-2 py-1 text-right">Fills</th>
@@ -138,7 +225,7 @@ export function DataPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {filtered.map((instrument) => {
+                  {instruments.map((instrument) => {
                     const selection = tokenOf(instrument);
                     return (
                       <tr
@@ -162,7 +249,13 @@ export function DataPage() {
                             {instrument.instrument_id}
                           </span>
                         </td>
+                        <td className="px-2 py-1 text-ink-muted">
+                          {instrument.venue ?? "not available"}
+                        </td>
                         <td className="px-2 py-1 text-ink-muted">{instrument.league ?? "not available"}</td>
+                        <td className="numeric whitespace-nowrap px-2 py-1 text-[10px] text-ink-muted">
+                          {instrument.event_date ? fmtDate(instrument.event_date) : "not available"}
+                        </td>
                         <td className="px-2 py-1">
                           <span className={selection === "NO" ? "badge-warn" : "badge-accent"}>
                             {selection ?? "—"}

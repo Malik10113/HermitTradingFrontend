@@ -315,10 +315,10 @@ available as `_ns` integers. Sizes/notional are `_usd`; probabilities are
 ```
 GET  /api/health
 GET  /api/meta
-GET  /api/instruments?league=&q=&limit=&offset=
+GET  /api/instruments?venue=&league=&date=&from=&to=&q=&limit=&offset=
 GET  /api/instruments/{instrument_id}
 GET  /api/instruments/{instrument_id}/quality?from=&to=
-GET  /api/search?q=
+GET  /api/search?q=&venue=&league=&date=&from=&to=&limit=&offset=
 GET  /api/bars?instrument_id=&bar_type=&from=&to=&limit=
 GET  /api/indicators
 POST /api/indicators/preview
@@ -328,7 +328,7 @@ POST /api/strategies
 GET  /api/presets  / POST /api/presets
 DELETE /api/presets/{preset_id}
 POST /api/backtests
-GET  /api/backtests
+GET  /api/backtests?status=&limit=&offset=
 GET  /api/backtests/{run_id}
 GET  /api/backtests/{run_id}/events        (SSE)
 GET  /api/backtests/{run_id}/artifacts/{name}
@@ -344,6 +344,64 @@ DELETE /api/backtests/{run_id}
 `bar_type` in the API is a semantic alias (`1m`, `5m`, `15m`, `1h`, `1d`,
 `tick_100`, `volume_1000`, `value_10000`, `renko_0.01`) or a full Nautilus bar
 type string.
+
+### Inventory filters
+
+`GET /api/instruments` and `GET /api/search` share one filter set:
+
+| Query | Meaning |
+|---|---|
+| `venue` | `polymarket` only in v1. Any other value is `422 bad_venue` with `details.supported`; it never returns every venue silently. |
+| `league` | Case-insensitive exact league (`epl`, `lal`, …). |
+| `date` | Exact `event_date` (`YYYY-MM-DD`). |
+| `from`, `to` | Inclusive `event_date` range (`YYYY-MM-DD`). |
+| `q` | Whitespace-separated tokens, all of which must appear in the market, team, match or instrument text. |
+| `limit`, `offset` | Page. `total` is the true number of matching rows, never the page length. |
+
+`date` and `from`/`to` are mutually exclusive (`422 ambiguous_date_filter`);
+a reversed range is `422 bad_date_range`; a malformed or impossible date is
+`422 bad_date`. The filter is over the stored `event_date`; a row with no date
+cannot match a date filter and is excluded rather than assumed. `venue` is
+reported per instrument from its id suffix (`.POLYMARKET`), not guessed.
+
+`GET /api/search` returns the same items plus `query`, `limit` and `offset`.
+The command palette uses it for results beyond the local inventory page.
+
+### Run history
+
+`GET /api/backtests?status=` accepts `queued`, `running`, `complete`, `failed`,
+`cancelled` or `orphaned`. An unknown value is `422 bad_status`. The response
+carries `items`, `runs`, `total` (true matching count), `status`, `limit` and
+`offset`. `orphaned` follows the display rule: a `complete` run whose stored
+data version is not the current data version is returned by
+`status=orphaned` and excluded from `status=complete`.
+
+### P&L basis
+
+The API echoes `metric_semantics` next to a run's metrics so gross can never be
+read as fee-inclusive:
+
+- `gross_pnl_usd` — `(executed exit price - executed entry price) * quantity`.
+  Spread and slippage are embedded in the fill prices; fees are **excluded**.
+  UI label: "gross after spread, before fees".
+- `net_pnl_usd` — gross less `fees_usd`. The fee line is separate; slippage is
+  already in the fills and is not subtracted twice. UI label: "net after fees".
+- `fees_usd` — venue fees charged as a separate cash line: excluded from gross,
+  included in net.
+- `slippage_usd` — executed price minus reference price, reported for
+  attribution. It is already inside both gross and net.
+- `cost_bps_of_notional` — `(fees_usd + slippage_usd) / entry notional *
+  10,000`. A cost measure, not a return.
+
+No fee-inclusive "gross" or slippage-excluded variant is invented; the stored
+numbers and their definitions travel together.
+
+`GET /api/meta` names the market metadata dataset as
+`polymarket/sii/markets.parquet` (and settlement as
+`results/polymarket_markets.parquet`). Its `catalog` block is computed from the
+stored instrument index: instrument count and first/last fill timestamps. It
+does not claim a bar count or a global book window, which are not computable
+without extra scans.
 
 `GET /api/bars` response:
 

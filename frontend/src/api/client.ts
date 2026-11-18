@@ -155,6 +155,13 @@ export interface BarsQuery {
 export interface InstrumentsQuery {
   league?: string;
   q?: string;
+  /** v1 supports `polymarket`; any other value is a 422 from the server. */
+  venue?: string;
+  /** Exact event date (YYYY-MM-DD). */
+  date?: string;
+  /** Inclusive event-date range (YYYY-MM-DD). */
+  from?: string;
+  to?: string;
   limit?: number;
   offset?: number;
 }
@@ -171,6 +178,10 @@ export const api = {
         `/instruments${buildQuery({
           league: query.league,
           q: query.q,
+          venue: query.venue,
+          date: query.date,
+          from: query.from,
+          to: query.to,
           limit: query.limit,
           offset: query.offset,
         })}`,

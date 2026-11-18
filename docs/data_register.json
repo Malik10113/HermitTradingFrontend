@@ -10,5 +10,89 @@
     "license": "ESPN terms of service; personal research use only, not redistributable",
     "rebuild": "python scripts/build_match_lifecycle.py",
     "notes": "One row per match: actual_kickoff_utc, actual_end_utc, source=espn_keyevents, precision=observed. 2026 fixtures use the existing data/events/espn cache and fixture map (1,006/1,007 with both events); pre-2026 is backfilled via the ESPN scoreboard API. Rows without wallclock are omitted and phase is unknown, never a nominal duration. Raw ESPN summaries are registered upstream as events_espn_raw; pre-2026 backfill will cache under var/raw/espn. Not built yet: the derived path is absent until the lifecycle builder lands."
+  },
+  {
+    "name": "polymarket_epl_tape",
+    "kind": "raw",
+    "path": "../FundedBetBacktesting/data/polymarket/epl/epl_moneyline_tape.parquet",
+    "source": "Derived from SII sports trades + market metadata (EPL moneyline)",
+    "source_url": null,
+    "retrieved": "2026-11-18",
+    "size_bytes": 173110881,
+    "license": "MIT (upstream SII data)",
+    "rebuild": "python scripts/build_bars.py --all --league epl",
+    "notes": "Read-only v1 source; see docs/IMPLEMENTATION.md."
+  },
+  {
+    "name": "polymarket_football_tape",
+    "kind": "raw",
+    "path": "../FundedBetBacktesting/data/polymarket/football/football_moneyline_tape.parquet",
+    "source": "Derived from SII sports trades + market metadata (Big-4 moneyline)",
+    "source_url": null,
+    "retrieved": "2026-11-18",
+    "size_bytes": 376483503,
+    "license": "MIT (upstream SII data)",
+    "rebuild": "python scripts/build_bars.py --all --league big4",
+    "notes": "Read-only v1 source; see docs/IMPLEMENTATION.md."
+  },
+  {
+    "name": "polymarket_sii_markets",
+    "kind": "raw",
+    "path": "../FundedBetBacktesting/data/polymarket/sii/markets.parquet",
+    "source": "SII Polymarket market metadata",
+    "source_url": null,
+    "retrieved": "2026-11-18",
+    "size_bytes": 545510579,
+    "license": "MIT (upstream SII metadata)",
+    "rebuild": "restore from the sibling repo; never modified",
+    "notes": "Read-only v1 source; see docs/IMPLEMENTATION.md."
+  },
+  {
+    "name": "polymarket_results_markets",
+    "kind": "raw",
+    "path": "../FundedBetBacktesting/data/results/polymarket_markets.parquet",
+    "source": "Derived from local SII market metadata + Big-4 results",
+    "source_url": null,
+    "retrieved": "2026-11-18",
+    "size_bytes": 1313866,
+    "license": "MIT (upstream SII metadata)",
+    "rebuild": "python scripts/build_match_lifecycle.py; settlement index is derived from this file",
+    "notes": "Read-only v1 source; see docs/IMPLEMENTATION.md."
+  },
+  {
+    "name": "polymarket_orderbooks_compact",
+    "kind": "raw",
+    "path": "../FundedBetBacktesting/data/cache/orderbooks_compact",
+    "source": "Derived compaction of the Predexon per-token L2 files",
+    "source_url": null,
+    "retrieved": "2026-11-18",
+    "size_bytes": 1550607921,
+    "license": "inherits Predexon API terms",
+    "rebuild": "v1 reads coverage only; L2 replay is deferred to v2",
+    "notes": "Read-only v1 source; see docs/IMPLEMENTATION.md."
+  },
+  {
+    "name": "espn_fixture_map",
+    "kind": "raw",
+    "path": "../FundedBetBacktesting/data/events/fixture_map.parquet",
+    "source": "ESPN fixture spine (match_key to event id)",
+    "source_url": null,
+    "retrieved": "2026-11-18",
+    "size_bytes": 32882,
+    "license": "ESPN terms of service; personal research use only, not redistributable",
+    "rebuild": "python scripts/build_match_lifecycle.py",
+    "notes": "Read-only v1 source; see docs/IMPLEMENTATION.md."
+  },
+  {
+    "name": "espn_summary_cache",
+    "kind": "raw",
+    "path": "../FundedBetBacktesting/data/events/espn/summary",
+    "source": "ESPN match summaries with keyEvents kickoff/end wallclock",
+    "source_url": null,
+    "retrieved": "2026-11-18",
+    "size_bytes": 34147446,
+    "license": "ESPN terms of service; personal research use only, not redistributable",
+    "rebuild": "python scripts/build_match_lifecycle.py",
+    "notes": "Read-only v1 source; see docs/IMPLEMENTATION.md."
   }
 ]

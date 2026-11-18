@@ -105,14 +105,19 @@ low, close, volume, trade_count, source, data_version`.
   `ts_init = bar close`.
 - A market order submitted from `on_bar` fills at that bar's close. To get the
   configured **next-bar-open** convention we also add one zero-spread
-  `QuoteTick` per bar at the bar's open (`ts_event = ts_init = open`). The
-  strategy queues the intent in `on_bar` (close of bar N) and submits it in
-  `on_quote` (open of bar N+1). Quotes are added before bars so the open quote
-  of N+1 is replayed before the bar closing at that time.
+  `QuoteTick` per bar at the bar's open, with `ts_event = open` and
+  `ts_init = open + 1 ns`. The strategy queues the intent in `on_bar` (close of
+  bar N) and submits it in `on_quote` (open of bar N+1). The +1 ns places the
+  open quote after the bar that closed at the same timestamp, so the signal
+  formed on bar N is the one that fills at the next open; quotes are added
+  before bars for stable replay order.
 - Execution profiles are implemented with a `FillModel` that returns a
   synthetic L1 `OrderBook` at the profiled fill price, and a `FeeModel` that
   charges `fee_bps` of notional. The fill model receives the order and can read
   `order.side` and `order.ts_last`.
+- A sell must pass `reduce_only=True`; a CASH account otherwise rejects it as
+  a naked short. An exit sells exactly the held quantity, not a freshly sized
+  stake.
 - Settlement is applied by the analytics layer as an explicit cash flow for
   positions still open at expiry, using the indexed settlement value. It is
   never inferred from a price.

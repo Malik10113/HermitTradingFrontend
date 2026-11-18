@@ -51,7 +51,9 @@ Rules for the runner:
 - Unit: Vitest for `frontend`; pytest for the Python domains.
 - E2E: Playwright against a built app with a small fixture catalog.
 - Golden fixtures: one indicator fixture per indicator, one deterministic
-  backtest fixture with a known equity curve and trade count.
+  backtest fixture with a known equity curve and trade count, and one fixture per
+  execution tier (`none` = zero cost, `fixed` = exact bps per side,
+  `dynamic` = book walk, `dynamic` with stale/missing snapshot = fixed fallback).
 - Deterministic: seed anything random. A test that depends on wall-clock time
   is a bug.
 - No network access. A test that needs the sibling data uses a checked-in

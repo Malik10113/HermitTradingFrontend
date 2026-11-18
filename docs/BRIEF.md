@@ -43,6 +43,9 @@ claim, surfaces no live prices beyond the stored data, and never places an order
 - Strategy authoring: curated built-in catalogue + declarative rule builder.
 - Backtests: one instrument per run, long and short, explicit fees/slippage,
   hold-to-settlement or rule-based exit.
+- Execution awareness: None (frictionless), Fixed (absolute bps per trade), or
+  Dynamic (priced from the L2 book, falling back to Fixed when coverage or a
+  fresh snapshot is absent).
 - Results: metrics, equity curve, drawdown, trade list, chart markers.
 - Reproducible runs: stored config, data version, code version and artifacts.
 
@@ -183,7 +186,11 @@ A strategy is JSON, not code:
   "short_entry": null,
   "short_exit": null,
   "sizing": {"mode": "fixed_stake", "value": 100},
-  "costs": {"fee_bps": 0, "slippage_bps": 10},
+  "execution": {
+    "mode": "dynamic",
+    "fixed": {"fee_bps": 0, "slippage_bps": 10},
+    "dynamic": {"book_staleness_s": 60, "max_depth_levels": 10, "fallback": "fixed"}
+  },
   "settlement": "hold_to_expiry"
 }
 ```
@@ -201,10 +208,65 @@ A strategy is JSON, not code:
 - One `RuleStrategy` Nautilus class interprets the validated JSON at runtime.
 - Orders are market orders at the close of the signal bar, filled at the next
   bar's open by default; the fill convention is configurable and recorded.
-- Costs are explicit. A zero-cost run is allowed but labelled "frictionless".
 - Position sizing: fixed stake, percent of bankroll, or fractional Kelly with a
   hard cap. Kelly is computed from the run's own probabilities, never assumed.
 - One position per instrument; no pyramiding in v1.
+
+### 8.4 Execution awareness
+
+Three tiers, ordered. Every run records both the **requested** and the
+**effective** tier, and the UI shows which one priced the result.
+
+**None — frictionless baseline.**
+- Fees and slippage are zero.
+- Labelled "frictionless"; never presented as comparable to live trading.
+- Useful for indicator research and null baselines. It is never an automatic
+  fallback.
+
+**Fixed — absolute cost per trade.**
+- `fee_bps` and `slippage_bps`, applied to entry and exit notional.
+- The UI also shows the equivalent price points for the instrument, because a
+  10 bps move on a 0.50 contract is 0.005 and on a 0.02 contract is 0.0002.
+- Works on any data period, so it is the safe floor when books are absent.
+
+**Dynamic — derived from the order book.**
+- Uses the latest L2 snapshot with `ts <= decision_ts`; no later snapshot may
+  price a fill.
+- Buy at the ask, sell at the bid, walking visible depth up to
+  `max_depth_levels`.
+- Impact = `(VWAP − mid) / mid` for the order size.
+- Partial fill at visible depth; the unfilled remainder is recorded, never
+  assumed filled.
+- Venue fee comes from the configured schedule, not hard-coded.
+- Requires 2026 book coverage. It has no queue position and is a bounded
+  estimate, not a fill simulator.
+
+**Fallback ladder.** Dynamic → Fixed. Fixed does not require book data, so it
+has no lower tier for a real run. None is only ever chosen explicitly.
+
+- **Run-level:** if the instrument or range has no book coverage, the run starts
+  as `dynamic` but is priced as `fixed`. The manifest records
+  `requested: dynamic`, `effective: fixed`, `reason: no_book_coverage` and the
+  available coverage window. The UI warns before the run is submitted.
+- **Fill-level:** inside a dynamic run, a missing or stale snapshot (older than
+  `book_staleness_s`, default 60) prices that fill at fixed. The trade row
+  records `execution_source: fixed_fallback` and the reason; the summary reports
+  the fallback rate.
+- A run with invalid fixed parameters is rejected — never silently downgraded
+  to none.
+
+**Cost reporting.** Results show gross and net metrics, a breakdown of fees,
+spread and impact, total cost in bps, and the fallback rate. A result whose
+effective tier differs from the requested tier carries a badge and a one-line
+explanation.
+
+```json
+"execution": {
+  "mode": "dynamic",
+  "fixed": {"fee_bps": 0, "slippage_bps": 10},
+  "dynamic": {"book_staleness_s": 60, "max_depth_levels": 10, "fallback": "fixed"}
+}
+```
 
 ## 9. Backtest lifecycle
 
@@ -214,9 +276,12 @@ A strategy is JSON, not code:
 3. The API exposes status and progress over SSE; the UI shows queued →
    running → complete/failed.
 4. Artifacts per run: `config.json`, `summary.json`, `equity.parquet`,
-   `trades.parquet`, `positions.parquet`, `log.txt`, `manifest.json`.
-5. Cancellation sends SIGTERM; orphaned workers are reaped on startup.
-6. Concurrency is capped (default 1) because Nautilus engines are not
+   `trades.parquet`, `positions.parquet`, `costs.parquet`, `log.txt`,
+   `manifest.json`.
+5. The manifest records the requested and effective execution tier, the
+   fallback reason and rate, and the coverage window used by dynamic pricing.
+6. Cancellation sends SIGTERM; orphaned workers are reaped on startup.
+7. Concurrency is capped (default 1) because Nautilus engines are not
    thread-safe; isolation is by process, not thread.
 
 ## 10. API surface (v1)
@@ -229,6 +294,7 @@ GET  /api/instruments/{id}
 GET  /api/bars                       # instrument, bar_type, from, to, limit
 GET  /api/indicators                 # registry
 POST /api/indicators/preview         # spec + range -> series
+POST /api/execution/preflight        # requested tier -> effective tier, coverage, cost estimate
 GET  /api/strategies                 # built-ins + saved rules
 POST /api/strategies                 # validate/save a rule
 POST /api/backtests
@@ -249,9 +315,11 @@ Pages:
 - **Data explorer** — venue, league, market, selection, coverage, gaps.
 - **Chart** — candles, volume, overlays and separate panes, indicator editor,
   URL-encoded state.
-- **Strategy** — built-in picker or rule builder, live validation, cost and
-  sizing panel.
-- **Results** — metrics, equity, drawdown, trade list, markers on the chart.
+- **Strategy** — built-in picker or rule builder, live validation, sizing and
+  execution panel (None / Fixed / Dynamic) with a preflight that shows the
+  effective tier before the run is submitted.
+- **Results** — metrics, equity, drawdown, trade list, cost breakdown, tier
+  badge, markers on the chart.
 - **Runs** — history with config hash, data version, status.
 
 Rules:
@@ -259,6 +327,9 @@ Rules:
 - The chart never computes indicator math; it renders server series.
 - Every number has a unit and a source (data version + timestamp).
 - Empty and missing-data states are explicit; no fabricated candles.
+- The execution tier is visible on the form, the run row and the results page.
+  Dynamic preflight warns before submission when the run will fall back.
+- Gross and net metrics are shown together; net is never shown without its tier.
 - The palette is colour-blind safe; candles remain distinguishable in dark and
   light themes.
 - Keyboard navigation for the chart range and indicator panel.
@@ -302,12 +373,14 @@ Every run records:
 - canonical strategy JSON + SHA-256;
 - data version and the exact source paths;
 - bar type and aggregation chain;
-- fee/slippage/fill assumptions;
+- execution: requested tier, effective tier, fallback reason and rate, fixed
+  parameters, book coverage window, snapshot staleness bound;
 - code version (git SHA) and NautilusTrader version;
 - artifact hashes.
 
-The UI shows the data version and code version on the results page. A run whose
-data version is no longer present is marked `orphaned`, not silently re-run.
+The UI shows the data version, code version and effective execution tier on the
+results page. A run whose data version is no longer present is marked
+`orphaned`, not silently re-run.
 
 ## 15. Performance targets
 
@@ -324,8 +397,8 @@ data version is no longer present is marked `orphaned`, not silently re-run.
 2. **Chart** — instruments, bars, candles, volume, range controls, URL state.
 3. **Indicators** — registry, Nautilus adapter, cache, chart overlays/panes,
    parity fixtures.
-4. **Backtests** — rule schema, validator, `RuleStrategy`, worker, artifacts,
-   results page.
+4. **Backtests** — rule schema, validator, `RuleStrategy`, execution tiers
+   (None/Fixed/Dynamic with fallback), worker, artifacts, results page.
 5. **Built-ins** — the ten strategies above with provenance and golden runs.
 6. **Hardening** — Tailscale serve unit, cancellation, orphan cleanup,
    acceptance suite.
@@ -345,6 +418,17 @@ data version is no longer present is marked `orphaned`, not silently re-run.
 6. The app is reachable at `https://<host>.<tailnet>.ts.net` with no listener
    on a public interface.
 7. Killing the server during a run leaves no orphaned worker after restart.
+8. A None run reports zero fees and zero slippage and carries the frictionless
+   label.
+9. A Fixed run charges exactly `fee_bps + slippage_bps` per side on a golden
+   fixture, and the UI shows the equivalent price points.
+10. A Dynamic run on pre-2026 data is recorded as effective `fixed` with
+    `reason: no_book_coverage`; it is never silently priced with books.
+11. Inside a Dynamic run, a stale or missing snapshot prices only that fill at
+    fixed, and the trade row plus the run summary report the fallback.
+12. A Dynamic fill never uses a snapshot later than the decision timestamp
+    (leakage test), and a partial fill at visible depth leaves the remainder
+    unfilled.
 
 ## 18. Risks
 
@@ -356,12 +440,19 @@ data version is no longer present is marked `orphaned`, not silently re-run.
 | Chart and backtest indicator drift | Single Python implementation + parity fixtures |
 | Nautilus 2.x is a pre-release (rc9) | Pin the exact version; adapter boundary isolates upgrades |
 | Long backtests block the API | Process isolation, queue, SSE, cancellation |
+| Dynamic execution model overstates achievable fills | Walk visible depth, no queue assumptions, partial fills, publish fallback rate |
+| Stale book snapshot prices a fill | `book_staleness_s` bound; stale → fixed fallback, recorded per trade |
+| Cost model dominates a weak signal | Report gross and net together; never show net without the tier badge |
 | Data licences forbid redistribution | Data stays outside the repo; read-only; register records terms |
 
 ## 19. Open decisions
 
 - Whether Betfair is normalised to probability for charting before its v2
   adapter lands.
+- Whether Dynamic should walk the full book or only the top N levels by default
+  (proposed: 10 levels, configurable).
+- Whether a run may mix dynamic and fixed fills, or must be whole-run dynamic
+  with a fallback rate (proposed: allow fill-level fallback, report the rate).
 - Whether Kalshi reuses the Polymarket `BinaryOption` mapping or brings its own
   settlement adapter (default: reuse the instrument model, separate adapter).
 - Whether v2 portfolio backtests share one bankroll or run sleeve-per-instrument.

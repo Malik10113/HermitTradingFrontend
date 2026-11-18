@@ -81,9 +81,11 @@ pre/post split.
 
 1. **Bars and backtests can use the full tape**, 2024-10 → 2026-10. The fills are
    clean enough for OHLCV construction.
-2. **Any execution-aware feature is 2026-only.** Slippage, spread, depth and
-   fill-probability models must be flagged "2026 books only" and must not be
-   applied to a pre-2026 run.
+2. **Execution awareness has three tiers.** `none` is an explicit frictionless
+   baseline; `fixed` (absolute bps) works on any period; `dynamic` (L2 walk,
+   spread, impact) is 2026-only and falls back to `fixed` with the reason
+   recorded. A pre-2026 run can never be priced dynamically, and the UI must say
+   so before submission.
 3. **The MVP can ship without books.** v1 is price/indicator/backtest work;
    L2 replay is already v2.
 4. **Show coverage, not just candles.** The UI must render the June–July seasonal

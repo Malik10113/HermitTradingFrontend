@@ -150,17 +150,44 @@ Execution:
 - One `RuleStrategy` Nautilus class interprets the validated JSON at runtime.
 - Market orders at the signal bar close, filled at the next bar open by default;
   the convention is configurable and recorded.
-- Fees and slippage are explicit. A zero-cost run is labelled "frictionless".
 - Sizing: fixed stake, percent of bankroll, or fractional Kelly with a hard cap.
 - One position per instrument; no pyramiding in v1.
+
+### 7.1 Execution awareness
+
+Three tiers. Every run records the **requested** and **effective** tier; the UI
+shows both.
+
+- `none` — zero fees and slippage. Frictionless research baseline, labelled as
+  such. Never an automatic fallback.
+- `fixed` — `fee_bps` + `slippage_bps` applied to entry and exit notional. Works
+  on any period; this is the safe floor.
+- `dynamic` — priced from the latest L2 snapshot with `ts <= decision_ts`:
+  buy at ask / sell at bid, walk visible depth (default 10 levels), impact =
+  `(VWAP − mid) / mid`, partial fill at visible depth. Requires 2026 book
+  coverage. No queue position; this is a bounded estimate, not a fill simulator.
+
+Fallback ladder: **dynamic → fixed**. Never fall back to `none`.
+
+- Run-level: no book coverage for the instrument/range → effective `fixed`, with
+  `reason: no_book_coverage` and the coverage window in the manifest. The API
+  preflight warns before submission.
+- Fill-level: missing or stale snapshot (older than `book_staleness_s`, default
+  60) → that fill is priced at fixed, `execution_source: fixed_fallback`, and
+  the summary reports the fallback rate.
+- Invalid fixed parameters reject the run; they never downgrade it to none.
+
+Results report gross and net, fees/spread/impact, total cost in bps, and the
+fallback rate. Net is never shown without its tier badge.
 
 ## 8. Backtest contract
 
 - Every run stores `config.json`, `summary.json`, `equity.parquet`,
-  `trades.parquet`, `positions.parquet`, `log.txt`, `manifest.json`.
+  `trades.parquet`, `positions.parquet`, `costs.parquet`, `log.txt`,
+  `manifest.json`.
 - The manifest records: rule hash, data version, source paths, bar type and
-  aggregation chain, cost assumptions, git SHA, Nautilus version, artifact
-  hashes.
+  aggregation chain, requested/effective execution tier, fallback reason and
+  rate, book coverage window, git SHA, Nautilus version, artifact hashes.
 - Workers are separate processes. Nautilus engines are never shared across
   threads or requests. Concurrency defaults to 1.
 - Queued → running → complete/failed/cancelled. Progress and logs stream over
@@ -177,7 +204,10 @@ Execution:
 - The chart renders server-computed series only. URL state carries instrument,
   bar type, range, indicator specs and run id, so a view is shareable and
   reproducible.
-- Every page shows the data version; every result page shows the run hash.
+- `POST /api/execution/preflight` returns the requested/effective tier, book
+  coverage and a cost estimate before a run is submitted.
+- Every page shows the data version; every result page shows the run hash, the
+  execution tier and, when they differ, the fallback reason.
 - Empty, loading, stale and error states are designed, not incidental.
 - Accessibility: keyboard navigation, colour-blind-safe palette, sufficient
   contrast in both themes.
@@ -239,6 +269,7 @@ Until it lands, run the suite for the area you touched directly:
 | 2026-11-18 | Indicators | Nautilus/Python for both chart and backtest |
 | 2026-11-18 | Hosting | `tailscale serve`, tailnet-only |
 | 2026-11-18 | Backtests | Single instrument, long and short |
+| 2026-11-18 | Execution | None / Fixed / Dynamic; Dynamic prices from L2 and falls back to Fixed, never to None |
 
 <!-- trail:start -->
 ## Trail — repo context graph

@@ -114,10 +114,12 @@ test.describe("research workspace", () => {
     expect(url.searchParams.get("bar")).toBe("5m");
     expect(url.searchParams.get("run")).toBeTruthy();
     expect(url.searchParams.get("ind")).toContain("ema");
+    expect(url.searchParams.get("params")).toContain('"fast_period":5');
 
     await page.reload();
     await waitForChart(page);
     await expect(page.locator('[aria-label="Chart timeframe"]')).toHaveValue("5m");
+    await expect(page.locator('[aria-label="Fast EMA period"]')).toHaveValue("5");
     await expect(page.getByText(/server preview: [\d,]+ values/)).toBeVisible();
     await expect(
       page.getByLabel("Backtest results").getByText("complete", { exact: true }),
@@ -227,5 +229,47 @@ test.describe("secondary routes and holdout", () => {
     await panel.getByRole("button", { name: "Reveal again", exact: true }).click();
     await panel.getByRole("button", { name: /Reveal again — window is no longer clean/ }).click();
     await expect(panel.getByText(/already been revealed \d+ time\(s\)/)).toBeVisible();
+  });
+});
+
+test.describe("presets", () => {
+  test.beforeEach(async ({ page }) => {
+    await requireApp(page);
+  });
+
+  test("opening a preset restores quick parameters, sizing and profile", async ({ page, request }) => {
+    const name = `e2e preset ${Date.now()}`;
+    const config = {
+      strategy: {
+        instrument_id: INSTRUMENT,
+        bar_type: "5m",
+        builtin_id: "nautilus_ema_cross",
+        builtin_params: { fast_period: 8, slow_period: 21 },
+        direction: "long",
+        indicators: [],
+      },
+      execution: { profile: "stress", fee_bps: 3, fill_timing: "next_bar_open" },
+      risk: { sizing: { mode: "fixed_stake", value: 75 }, max_trades: 25 },
+      evaluation: { date_range: { from: "2026-09-18", to: "2026-09-19" } },
+    };
+    const created = await request.post("/api/presets", { data: { name, config } });
+    expect(created.status()).toBe(201);
+
+    await page.goto("/presets");
+    const row = page.getByRole("listitem").filter({ hasText: name });
+    await expect(row).toBeVisible();
+    await row.getByRole("link", { name: "Open" }).click();
+
+    const rail = page.getByLabel("Strategy rail");
+    await expect(rail.getByRole("button", { name: "Advanced" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    await expect(page.getByLabel("Strategy configuration JSON")).toHaveValue(/"fast_period":\s*8/);
+    await expect(page.locator('[aria-label="Chart timeframe"]')).toHaveValue("5m");
+    await expect(page.locator('input[name="execution-profile"][value="stress"]')).toBeChecked();
+    await expect(page.getByLabel("Stake in USD")).toHaveValue("75");
+    await expect(page.getByLabel("Maximum trades")).toHaveValue("25");
+    await expect(page.getByLabel("Fee in basis points")).toHaveValue("3");
   });
 });

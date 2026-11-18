@@ -52,6 +52,16 @@ export function presetWorkspaceSearch(preset: Preset): string {
     to: isoDateOnly(dateRange?.to ?? dateRange?.end),
     indicators: sanitiseIndicators(strategy?.indicators ?? []),
     builtin: strategy?.builtin_id || DEFAULT_WORKSPACE_STATE.builtin,
+    quickParams:
+      !hasRules && strategy?.builtin_id ? (strategy.builtin_params ?? {}) : {},
+    quickDirection:
+      !hasRules && strategy?.direction === "long"
+        ? "long"
+        : !hasRules && strategy?.direction === "short"
+          ? "short"
+          : !hasRules && strategy?.direction === "both"
+            ? "both"
+            : "",
     strategyJson: config && (hasRules || !strategy?.builtin_id) ? JSON.stringify(config) : null,
     profile,
     runId: "",

@@ -707,6 +707,16 @@ export function WorkspacePage() {
               specs={specs}
               builtinId={state.builtin}
               onBuiltinId={(builtin) => patch({ builtin })}
+              initialQuickParams={state.quickParams}
+              initialQuickDirection={state.quickDirection}
+              onQuickConfig={(quickParams, quickDirection) =>
+                setState((current) =>
+                  JSON.stringify(current.quickParams) === JSON.stringify(quickParams) &&
+                  current.quickDirection === quickDirection
+                    ? current
+                    : { ...current, quickParams, quickDirection },
+                )
+              }
               strategyJson={state.strategyJson}
               onStrategyJson={(strategyJson) => patch({ strategyJson })}
               profile={state.profile}

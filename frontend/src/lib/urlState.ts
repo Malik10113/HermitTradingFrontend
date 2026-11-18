@@ -13,6 +13,9 @@ export interface WorkspaceState {
   to: string;
   indicators: IndicatorInstance[];
   builtin: string;
+  /** Quick-mode parameters, so a shared URL restores the built-in's settings. */
+  quickParams: Record<string, number | boolean | string>;
+  quickDirection: "long" | "short" | "both" | "";
   strategyJson: string | null;
   profile: ExecutionProfile;
   runId: string;
@@ -33,6 +36,8 @@ export const DEFAULT_WORKSPACE_STATE: WorkspaceState = {
   to: "",
   indicators: [],
   builtin: "nautilus_ema_cross",
+  quickParams: {},
+  quickDirection: "",
   strategyJson: null,
   profile: "conservative",
   runId: "",
@@ -129,7 +134,12 @@ function parseStrategyJson(raw: string | null): { json: string | null; issue?: s
 export function parseWorkspaceSearch(search: string): ParsedWorkspace {
   const params = new URLSearchParams(search.startsWith("?") ? search.slice(1) : search);
   const issues: string[] = [];
-  const state: WorkspaceState = { ...DEFAULT_WORKSPACE_STATE, indicators: [], compare: [] };
+  const state: WorkspaceState = {
+    ...DEFAULT_WORKSPACE_STATE,
+    indicators: [],
+    quickParams: {},
+    compare: [],
+  };
 
   const instrument = params.get("instrument")?.trim() ?? "";
   if (instrument) state.instrument = instrument.slice(0, 200);
@@ -173,6 +183,34 @@ export function parseWorkspaceSearch(search: string): ParsedWorkspace {
 
   const builtin = params.get("builtin");
   if (builtin) state.builtin = builtin.slice(0, 120);
+
+  const rawQuickParams = params.get("params");
+  if (rawQuickParams) {
+    try {
+      const parsed: unknown = JSON.parse(rawQuickParams);
+      if (!isRecord(parsed)) {
+        issues.push("quick parameters are not an object");
+      } else {
+        const quick: Record<string, number | boolean | string> = {};
+        for (const [key, value] of Object.entries(parsed)) {
+          if (typeof value === "number" && Number.isFinite(value)) quick[key] = value;
+          else if (typeof value === "boolean" || typeof value === "string") quick[key] = value;
+        }
+        state.quickParams = quick;
+      }
+    } catch {
+      issues.push("quick parameters could not be parsed");
+    }
+  }
+
+  const quickDirection = params.get("direction");
+  if (quickDirection) {
+    if (quickDirection === "long" || quickDirection === "short" || quickDirection === "both") {
+      state.quickDirection = quickDirection;
+    } else {
+      issues.push(`unknown direction "${quickDirection}"`);
+    }
+  }
 
   const strategy = parseStrategyJson(params.get("strategy"));
   if (strategy.issue) issues.push(strategy.issue);
@@ -227,8 +265,14 @@ export function serializeWorkspaceState(state: WorkspaceState): URLSearchParams 
     );
   }
   if (state.strategyJson) params.set("strategy", state.strategyJson);
-  else if (state.builtin && state.builtin !== DEFAULT_WORKSPACE_STATE.builtin) {
-    params.set("builtin", state.builtin);
+  else {
+    if (state.builtin && state.builtin !== DEFAULT_WORKSPACE_STATE.builtin) {
+      params.set("builtin", state.builtin);
+    }
+    if (Object.keys(state.quickParams).length > 0) {
+      params.set("params", JSON.stringify(state.quickParams));
+    }
+    if (state.quickDirection) params.set("direction", state.quickDirection);
   }
   if (state.profile !== DEFAULT_WORKSPACE_STATE.profile) params.set("profile", state.profile);
   if (state.runId) params.set("run", state.runId);

@@ -108,6 +108,7 @@ test.describe("research workspace", () => {
     await firstTrade.click();
     await expect(page.getByLabel("Trade inspector")).toBeVisible();
     await expect(page.getByLabel("Trade inspector").getByText("Execution source")).toBeVisible();
+    await expect(page.getByLabel("Trade inspector").getByText("Max loss")).toBeVisible();
 
     // URL state round-trip: instrument, bar type, indicator and run id.
     const url = new URL(page.url());

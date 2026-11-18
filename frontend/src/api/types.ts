@@ -483,6 +483,9 @@ export interface Trade {
   contracts?: number | null;
   quantity?: number | null;
   entry_notional_usd?: number | null;
+  max_loss_usd?: number | null;
+  max_payout_usd?: number | null;
+  max_profit_usd?: number | null;
   gross_pnl_usd?: number | null;
   net_pnl_usd?: number | null;
   fees_usd?: number | null;

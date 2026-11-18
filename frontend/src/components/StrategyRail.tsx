@@ -834,7 +834,11 @@ export function StrategyRail(props: StrategyRailProps) {
             <div>
               <dt className="text-ink-faint">Settlement</dt>
               <dd className="numeric text-ink-muted">
-                {quality ? "see market bar" : "not available"}
+                {quality
+                  ? quality.settlement_known && quality.settlement_value != null
+                    ? `settled ${quality.settlement_value}`
+                    : "not available"
+                  : "not available"}
               </dd>
             </div>
           </dl>

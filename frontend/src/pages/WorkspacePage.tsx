@@ -452,13 +452,34 @@ export function WorkspacePage() {
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden xl:flex-row">
         <div className="min-h-0 flex-1 overflow-y-auto">
           <div className="flex flex-wrap items-center gap-2 border-b border-line bg-surface px-3 py-1.5">
-            <div className="flex items-center gap-0.5" role="group" aria-label="Chart range">
+            <div
+              className="flex items-center gap-0.5"
+              role="group"
+              aria-label="Chart range"
+              onKeyDown={(event) => {
+                // Arrow keys move focus between range presets; Enter/Space keep
+                // the native button activation behaviour.
+                if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+                const buttons = Array.from(
+                  event.currentTarget.querySelectorAll<HTMLButtonElement>("button"),
+                );
+                const index = buttons.indexOf(document.activeElement as HTMLButtonElement);
+                if (index < 0) return;
+                event.preventDefault();
+                const next =
+                  event.key === "ArrowRight"
+                    ? Math.min(index + 1, buttons.length - 1)
+                    : Math.max(index - 1, 0);
+                buttons[next]?.focus();
+              }}
+            >
               {CHART_RANGES.map((range) => (
                 <button
                   key={range.id}
                   type="button"
-                  className="btn px-2 py-0.5 text-[11px]"
+                  className="btn px-2 py-0.5 text-[11px] focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none"
                   onClick={() => applyPresetRanges(range.id)}
+                  aria-label={`Set chart range to ${range.label}`}
                 >
                   {range.label}
                 </button>

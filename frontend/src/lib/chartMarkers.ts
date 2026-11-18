@@ -353,6 +353,56 @@ export function mergeMarkers(...groups: ChartMarker[][]): ChartMarker[] {
   return merged.sort((a, b) => a.time - b.time || a.id.localeCompare(b.id));
 }
 
+/**
+ * Kickoff and end markers, only when both wallclocks are observed. A missing
+ * end time is not replaced by the kickoff (that would invent an end).
+ */
+export function lifecycleMarkers(
+  lifecycle: LifecycleMeta | null | undefined,
+): ChartMarker[] {
+  if (!lifecyclePhaseAvailable(lifecycle)) return [];
+  const kickoff = toSeconds(lifecycle?.actual_kickoff_utc);
+  const end = toSeconds(lifecycle?.actual_end_utc);
+  if (kickoff === null || end === null) return [];
+  return [
+    {
+      time: kickoff,
+      position: "aboveBar",
+      color: CHART_COLORS.neutral,
+      shape: "arrowDown",
+      text: "KICKOFF",
+      id: "lifecycle:kickoff",
+      kind: "signal",
+    },
+    {
+      time: end,
+      position: "aboveBar",
+      color: CHART_COLORS.neutral,
+      shape: "circle",
+      text: "END",
+      id: "lifecycle:end",
+      kind: "signal",
+    },
+  ];
+}
+
+/**
+ * Every marker the chart shows for a run: entry/exit/settlement from the trade
+ * artifact, signal/fill evidence from the signals artifact, then observed
+ * lifecycle events. Signatures are from the artifacts, never inferred here.
+ */
+export function runChartMarkers({
+  trades,
+  signals,
+  lifecycle,
+}: {
+  trades: Trade[];
+  signals: SignalPoint[];
+  lifecycle: LifecycleMeta | null | undefined;
+}): ChartMarker[] {
+  return mergeMarkers(tradeMarkers(trades), signalMarkers(signals), lifecycleMarkers(lifecycle));
+}
+
 export interface EquitySeries {
   label: string;
   color: string;

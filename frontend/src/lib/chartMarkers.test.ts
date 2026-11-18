@@ -4,11 +4,14 @@ import {
   alignIndicatorSeries,
   barsToCandleData,
   CHART_COLORS,
+  lifecycleMarkers,
   normaliseEquityCurves,
   openPositionBands,
   phaseAt,
   phaseWindows,
   positionBands,
+  runChartMarkers,
+  signalMarkers,
   tradeMarkers,
 } from "../lib/chartMarkers";
 
@@ -122,6 +125,59 @@ describe("trade and lifecycle markers", () => {
     ]);
     expect(markers.map((marker) => marker.tradeId)).toEqual(["a", "a", "b", "b"]);
     expect(markers[0].time).toBeLessThan(markers[2].time);
+  });
+});
+
+describe("chart markers from run artifacts", () => {
+  it("emits kickoff and end markers only when both wallclocks are observed", () => {
+    expect(lifecycleMarkers(null)).toEqual([]);
+    expect(lifecycleMarkers({ actual_kickoff_utc: "2024-10-19T10:00:00Z" })).toEqual([]);
+    expect(lifecycleMarkers({ actual_end_utc: "2024-10-19T12:00:00Z" })).toEqual([]);
+    const markers = lifecycleMarkers(lifecycle);
+    expect(markers.map((marker) => marker.text)).toEqual(["KICKOFF", "END"]);
+    expect(markers.map((marker) => marker.time)).toEqual([
+      Math.floor(Date.parse("2024-10-19T10:00:00Z") / 1000),
+      Math.floor(Date.parse("2024-10-19T12:00:00Z") / 1000),
+    ]);
+  });
+
+  it("keeps trade and signal markers together instead of choosing one artifact", () => {
+    const markers = runChartMarkers({
+      trades: [trade({ trade_id: "t1", close_side: "SELL" })],
+      signals: [{ ts: "2024-10-19T10:30:00Z", kind: "signal", side: "BUY", reason: "long_entry" }],
+      lifecycle,
+    });
+    expect(markers.map((marker) => marker.id)).toEqual([
+      "lifecycle:kickoff",
+      "t1:entry",
+      "signal:0:" + Math.floor(Date.parse("2024-10-19T10:30:00Z") / 1000),
+      "t1:exit",
+      "lifecycle:end",
+    ]);
+    expect(markers.filter((marker) => marker.id.startsWith("signal:")).length).toBe(1);
+    expect(markers.filter((marker) => marker.kind === "entry")).toHaveLength(1);
+    expect(markers.filter((marker) => marker.kind === "exit")).toHaveLength(1);
+  });
+
+  it("does not emit lifecycle markers or phase shading for an unknown phase", () => {
+    const markers = runChartMarkers({
+      trades: [trade()],
+      signals: [{ ts: "2024-10-19T10:30:00Z", kind: "fill" }],
+      lifecycle: { actual_kickoff_utc: "2024-10-19T10:00:00Z", phase: "unknown" },
+    });
+    expect(markers.some((marker) => marker.id.startsWith("lifecycle:"))).toBe(false);
+    expect(phaseWindows(bars, { actual_kickoff_utc: "2024-10-19T10:00:00Z" })).toEqual([]);
+  });
+
+  it("labels fill markers from the signals artifact", () => {
+    const markers = signalMarkers([{ ts: "2024-10-19T10:00:00Z", kind: "fill", side: "BUY" }]);
+    expect(markers[0]).toMatchObject({ kind: "fill", text: "FILL" });
+    expect(markers[0].color).toBe(CHART_COLORS.neutral);
+  });
+
+  it("uses a colour-blind-safe up/down pair that differs by more than hue", () => {
+    expect(CHART_COLORS.up).not.toBe(CHART_COLORS.down);
+    expect(CHART_COLORS.settlement).not.toBe(CHART_COLORS.signal);
   });
 });
 

@@ -2,9 +2,10 @@
 
 How the suite is organized, which tests a change must run, and how to run them.
 
-> The runner (`scripts/test_domains.sh`) is a milestone 0 deliverable. Until it
-> lands, run the area you touched directly: `npm test` in `frontend/`, or
-> `pytest tests/<domain>` in the backend.
+> The runner has landed. Use `scripts/test_domains.sh` for domain-scoped runs;
+> `--changed` prints the mapping it used, and a domain with no tests exits 0
+> with "nothing to run". `frontend` skips with a reason when `node_modules` is
+> absent; `e2e` runs only when `HTF_E2E=1`.
 
 ## The protocol, in one rule
 

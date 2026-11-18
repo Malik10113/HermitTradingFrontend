@@ -9,6 +9,8 @@ User=root
 WorkingDirectory=/root/HermitTradingFrontend
 Environment=HTF_HOST=127.0.0.1
 Environment=HTF_PORT=8787
+Environment=HTF_DATA_ROOT=/root/FundedBetBacktesting/data
+Environment=HTF_VAR=/root/HermitTradingFrontend/var
 # Optional shared secret; set it in the environment, never in git.
 # Environment=HTF_APP_TOKEN=change-me
 ExecStart=/root/HermitTradingFrontend/.venv/bin/uvicorn backend.main:app --host 127.0.0.1 --port 8787

@@ -44,13 +44,17 @@ uv run uvicorn backend.main:app --host 127.0.0.1 --port 8787
 Open <http://127.0.0.1:8787>. The API is at `/api`; OpenAPI is at
 `/api/docs`.
 
-Expose it on the tailnet:
+Expose it on the tailnet with the checked-in helper (or the equivalent
+`tailscale serve` command):
 
 ```bash
-tailscale serve --bg --https=443 http://127.0.0.1:8787
+./deploy/tailscale-serve.sh
 ```
 
 Never bind `0.0.0.0`, never enable Funnel, and never add a public URL.
+
+Deployment and day-two operations are in [`docs/DEPLOY.md`](docs/DEPLOY.md) and
+[`docs/OPERATIONS.md`](docs/OPERATIONS.md).
 
 ## Tests
 

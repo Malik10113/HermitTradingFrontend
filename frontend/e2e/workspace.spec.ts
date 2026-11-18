@@ -280,3 +280,33 @@ test.describe("presets", () => {
     await expect(page.getByLabel("Fee in basis points")).toHaveValue("3");
   });
 });
+
+test("two runs compare side by side with a normalised equity overlay", async ({ page, request }) => {
+  const health = await page.request.get("/api/health").catch(() => null);
+  test.skip(!health || !health.ok(), "HTF_E2E app is not running");
+
+  const listed = await request.get("/api/backtests?limit=50");
+  const body = (await listed.json()) as { items: Array<{ run_id: string; status: string }> };
+  const complete = body.items.filter((run) => run.status === "complete").slice(0, 2);
+  test.skip(complete.length < 2, "needs two completed runs in var/");
+
+  const [first, second] = complete;
+  await page.goto(
+    workspaceUrl({
+      instrument: INSTRUMENT,
+      run: first.run_id,
+      compare: `${first.run_id},${second.run_id}`,
+    }),
+  );
+  const drawer = page.getByLabel("Backtest results");
+  await expect(drawer).toBeVisible();
+  await drawer.getByRole("tab", { name: "Compare" }).click();
+
+  await expect(drawer.getByText(/Equity overlay — normalised to 100 at the common start/)).toBeVisible();
+  await expect(drawer.getByRole("columnheader", { name: "Net P&L $" })).toBeVisible();
+  const rows = drawer.locator("table tbody tr");
+  await expect(rows).toHaveCount(2);
+  for (const id of [first.run_id, second.run_id]) {
+    await expect(drawer.locator("table tbody")).toContainText(id.slice(0, 16));
+  }
+});

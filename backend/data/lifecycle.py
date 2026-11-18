@@ -300,19 +300,22 @@ def build_match_lifecycle(
         merged.setdefault(row["match_key"], row)
     for row in existing_by_key.values():
         merged.setdefault(row["match_key"], row)
+    merged_rows = [dict(merged[key]) for key in sorted(merged)]
 
     all_inputs = sorted({path for path in [*expected_files, *backfill_inputs]}, key=str)
     events_input = Path(events_path) if events_path is not None else Path(config.POLYMARKET_EVENTS)
     extra_inputs = [events_input] if backfill else []
+    # For a backfill run, hash the row content too: carried-forward rows are an
+    # input to the result, and the token excludes lifecycle_version so a rebuild
+    # of the same rows yields the same version.
     version = versions.lifecycle_version(
         all_inputs,
         extra_inputs=extra_inputs,
-        extra_tokens=[_preserved_token(carried_rows)] if carried_rows else [],
+        extra_tokens=[_rows_token(merged_rows)] if backfill else [],
     )
 
     final_rows: list[dict[str, Any]] = []
-    for key in sorted(merged):
-        row = dict(merged[key])
+    for row in merged_rows:
         row["lifecycle_version"] = version
         final_rows.append(row)
 
@@ -356,8 +359,8 @@ def build_match_lifecycle(
     }
 
 
-def _preserved_token(rows: Iterable[dict[str, Any]]) -> str:
-    """Stable content token for rows carried forward from a prior artifact."""
+def _rows_token(rows: Iterable[dict[str, Any]]) -> str:
+    """Stable content token for the rows a backfill run writes."""
     payload = [
         {
             "match_key": row["match_key"],

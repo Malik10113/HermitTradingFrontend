@@ -565,9 +565,29 @@ def run_backfill(
             report.rows_written += 1
 
     rows.sort(key=lambda item: item["match_key"])
+    # Include every cache file for the selected leagues, not only the ones read
+    # this run, so a no-op rerun computes the same lifecycle version.
+    input_files.extend(
+        _cached_input_files(scoreboard_root, summary_root, source_root, selected)
+    )
     # Deterministic input order and no duplicate fingerprints.
     unique_inputs = sorted({path for path in input_files}, key=str)
     return BackfillResult(rows=rows, report=report, input_files=unique_inputs)
+
+
+def _cached_input_files(
+    scoreboard_root: Path,
+    summary_root: Path,
+    source_root: Path,
+    leagues: Iterable[str],
+) -> list[Path]:
+    paths: set[Path] = set()
+    for league in leagues:
+        espn_league = ESPN_LEAGUE_SLUGS[league]
+        paths.update(scoreboard_root.glob(f"{espn_league}_*.json.gz"))
+        paths.update(summary_root.glob(f"{espn_league}_*.json.gz"))
+        paths.update(source_root.glob(f"{league}_*.json.gz"))
+    return sorted((path for path in paths if path.is_file()), key=str)
 
 
 def _normalise_leagues(leagues: Iterable[str] | None) -> list[str]:

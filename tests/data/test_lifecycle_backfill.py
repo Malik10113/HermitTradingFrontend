@@ -575,6 +575,47 @@ def test_cli_no_backfill_stays_offline(
     assert "backfill " not in output
 
 
+def test_backfill_rerun_is_idempotent_and_version_is_stable(env: Env) -> None:
+    _write_events(
+        env.events,
+        [_event_row("epl-aaa-bbb-2025-12-30", "epl", date(2025, 12, 30), "burnley", "newcastle united", "bur", "new")],
+    )
+    fetcher = FakeEspn(
+        scoreboards={
+            ("eng.1", "20251230"): _scoreboard(
+                "2025-12-30T19:30Z",
+                ("9001", "Burnley", "Newcastle United", "BUR", "NEW"),
+            )
+        },
+        summaries={
+            ("eng.1", "9001"): _summary(
+                "2025-12-30T19:30:00Z", "2025-12-30T21:20:00Z"
+            )
+        },
+    )
+    first = lifecycle.build_match_lifecycle(
+        backfill=True,
+        fetcher=fetcher,
+        delay_s=0.0,
+        sleep=lambda _seconds: None,
+        today=date(2026, 11, 18),
+    )
+    failing = FailingFetcher()
+    second = lifecycle.build_match_lifecycle(
+        backfill=True,
+        fetcher=failing,
+        delay_s=0.0,
+        sleep=lambda _seconds: None,
+        today=date(2026, 11, 18),
+    )
+
+    assert failing.calls == 0
+    assert second["rows"] == first["rows"] == 1
+    assert second["lifecycle_version"] == first["lifecycle_version"]
+    assert second["backfill_report"]["requests"] == 0
+    assert second["preserved_existing"] == 1
+
+
 def test_leagues_filter_selects_only_requested_league(env: Env) -> None:
     _write_events(
         env.events,

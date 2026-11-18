@@ -180,3 +180,13 @@ def test_auth_token_is_optional(monkeypatch, tmp_path):
             assert c.get("/api/health", headers={"Authorization": "Bearer secret"}).status_code == 200
     finally:
         object.__setattr__(SETTINGS, "app_token", None)
+
+
+def test_experiment_status_distinguishes_cancelled_from_failed():
+    from backend.api.routes import _experiment_status
+
+    assert _experiment_status(["complete", "complete"]) == "complete"
+    assert _experiment_status(["cancelled", "cancelled"]) == "cancelled"
+    assert _experiment_status(["complete", "cancelled"]) == "cancelled"
+    assert _experiment_status(["complete", "failed"]) == "failed"
+    assert _experiment_status(["failed", "cancelled"]) == "failed"

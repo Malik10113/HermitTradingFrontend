@@ -124,7 +124,14 @@ def list_instruments(q: str | None, league: str | None, limit: int, offset: int)
                 items = [serialize_instrument(r) for r in out.get("items", [])]
                 return {"items": items, "instruments": items, "total": int(out.get("total", len(items)))}
             items = [serialize_instrument(r) for r in _records(out)]
-            return {"items": items, "instruments": items, "total": len(items)}
+            total = len(items)
+            try:
+                # The page is limited; report the true match count so the UI
+                # never claims a truncated inventory is complete.
+                total = len(search(q=q, league=league, limit=None, offset=0))
+            except TypeError:
+                pass
+            return {"items": items, "instruments": items, "total": total}
         except TypeError:
             pass
     rows = _index_rows()

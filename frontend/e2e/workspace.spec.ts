@@ -164,3 +164,68 @@ test.describe("research workspace", () => {
     expect(errors).toEqual([]);
   });
 });
+
+test.describe("secondary routes and holdout", () => {
+  test.beforeEach(async ({ page }) => {
+    await requireApp(page);
+  });
+
+  test("data, runs and presets pages render without console errors", async ({ page }) => {
+    const errors = collectConsoleErrors(page);
+    for (const [path, heading] of [
+      ["/data", "Data explorer"],
+      ["/runs", "Runs"],
+      ["/presets", "Presets"],
+    ] as const) {
+      await page.goto(path);
+      await expect(page.getByRole("heading", { name: heading, level: 1 })).toBeVisible();
+    }
+    expect(errors).toEqual([]);
+  });
+
+  test("an out-of-sample reveal is logged and a second reveal warns", async ({ page, request }) => {
+    const config = {
+      strategy: {
+        instrument_id: INSTRUMENT,
+        bar_type: "1m",
+        builtin_id: "nautilus_ema_cross",
+        builtin_params: { fast_period: 9, slow_period: 21 },
+        direction: "long",
+      },
+      execution: { profile: "conservative" },
+      risk: { sizing: { mode: "fixed_stake", value: 50 }, max_trades: 50 },
+      evaluation: {
+        date_range: { from: "2026-09-16", to: "2026-09-19" },
+        split: { train_end: "2026-09-17", test_start: "2026-09-19", embargo_days: 1 },
+      },
+    };
+    const created = await request.post("/api/backtests", { data: config });
+    expect(created.status()).toBe(202);
+    const { run_id: runId } = (await created.json()) as { run_id: string };
+
+    let status = "queued";
+    for (let attempt = 0; attempt < 60 && status !== "complete" && status !== "failed"; attempt += 1) {
+      await page.waitForTimeout(1000);
+      const detail = await request.get(`/api/backtests/${runId}`);
+      status = ((await detail.json()) as { status: string }).status;
+    }
+    expect(status).toBe("complete");
+
+    await page.goto(workspaceUrl({ run: runId, instrument: INSTRUMENT }));
+    const drawer = page.getByLabel("Backtest results");
+    await expect(drawer).toBeVisible();
+    const panel = drawer.getByLabel("Holdout ledger");
+    await expect(panel).toBeVisible();
+
+    // The ledger is append-only across test runs, so accept an already-revealed
+    // window too: the reveal action and the repeat warning are what matter.
+    const firstReveal = panel.getByRole("button", { name: "Reveal out-of-sample" });
+    if ((await firstReveal.count()) > 0) await firstReveal.click();
+    await expect(panel.getByText(/revealed \d+×/)).toBeVisible();
+    await expect(panel.getByText(/has already been revealed/).first()).toBeVisible();
+
+    await panel.getByRole("button", { name: "Reveal again", exact: true }).click();
+    await panel.getByRole("button", { name: /Reveal again — window is no longer clean/ }).click();
+    await expect(panel.getByText(/already been revealed \d+ time\(s\)/)).toBeVisible();
+  });
+});

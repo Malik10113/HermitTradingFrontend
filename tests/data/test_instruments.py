@@ -69,6 +69,7 @@ def test_search_and_league_filter(dataset):
     assert instruments.search("Aaa FC win", league="lal") == []
     assert instruments.search(limit=1)
     assert len(instruments.search(limit=1)) == 1
+    assert len(instruments.search(limit=None)) == len(instruments.load_index())
 
 
 def test_missing_settlement_is_null_not_inferred(dataset):

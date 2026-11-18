@@ -157,6 +157,9 @@ match_key, actual_kickoff_utc, actual_end_utc, source, precision
   disabled for it, and the UI says why. There is no 120-minute fallback.
 - Extra time and penalty shootouts use the last terminal event where present;
   league matches end at `end-regular-time`.
+- Lifecycle operands for the rule builder: `time_to_kickoff_minutes`,
+  `time_since_kickoff_minutes`, `time_to_settlement_minutes`, `phase`,
+  `market_status` (`open` | `closed` | `settled`).
 - Pre-2026 coverage depends on the ESPN backfill. 2026 is complete from the
   existing fixture map. Default backfill range: Big-4 from 2022-11, EPL from
   2024-10, matching the trade tape.
@@ -193,6 +196,10 @@ source, data_version
   inputs, parameters (type, min, max, default, step), outputs, warm-up bars.
 - v1 set: SMA, EMA, WMA, RSI, MACD, Bollinger Bands, ATR, Stochastic, Donchian
   channels, VWAP.
+- Prediction-market additions (P2/P4): clipped logit
+  (`ln(p / (1 - p))`, with `p` clipped to `[eps, 1 - eps]`), absolute and
+  percentage probability change, rolling probability volatility, distance from
+  recent probability extremes, rolling volume, trade count, and time-to-event.
 - Series are cached by `(data_version, bar_type, spec_hash)`; a parameter change
   is a new cache entry.
 - Warm-up values are returned as nulls so the UI can distinguish "not ready"
@@ -376,6 +383,40 @@ completed, held to settlement, early exits, average time between signals,
 average holding time, percentage of time in market, average entry/exit price,
 and per-leaf condition truth counts.
 
+**Data-quality preflight.** Every run shows, for the selected instrument and
+range: available period, trade count, active-minute percentage, longest gap,
+median trade size, and a quality grade. It warns — without blocking — on sparse
+coverage, missing settlement, insufficient indicator warm-up, very few trades, a
+long no-trade period, and zero signals generated. Acknowledged warnings are
+recorded in the manifest.
+
+**Experiments and sweeps.** An experiment is a parent containing standard child
+runs, not an optimiser.
+
+- Grid over one or two parameters; default maximum 50 runs / 15 minutes, hard
+  caps 200 / 60 minutes; concurrency 1.
+- Every variant is retained. Results show a table sortable by any metric and a
+  2-D heatmap with a selectable metric; in-sample and out-of-sample columns
+  appear where a split exists.
+- Cancelling the parent cancels its children; progress is completed / total.
+- The experiment records the variant count. It never auto-promotes a winner; the
+  weakest evidence level governs.
+
+### 8.6 Caching
+
+| Component | Key |
+|---|---|
+| Bars | `instrument + bar_type + data_version` |
+| Indicator series | `bars_key + spec_hash + indicator_impl_version` |
+| Signals | `bars_key + strategy_hash + warmup + indicator_impl_version` |
+| Settlement | `instrument + settlement_version` |
+| Lifecycle | `match_key + lifecycle_version` |
+
+Signals are independent of execution, sizing and the evaluation date, so a
+sweep or a comparison reuses them. The full series is computed with a warm-up
+buffer and sliced; it is not recomputed per date window. The cache is LRU with a
+size cap and a stats endpoint.
+
 ```json
 "execution": {
   "profile": "book",
@@ -444,29 +485,48 @@ Primary route: **`/` Research Workspace**. Secondary routes: **`/data`**,
 The workspace is one screen:
 
 - **Market bar** — hierarchical, searchable selector (Ctrl+K) with league,
-  match, selection and date; coverage badge; YES/NO toggle; remembered last
+  match, selection and date; team search across competitions; available data
+  range, coverage badge and quality grade; YES/NO toggle; remembered last
   selection.
 - **Chart** — candles, volume, shared indicator instances, kickoff marker,
-  phase shading, signal/fill/settlement markers, trade inspector.
+  phase shading, All / Pre-match / In-play / Post-match toggle,
+  signal/fill/settlement markers, open-position shading, trade inspector.
 - **Strategy rail** — built-in picker or rule builder, quick/advanced toggle,
   sizing panel, execution profile selector (Frictionless, Optimistic,
-  Conservative, Stress, Book), preflight.
+  Conservative, Stress, Book), preflight. Quick mode exposes the built-in's
+  primary parameters, direction, stake and costs; advanced exposes the full rule
+  tree. Switching preserves values where the fields overlap.
 - **Results drawer** — collapsed until a run completes; metrics, equity,
   drawdown, trade list, cost breakdown, diagnostics, phase breakdown, holdout
-  reveal, compare.
+  reveal, and compare (2–3 runs, metric table, equity overlay normalised to 100
+  at the common start).
 
 Secondary pages:
 
 - **Data explorer** — venue, league, market, selection, coverage, gaps, quality.
 - **Runs** — history with config hash, data version, status, compare selection.
-- **Presets** — saved experiment configurations, no folders/projects.
+- **Presets** — saved experiment configurations (instrument, bar type, range,
+  indicator instances, strategy, sizing, execution and evaluation), no
+  folders/projects.
 
 Rules:
 
 - The chart never computes indicator math; it renders server series.
+- Clicking a trade marker opens the trade inspector: signal and fill times,
+  side and token, entry/exit prices, gross and net P&L, fees, and the
+  indicator/condition context at entry.
 - Indicators added to the chart are the same instances available to the
-  strategy builder, and vice versa.
+  strategy builder, and vice versa. They are added by search, configured inline
+  (parameters, colour, visibility) and removed from the same chip.
 - Every number has a unit and a source (data version + timestamp).
+- URL state encodes instrument, bar type, range, indicator instances, strategy,
+  execution profile, split and run/compare ids, so a view is shareable and
+  reproducible. The last workspace state (instrument, bar type, timeframe,
+  indicators, strategy, stake, costs, chart layout and theme) is remembered and
+  can be reset.
+- The data-quality preflight is visible before a run: available period, trade
+  count, active minutes, longest gap, median trade size and quality grade, plus
+  any warnings.
 - Empty, missing-data and unknown-phase states are explicit; no fabricated
   candles and no inferred phase.
 - The execution profile is visible on the form, the run row and the results
@@ -593,6 +653,16 @@ is marked `orphaned`, not silently re-run.
     increments the experiment's variant counter.
 16. Two or three runs can be compared side by side with an equity overlay; the
     same strategy hash under different profiles shows different net costs.
+17. The data-quality preflight shows available period, trade count, active
+    minutes, longest gap, median trade size and grade, and warns on sparse data,
+    missing settlement, insufficient warm-up and zero signals; acknowledged
+    warnings appear in the manifest.
+18. A two-parameter sweep produces a heatmap, retains every variant, and
+    cancelling the parent stops all children.
+19. Re-running the same strategy under a different execution profile reuses the
+    cached signals: the strategy hash is unchanged and only the net costs move.
+20. A URL restores the instrument, bar type, range, indicators, strategy,
+    execution profile and run id; reset returns the remembered defaults.
 
 ## 18. Risks
 

@@ -35,6 +35,19 @@ from backend.rules.schema import (
 router = APIRouter(prefix="/api")
 
 
+def token_authorized(authorization: str | None) -> bool:
+    """Whether a request may proceed; true when no token is configured."""
+    expected = SETTINGS.app_token
+    if not expected:
+        return True
+    supplied = ""
+    if authorization:
+        scheme, _, value = authorization.partition(" ")
+        if scheme.lower() == "bearer":
+            supplied = value.strip()
+    return bool(supplied) and secrets.compare_digest(supplied, expected)
+
+
 def require_token(authorization: str | None = Header(default=None)) -> None:
     """Require ``Authorization: Bearer <HTF_APP_TOKEN>`` when a token is set.
 
@@ -43,15 +56,7 @@ def require_token(authorization: str | None = Header(default=None)) -> None:
     Every ``/api`` route, including health, is protected; static assets are
     served outside this router and stay public so the app can boot.
     """
-    expected = SETTINGS.app_token
-    if not expected:
-        return
-    supplied = ""
-    if authorization:
-        scheme, _, value = authorization.partition(" ")
-        if scheme.lower() == "bearer":
-            supplied = value.strip()
-    if not supplied or not secrets.compare_digest(supplied, expected):
+    if not token_authorized(authorization):
         raise ApiError(401, "unauthorized", "missing or invalid bearer token", {"scheme": "Bearer"})
 
 

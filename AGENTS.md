@@ -67,6 +67,10 @@ Rules:
 - `frontend/` never talks to Nautilus or reads Parquet. It calls the API.
 - `backend/engine/` is the only place that imports `nautilus_trader`.
 - A change that crosses a boundary updates the boundary's contract and its test.
+- The repository has one GitHub remote, `origin`
+  (`git@github.com:Malik10113/HermitTradingFrontend.git`); `master` is the
+  mainline and tracks `origin/master`. Code, docs, tests and trail learnings
+  live there; data never does (see §2 and §4).
 
 ## 4. Data contract
 
@@ -292,6 +296,9 @@ Until it lands, run the suite for the area you touched directly:
   before committing.
 - Commit after each discrete change. Conventional messages. Never commit
   `var/`, credentials, or generated artifacts.
+- Push each commit to `origin` (`git push origin master`) once its tests pass
+  and `trail check` is clean; never force-push `master`. Work that is not ready
+  stays on a local topic branch, rebased on `master` before its first push.
 - Keep the sibling repo untouched; if its data is wrong, record it in this
   repo's data register and raise it with the user.
 - Prefer boring, deterministic code. No hidden global state, no time-of-day
@@ -320,6 +327,7 @@ Until it lands, run the suite for the area you touched directly:
 | 2026-11-18 | Lifecycle | ESPN `keyEvents` kickoff / end-regular-time wallclock; no row means `unknown`, no nominal duration |
 | 2026-11-18 | Sizing | Fixed stake (£) or Risk % of bankroll; Kelly deferred to v1.1 |
 | 2026-11-18 | Holdout | Soft warning plus append-only ledger, keyed by strategy hash and split |
+| 2026-11-18 | Remote | GitHub `origin` (`Malik10113/HermitTradingFrontend`); `master` is mainline and every discrete change is pushed after tests and `trail check` |
 
 <!-- trail:start -->
 ## Trail — repo context graph

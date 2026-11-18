@@ -165,6 +165,33 @@ describe("wire normalisation", () => {
     expect(compare.runs[0].equity?.map((point) => point.equity_usd)).toEqual([100, 102]);
   });
 
+  it("maps the signals artifact reference_price alias and keeps absent prices null", () => {
+    const run = normaliseRun({
+      run_id: "run_sig",
+      status: "complete",
+      signals: [
+        {
+          ts: "2024-10-19T10:00:00Z",
+          ts_ns: Date.parse("2024-10-19T10:00:00Z") * 1e6,
+          action: "long_entry",
+          kind: "signal",
+          side: "BUY",
+          token: "YES",
+          reference_price: 0.42,
+          reason: "ema_cross",
+        },
+        { ts_ns: Date.parse("2024-10-19T10:05:00Z") * 1e6, action: "fill" },
+        { action: "no_timestamp" },
+      ],
+    });
+    expect(run.signals).toHaveLength(2);
+    expect(run.signals?.[0].price).toBe(0.42);
+    expect(run.signals?.[0].reason).toBe("ema_cross");
+    expect(run.signals?.[1].price).toBeNull();
+    expect(run.signals?.[1].kind).toBe("fill");
+    expect(run.signals?.[1].ts).toBe("2024-10-19T10:05:00.000Z");
+  });
+
   it("maps trade artifact rows into the trade contract", () => {
     const trades = normaliseTrades([
       {

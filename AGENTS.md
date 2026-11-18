@@ -172,8 +172,8 @@ Execution:
 - One `RuleStrategy` Nautilus class interprets the validated JSON at runtime.
 - Market orders. Buys walk asks; sells walk bids and are fill-and-kill. Default
   fill timing is the next bar's open; the convention is recorded.
-- Sizing: Fixed stake (£) or Risk % of bankroll, with stake/contracts/max loss/
-  max payout/max profit shown. Fractional Kelly is deferred to v1.1; it needs a
+- Sizing: Fixed stake (USD, the tape's notional) or Risk % of bankroll, with
+  stake/contracts/max loss/max payout/max profit shown. Fractional Kelly is deferred to v1.1; it needs a
   calibrated probability.
 - One position per instrument; no pyramiding in v1.
 
@@ -325,7 +325,7 @@ Until it lands, run the suite for the area you touched directly:
 | 2026-11-18 | Backtests | Single instrument, long and short |
 | 2026-11-18 | Execution | Five profiles: Frictionless, Optimistic, Conservative, Stress, Book; Book falls back to Conservative, never Frictionless |
 | 2026-11-18 | Lifecycle | ESPN `keyEvents` kickoff / end-regular-time wallclock; no row means `unknown`, no nominal duration |
-| 2026-11-18 | Sizing | Fixed stake (£) or Risk % of bankroll; Kelly deferred to v1.1 |
+| 2026-11-18 | Sizing | Fixed stake (USD, the tape's notional) or Risk % of bankroll; Kelly deferred to v1.1 |
 | 2026-11-18 | Holdout | Soft warning plus append-only ledger, keyed by strategy hash and split |
 | 2026-11-18 | Remote | GitHub `origin` (`Malik10113/HermitTradingFrontend`); `master` is mainline and every discrete change is pushed after tests and `trail check` |
 

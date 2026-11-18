@@ -617,6 +617,10 @@ def get_experiment(experiment_id: str) -> dict[str, Any]:
     if exp is None:
         raise not_found("experiment", experiment_id)
     children = exp.get("runs") or []
+    exp["runs"] = [
+        _run_payload(r, include_summary=True, detail=False) if r.get("run_id") else r
+        for r in children
+    ]
     done = len([r for r in children if _terminal(r["status"])])
     exp["completed"] = done
     if done == len(children) and children:

@@ -119,10 +119,26 @@ low, close, volume, trade_count, source, data_version`.
   a naked short. An exit sells exactly the held quantity, not a freshly sized
   stake.
 - Settlement is applied by the analytics layer as an explicit cash flow for
-  positions still open at expiry, using the indexed settlement value. It is
-  never inferred from a price.
+  positions still open at expiry, using the indexed settlement value. The
+  settlement *timestamp* is the market metadata `end_date` (the brief's expiry);
+  `markets.updated_at` is a metadata timestamp and is not used to inflate
+  holding periods. The value itself is never inferred from a price.
+- Composite (5m/15m/1h/1d) and non-time bars are replayed to Nautilus as
+  precomputed EXTERNAL bars; only 1m bars drive Nautilus matching. Fills still
+  come from the next bar's open quote.
+- Out-of-sample metrics are hidden by the API until an explicit reveal; the
+  unrevealed response reports the in-sample slice and `oos_hidden: true`.
+  Overall metrics are withheld because they would include the test window.
 - `FillModel.get_orderbook_for_fill_simulation` must not raise: an exception
   aborts the fill. Guard all lookups.
+
+## Currency
+
+The Polymarket tape's notional is USD (`usd_amount`). There is no verified GBP
+conversion in the stored data, so v1 sizes and reports in **USD**. The UI labels
+stake, bankroll and P&L in USD; `bankroll_gbp` is accepted only as a legacy
+input alias and stored as `bankroll_usd`. This corrects the £ wording in the
+brief rather than inventing an exchange rate.
 
 ## Execution profiles
 

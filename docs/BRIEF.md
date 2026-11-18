@@ -289,7 +289,7 @@ A strategy is JSON, not code:
 - The order side follows the intent table in §5: closing a long sells the held
   token, and opening a short buys the NO token. The fill engine never treats a
   complement purchase as an exit.
-- Sizing is **Fixed stake (£)** or **Risk % of bankroll**. Both show stake,
+- Sizing is **Fixed stake (USD, the tape notional)** or **Risk % of bankroll**. Both show stake,
   contracts, maximum loss, maximum payout and maximum profit before the run.
 - Fractional Kelly is deferred to v1.1. It needs a calibrated probability, and
   using the full-sample win rate would be lookahead.
@@ -369,8 +369,8 @@ strategy hash but still increments the experiment's variant counter.
 annualisation, rf = 0, flat days included), maximum drawdown, trade count, win
 rate, average win/loss, profit factor, expectancy, average holding period,
 exposure, fees and slippage. Prediction-market: average entry/exit probability,
-average probability movement captured in YES-equivalent points, return per £
-capital deployed, return per £ notional traded, average contracts, settlement
+average probability movement captured in YES-equivalent points, return per USD of
+capital deployed, return per USD notional traded, average contracts, settlement
 P&L vs trading P&L, held-to-settlement count, early exits. Gross and net are
 shown together; slippage is embedded in the fill and fees are a separate line.
 

@@ -217,7 +217,7 @@ export function PriceChart({
       })),
     );
 
-    if (false && volume.length > 0) {
+    if (volume.length > 0) {
       const volumeSeries = chart.addHistogramSeries({
         priceFormat: { type: "volume" },
         priceScaleId: "",

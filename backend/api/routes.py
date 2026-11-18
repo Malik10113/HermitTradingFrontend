@@ -424,7 +424,7 @@ def create_backtest(req: RunRequest) -> dict[str, Any]:
 @router.get("/backtests")
 def list_backtests(limit: int = Query(default=100, ge=1, le=500), offset: int = Query(default=0, ge=0)) -> dict[str, Any]:
     runs = state.list_runs(limit=limit, offset=offset)
-    items = [_run_payload(r, include_summary=False) for r in runs]
+    items = [_run_payload(r, include_summary=True, detail=False) for r in runs]
     return {"items": items, "runs": items, "total": len(runs)}
 
 

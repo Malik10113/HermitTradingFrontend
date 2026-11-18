@@ -217,10 +217,10 @@ export function PriceChart({
       })),
     );
 
-    if (volume.length > 0) {
+    if (false && volume.length > 0) {
       const volumeSeries = chart.addHistogramSeries({
         priceFormat: { type: "volume" },
-        priceScaleId: "volume",
+        priceScaleId: "",
         priceLineVisible: false,
         lastValueVisible: false,
       });

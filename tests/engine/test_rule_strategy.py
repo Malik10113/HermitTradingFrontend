@@ -527,14 +527,16 @@ def test_quote_before_the_next_bar_open_is_not_used(primary, complement):
     assert len(strategy.submitted) == 1
 
 
-def test_late_quote_is_recorded(primary, complement):
+def test_gap_quote_is_still_the_next_available_open(primary, complement):
     strategy = make_strategy(
         make_config(long_entry={"gt": ["close", 0]}, direction="long"), primary, complement
     )
     strategy.on_bar(make_bar(TS0, 0.50))
+    # Sparse tape: the next available open is two bar intervals later. It is
+    # still the next bar, not a late fill, and it must submit.
     strategy.on_quote(make_quote(TS0 + 2 * BAR, bid=0.499, ask=0.501))
     assert len(strategy.submitted) == 1
-    assert strategy.diagnostics()["late_intents"] == 1
+    assert strategy.diagnostics()["late_intents"] == 0
 
 
 def test_reject_does_not_crash(primary, complement):

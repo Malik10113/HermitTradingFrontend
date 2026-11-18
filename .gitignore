@@ -51,6 +51,9 @@ Thumbs.db
 # Local agent/tool worktrees
 .kilo/
 
+# Generated bars, Nautilus catalog, run artifacts and SQLite state.
+/var/
+
 # The sibling research data source is read-only and lives outside this repo.
 # If a local symlink or copy is ever used, keep it out of git:
 /data/

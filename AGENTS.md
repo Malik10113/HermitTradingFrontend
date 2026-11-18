@@ -1,92 +1,242 @@
 # AGENTS.md
 
-Personal sports/prediction-market statistical arbitrage research project.
+> **HermitTradingFrontend** — a single-user, local-first dashboard for
+> prediction-market OHLC data, dynamic technical indicators and NautilusTrader
+> backtests, served on the tailnet.
+>
+> The authoritative design is [`docs/BRIEF.md`](docs/BRIEF.md). This file is the
+> working contract: what the project is, what an agent may change, and how a
+> change is judged. When the two disagree, the brief wins and this file is
+> corrected.
 
-Repo is currently empty (greenfield): no code, no commits, no remote.
+## 1. What this project is
 
-## Role
+A research instrument, not a trading system. It reads acquired prediction-market
+data, renders it as candles, lets the user add indicators and compose a
+strategy, then runs a deterministic NautilusTrader backtest and shows the
+result.
 
-Work as a quantitative research analyst. You identify and document candidate opportunities; you never place bets or move funds.
+The user is the owner, on one machine, over Tailscale. There is no sign-up, no
+multi-tenancy and no public exposure.
 
-## Task types (tag every output with exactly one)
+## 2. Non-negotiable boundaries
 
-- `arbitrage` — cross-book/cross-exchange guaranteed-margin opportunities
-- `long_term_mispricing` — a book's line diverges from your model + sharp reference
-- `short_term_mispricing` — a book hasn't repriced after a recent event
+- **Read-only data.** `/root/FundedBetBacktesting/` and its `data/` are never
+  written to, moved or deleted. Open Parquet/DuckDB read-only. All generated
+  state goes under `var/`.
+- **No live trading.** No order placement, no venue credentials, no account
+  management, no fund movement. Backtests only.
+- **No arbitrary code.** Strategies come from the built-in catalogue or the
+  declarative rule schema. The UI never uploads or evaluates Python. No `eval`,
+  no string code generation.
+- **No invented numbers.** Every price, metric, probability and timestamp shown
+  must come from stored data or a computed artifact. If a value is missing, show
+  "not available"; never interpolate, estimate or hard-code a plausible number.
+- **No profit claims.** The dashboard reports historical simulation output. It
+  does not say a strategy "works", "should" be traded, or will be profitable.
+- **UTC only.** All timestamps are timezone-aware UTC; naive datetimes are a
+  bug. Nanoseconds at the engine boundary, ISO-8601 in JSON.
+- **Tailnet only.** Bind `127.0.0.1`; expose with `tailscale serve`. Never bind
+  `0.0.0.0`, never enable Funnel, never add a public URL.
 
-## Grounding rules
+## 3. Stack and layout
 
-- Every price, odds, or percentage you state must come from a tool call made in the session. Never state a live number from training knowledge.
-- Always compute and report the no-vig implied probability, not the raw odds.
-- Always report your source and its timestamp alongside any live figure.
+| Area | Choice |
+|---|---|
+| Frontend | React + TypeScript + Vite, TradingView `lightweight-charts`, Tailwind CSS |
+| Backend | Python 3.13+, FastAPI, Uvicorn, Pydantic v2 |
+| Engine | NautilusTrader 2.x, pinned exactly (currently `2.0.0rc9`) |
+| Data | Parquet + DuckDB; Polars for transforms |
+| Env | `uv` for Python, `npm` for Node |
+| Storage | SQLite for app state; Parquet for bars, runs and artifacts |
 
-## Output schema (per candidate)
-
-```json
-{
-  "task_type": "...",
-  "market": "...",
-  "books_involved": [...],
-  "no_vig_probabilities": {...},
-  "model_probability": float | null,
-  "edge_estimate_pct": float,
-  "confidence": "low" | "medium" | "high",
-  "confidence_basis": "...",
-  "execution_risk_flags": [...],
-  "kelly_fraction_suggested": float,
-  "sources": [...]
-}
+```
+frontend/            React app; presentation and input validation only
+backend/             FastAPI app, API schemas, job orchestration
+backend/engine/      Nautilus adapter: instruments, catalog, RuleStrategy, runner
+backend/data/        Bar builders, data-version hashing, DuckDB read model
+backend/indicators/  IndicatorSpec registry and Nautilus replay adapter
+docs/                BRIEF.md, DATA_REGISTER.md, CHANGELOG.md, session masters
+scripts/             Operational entry points (build bars, build catalog, test)
+var/                 Generated: bars/, catalog/, runs/, app.db (gitignored)
+tests/               Domain-scoped tests (see §10)
 ```
 
-- `model_probability` is `null` for pure arbitrage.
-- `confidence_basis` explains what's driving the confidence, in one sentence.
-- `execution_risk_flags` examples: one-leg risk, thin liquidity, account-limiting exposure, stale quote.
-- `kelly_fraction_suggested` is pre-computed at 1/4 Kelly.
-- `model_probability` is the model's probability; `no_vig_probabilities` come from the books.
+Rules:
 
-## Guardrails
+- `frontend/` never talks to Nautilus or reads Parquet. It calls the API.
+- `backend/engine/` is the only place that imports `nautilus_trader`.
+- A change that crosses a boundary updates the boundary's contract and its test.
 
-- Flag, don't recommend. You are not authorized to state a bet "should" be placed — you surface a structured candidate for human review.
-- If a required data point is unavailable or stale, say so explicitly rather than estimating it.
-- Distinguish clearly between what you verified via a tool and what you are inferring — never blend the two in one confidence score.
+## 4. Data contract
 
-## Optimisation charter
+- The sibling data register is the upstream truth. This repo keeps its own
+  `docs/DATA_REGISTER.md` listing only the datasets it reads, with path, license,
+  row count, coverage and the rebuild command.
+- Register a dataset before the first code path reads it.
+- A **data version** is SHA-256 over ordered
+  `(path, size, mtime_ns, rows, min_ts, max_ts)` plus the builder version.
+  Store it on every bar file and every run. Same data version + same config +
+  same code = identical result.
+- Never silently fall back to a different source. If the expected path is
+  missing, fail with a clear error naming the dataset and the register entry.
+- Missing data is explicit: no bar for an empty interval, `is_stale` on a
+  stale bar, and a visible gap in the chart.
 
-Every family parameter search or promotion follows
-`docs/optimizer_charter_2026-10-25.md`. Pre-register the family with
-`docs/family_preregistration_template.md` **before** the first run. The evidence
-order is search gates -> inner confirmation -> outer holdout -> executable books;
-the holdout is one shot and sealed, and a family decision is the weakest level
-reached.
+v1 sources (see the brief for the full table):
 
-## Testing protocol
+- `polymarket/football/football_moneyline_tape.parquet`
+- `polymarket/epl/epl_moneyline_tape.parquet`
+- `polymarket/sii/markets.parquet`
+- `results/polymarket_events.parquet`, `results/big4_matches.parquet`
+- `kalshi/epl_2025/quotes.parquet`, `kalshi/epl_2025/markets.parquet`
 
-The suite is split into twelve domains (`core`, `strategies`, `backtesting`,
-`challenges`, `research`, `optimizer`, `system_b`, `polymarket`, `portfolio`,
-`human_interface`, `tooling`). Run only the domains a change affects:
+## 5. Instrument and bar contract
+
+- Instruments are Nautilus `BinaryOption` instances, one per outcome token.
+- Prices are 0–1 probabilities. Venue precision is recorded, never assumed.
+- "Short YES" compiles to "buy NO". The executed token is always visible.
+- Settlement is 0 or 1 at expiry, from the mapped results table.
+- Canonical bar fields: `instrument_id, bar_type, ts_event, ts_init, open,
+  high, low, close, volume, trade_count, source, data_version`.
+- 1-minute bars are the base (`...-1-MINUTE-LAST-EXTERNAL`). Higher timeframes
+  are composite bars (`...-5-MINUTE-LAST-INTERNAL@1-MINUTE-LAST-EXTERNAL`).
+- Non-time bars: `TICK`, `VOLUME`, `VALUE`, `RENKO`, and imbalance/runs
+  variants. Nautilus 2.x has no range bars; do not promise them.
+- Polymarket bars are built from fills: OHLC is last trade, volume is USD
+  notional, and `trade_count` is retained. Kalshi bars come from its one-minute
+  quotes and retain bid/ask separately.
+- No bar is fabricated for an interval with no trades.
+
+## 6. Indicator contract
+
+- One implementation: Python wrapping Nautilus indicator classes. The chart and
+  the backtest use the same computed series. There is no JavaScript indicator
+  math.
+- Every indicator is an `IndicatorSpec`: id, label, pane, inputs, parameter
+  schema (type, min, max, default, step), outputs, warm-up.
+- v1: SMA, EMA, WMA, RSI, MACD, Bollinger, ATR, Stochastic, Donchian, VWAP.
+- Cache by `(data_version, bar_type, spec_hash)`. A parameter change is a new
+  entry, not a mutation.
+- Return nulls during warm-up. Never return 0 for "not ready".
+- Every indicator has a golden-fixture parity test. A chart value and a backtest
+  value that disagree is a release blocker.
+
+## 7. Strategy contract
+
+Two authoring paths, one execution path.
+
+**Built-ins** are curated and versioned, each with a provenance tag naming the
+source file (sibling strategy or Nautilus example). v1 set: `nautilus_ema_cross`,
+`sma_trend`, `rsi_reversion`, `bollinger_reversion`, `macd_trend`,
+`donchian_breakout`, `atr_vol_breakout`, `vwap_reversion`, `buy_and_hold`,
+`random_entry`.
+
+**Rules** are declarative JSON:
+
+- operands: price fields, `indicator:<id>:<output>` with parameters, constants;
+- comparators: `gt`, `gte`, `lt`, `lte`, `crosses_above`, `crosses_below`;
+- boolean: `all`, `any`, `not`, with capped depth and node count;
+- entry/exit for long and short, sizing, costs, settlement.
+
+Validation happens before a job exists: unknown indicator, out-of-range
+parameter, empty tree or malformed operand returns `422` with a field path.
+Canonicalise the JSON (sorted keys) and hash it; the hash identifies the run.
+
+Execution:
+
+- One `RuleStrategy` Nautilus class interprets the validated JSON at runtime.
+- Market orders at the signal bar close, filled at the next bar open by default;
+  the convention is configurable and recorded.
+- Fees and slippage are explicit. A zero-cost run is labelled "frictionless".
+- Sizing: fixed stake, percent of bankroll, or fractional Kelly with a hard cap.
+- One position per instrument; no pyramiding in v1.
+
+## 8. Backtest contract
+
+- Every run stores `config.json`, `summary.json`, `equity.parquet`,
+  `trades.parquet`, `positions.parquet`, `log.txt`, `manifest.json`.
+- The manifest records: rule hash, data version, source paths, bar type and
+  aggregation chain, cost assumptions, git SHA, Nautilus version, artifact
+  hashes.
+- Workers are separate processes. Nautilus engines are never shared across
+  threads or requests. Concurrency defaults to 1.
+- Queued → running → complete/failed/cancelled. Progress and logs stream over
+  SSE; the UI never polls in a tight loop.
+- Cancellation is SIGTERM, then SIGKILL after a grace period. Orphans are reaped
+  on startup.
+- A run whose data version is absent is `orphaned`; it is shown, not re-run.
+
+## 9. API and UI contract
+
+- API routes live under `/api`; the built frontend is served at `/`.
+- Errors are `{code, message, details}` with a stable code.
+- Units are explicit in field names (`_usd`, `_bps`, `_ns`) and documented.
+- The chart renders server-computed series only. URL state carries instrument,
+  bar type, range, indicator specs and run id, so a view is shareable and
+  reproducible.
+- Every page shows the data version; every result page shows the run hash.
+- Empty, loading, stale and error states are designed, not incidental.
+- Accessibility: keyboard navigation, colour-blind-safe palette, sufficient
+  contrast in both themes.
+
+## 10. Testing protocol
+
+Domains: `frontend`, `api`, `engine`, `data`, `indicators`, `e2e`, `tooling`.
+Run only the domains a change touches, plus their dependents. The runner is a
+milestone 0 deliverable with this interface:
 
 ```bash
-python scripts/test_domains.py --changed      # working tree vs HEAD
-python scripts/test_domains.py --changed --fast
-python scripts/test_domains.py --domain core
-python scripts/test_domains.py --all          # before merge / PR
+scripts/test_domains.sh --changed
+scripts/test_domains.sh --changed --fast
+scripts/test_domains.sh --domain engine
+scripts/test_domains.sh --all          # before merge
 ```
 
-`--changed` maps each touched path to its owning domain, adds every domain that
-depends on it, and runs only those. Do not run the full suite on every edit; do
-not merge on a domain-only run. New tests go in the directory of the domain
-whose source they exercise — see `TESTING.md` for the mapping rules and test
-conventions.
+Until it lands, run the suite for the area you touched directly:
+`npm test` in `frontend/`, `pytest tests/<domain>` in the backend.
 
-## Mode calls
+- Unit: Vitest for `frontend`; pytest for `backend`, `data`, `indicators`.
+- E2E: Playwright against a built app with a small fixture catalog.
+- Golden fixtures: one indicator fixture per indicator; one deterministic
+  backtest fixture with a known equity curve and trade count.
+- Tests never reach the network or the sibling repo. A test that needs data
+  uses a checked-in fixture or skips with a reason.
+- A test may not pass by mocking the thing under test.
 
-When the model is called in "defer" mode, use subagents extensively to maintain context window 
-and increase efficiency and coding speed. In addition, git push and update trails after any
-discrete change to the codebase. Use the intenet for inspiration and to flesh out your ideas.
+## 11. Working rules
 
-When the model is called in "wrapup" mode, create a master doc summarising what we have
-accomplished hhis session and delete any other redundant docs generated in this session.
-Update trails and git push any changes that need to be commited.
+- Read `docs/BRIEF.md` and `docs/DATA_REGISTER.md` before changing data or
+  strategy behaviour.
+- Use trail before grepping: `trail ask "<task>" --source`. Save a learning when
+  a decision, bug cause or correction would otherwise be lost. Run `trail check`
+  before committing.
+- Commit after each discrete change. Conventional messages. Never commit
+  `var/`, credentials, or generated artifacts.
+- Keep the sibling repo untouched; if its data is wrong, record it in this
+  repo's data register and raise it with the user.
+- Prefer boring, deterministic code. No hidden global state, no time-of-day
+  dependence, no random seeds outside an explicit fixture.
+- When a requirement is ambiguous, ask; do not guess a number, a venue rule or a
+  cost assumption.
+- Mode calls:
+  - **defer**: use subagents to preserve context, push and update trails after
+    each discrete change.
+  - **wrapup**: write one master doc for the session, delete redundant session
+    docs, update trails, push.
+
+## 12. Decision log
+
+| Date | Decision | Answer |
+|---|---|---|
+| 2026-11-18 | Data | Prediction markets from the sibling repo (Polymarket, Kalshi; Betfair in v2) |
+| 2026-11-18 | Bars | 1-minute base with resampling, plus tick/volume/value/Renko |
+| 2026-11-18 | Frontend | React + TypeScript + Vite |
+| 2026-11-18 | Authoring | Declarative rules **and** a curated built-in catalogue sourced from the sibling strategies and Nautilus examples |
+| 2026-11-18 | Indicators | Nautilus/Python for both chart and backtest |
+| 2026-11-18 | Hosting | `tailscale serve`, tailnet-only |
+| 2026-11-18 | Backtests | Single instrument, long and short |
+
 <!-- trail:start -->
 ## Trail — repo context graph
 

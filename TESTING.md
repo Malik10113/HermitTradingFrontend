@@ -2,9 +2,9 @@
 
 How the suite is organized, which tests a change must run, and how to run them.
 
-> **Framework scaffold.** The protocol below is fixed. The domain table and the
-> runner are intentionally empty: fill them in once the frontend stack and test
-> runner are chosen, then add `scripts/test_domains.*` for that stack.
+> The runner (`scripts/test_domains.sh`) is a milestone 0 deliverable. Until it
+> lands, run the area you touched directly: `npm test` in `frontend/`, or
+> `pytest tests/<domain>` in the backend.
 
 ## The protocol, in one rule
 
@@ -12,22 +12,15 @@ How the suite is organized, which tests a change must run, and how to run them.
 > depends on it. Nothing else.** The full suite is a pre-push / pre-merge ritual,
 > not a per-edit tax.
 
-The suite is split into **domains**. Each domain owns a directory under `tests/`
-and a set of source paths. One script is the only supported entry point for
-domain-scoped runs; it encodes the mapping so nobody has to remember it.
+The suite is split into seven **domains**. One script is the only supported
+entry point for domain-scoped runs; it encodes the mapping so nobody has to
+remember it.
 
 ```bash
-# What does my working tree need? (staged, unstaged and untracked files)
-<runner> --changed
-
-# Same, but skip slow end-to-end tests
-<runner> --changed --fast
-
-# One domain explicitly
-<runner> --domain <domain>
-
-# Everything (pre-merge / CI)
-<runner> --all
+scripts/test_domains.sh --changed
+scripts/test_domains.sh --changed --fast
+scripts/test_domains.sh --domain engine
+scripts/test_domains.sh --all
 ```
 
 `--changed` prints the mapping it used, so a surprising selection is visible
@@ -38,23 +31,31 @@ usage) — it never silently skips a domain it cannot attribute.
 
 | Domain | Tests | Owns | Depends on |
 |---|---|---|---|
-| `<domain>` | `tests/<domain>` | `<source globs>` | — |
+| `frontend` | co-located `frontend/src/**/*.test.ts(x)` | `frontend/src` | — |
+| `data` | `tests/data` | `backend/data`, `scripts/build_bars.py`, `scripts/build_catalog.py` | — |
+| `indicators` | `tests/indicators` | `backend/indicators` | data |
+| `engine` | `tests/engine` | `backend/engine` | data, indicators |
+| `api` | `tests/api` | `backend/api`, `backend/main.py` | data, indicators, engine |
+| `e2e` | `tests/e2e` | `frontend/src`, `backend` | frontend, api |
+| `tooling` | `tests/tooling` | `scripts` | — |
 
-Rules for filling this in:
+Rules for the runner:
 
-- A domain is a *reason to run tests together*, not necessarily a folder that
-  mirrors `src/`.
-- `Owns` lists source globs, not single files; the runner maps every changed
-  path to the most specific glob.
-- `Depends on` is transitive: the runner adds every dependent domain.
-- New tests go in the directory of the domain whose source they exercise.
-- A domain decision is the weakest level reached: a passing unit test does not
-  stand in for a passing e2e test.
+- Map every changed path to the most specific owning glob.
+- Add every transitive dependent domain.
+- Unknown paths go to `tooling` and are printed, never dropped.
+- A domain with no tests exits 0 with "nothing to run".
 
 ## Conventions
 
-- Tests must be deterministic; seed anything random.
-- No network access in unit tests. Anything that reads the sibling data source
-  goes in its own domain and is skipped when the data is absent.
-- A test that cannot run (missing data, missing browser) reports **skipped with
-  a reason** — never a silent pass.
+- Unit: Vitest for `frontend`; pytest for the Python domains.
+- E2E: Playwright against a built app with a small fixture catalog.
+- Golden fixtures: one indicator fixture per indicator, one deterministic
+  backtest fixture with a known equity curve and trade count.
+- Deterministic: seed anything random. A test that depends on wall-clock time
+  is a bug.
+- No network access. A test that needs the sibling data uses a checked-in
+  fixture or skips with a reason.
+- A test may not pass by mocking the thing under test.
+- Missing data or a missing browser reports **skipped with a reason**, never a
+  silent pass.

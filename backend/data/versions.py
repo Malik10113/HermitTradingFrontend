@@ -1,0 +1,157 @@
+"""Content-derived data versions.
+
+A data version is SHA-256 over the ordered list of
+``(relative path, size, mtime_ns, rows, min_ts, max_ts)`` for the datasets a
+result depends on, plus a builder version string.  The fingerprint is cached in
+``var/data_versions.json`` so repeated requests do not rescan parquet files.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Iterable
+
+from backend.config import DATA_ROOT, DATA_VERSIONS_PATH
+
+BUILDER_VERSION = "bars-1.0.0"
+LIFECYCLE_BUILDER_VERSION = "lifecycle-1.0.0"
+
+
+@dataclass(frozen=True)
+class Fingerprint:
+    path: str
+    size: int
+    mtime_ns: int
+    rows: int | None
+    min_ts: int | None
+    max_ts: int | None
+
+    def as_list(self) -> list[object]:
+        return [self.path, self.size, self.mtime_ns, self.rows, self.min_ts, self.max_ts]
+
+
+def _rel(path: Path) -> str:
+    try:
+        return str(path.resolve().relative_to(DATA_ROOT.resolve()))
+    except ValueError:
+        return str(path.resolve())
+
+
+def fingerprint(path: Path, timestamp_column: str | None = None) -> Fingerprint:
+    stat = path.stat()
+    rows: int | None = None
+    min_ts: int | None = None
+    max_ts: int | None = None
+    if timestamp_column is not None:
+        try:
+            import duckdb
+
+            con = duckdb.connect()
+            try:
+                q = (
+                    f"SELECT count(*), min({timestamp_column}), max({timestamp_column}) "
+                    f"FROM read_parquet(?)"
+                )
+                row = con.execute(q, [str(path)]).fetchone()
+                rows, min_ts, max_ts = int(row[0]), _to_ns(row[1]), _to_ns(row[2])
+            finally:
+                con.close()
+        except Exception:  # noqa: BLE001 - a missing optional column is not fatal
+            rows = None
+    return Fingerprint(_rel(path), stat.st_size, stat.st_mtime_ns, rows, min_ts, max_ts)
+
+
+def _to_ns(value: object) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        # Tape timestamps are unix seconds; values already in ns are > 1e17.
+        v = int(value)
+        return v if v > 10**17 else v * 1_000_000_000
+    if hasattr(value, "timestamp"):
+        return int(value.timestamp() * 1_000_000_000)
+    return None
+
+
+def compute_version(
+    datasets: Iterable[tuple[Path, str | None]],
+    builder_version: str = BUILDER_VERSION,
+) -> str:
+    h = hashlib.sha256()
+    h.update(builder_version.encode())
+    for path, ts_col in datasets:
+        if not path.exists():
+            h.update(f"missing:{path}".encode())
+            continue
+        fp = fingerprint(path, ts_col)
+        h.update(json.dumps(fp.as_list(), separators=(",", ":")).encode())
+    return "sha256:" + h.hexdigest()
+
+
+def _cache_load() -> dict[str, str]:
+    try:
+        return json.loads(DATA_VERSIONS_PATH.read_text())
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _cache_store(cache: dict[str, str]) -> None:
+    DATA_VERSIONS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    tmp = DATA_VERSIONS_PATH.with_suffix(".tmp")
+    tmp.write_text(json.dumps(cache, indent=2, sort_keys=True))
+    os.replace(tmp, DATA_VERSIONS_PATH)
+
+
+def cached_version(key: str, datasets: list[tuple[Path, str | None]], builder_version: str) -> str:
+    """Compute a version, reusing the cache only when every stat is unchanged."""
+    cache = _cache_load()
+    stamp = []
+    for path, _ in datasets:
+        try:
+            st = path.stat()
+            stamp.append([str(path), st.st_size, st.st_mtime_ns])
+        except FileNotFoundError:
+            stamp.append([str(path), None, None])
+    stamp.append(builder_version)
+    stamp_key = key + ":" + hashlib.sha256(json.dumps(stamp).encode()).hexdigest()[:16]
+    existing = cache.get(stamp_key)
+    if existing:
+        return existing
+    version = compute_version(datasets, builder_version)
+    cache[stamp_key] = version
+    _cache_store(cache)
+    return version
+
+
+def tape_data_version() -> str:
+    from backend.config import EPL_TAPE, FOOTBALL_TAPE, MARKETS
+
+    return cached_version(
+        "tape",
+        [
+            (EPL_TAPE, "timestamp"),
+            (FOOTBALL_TAPE, "timestamp"),
+            (MARKETS, None),
+        ],
+        BUILDER_VERSION,
+    )
+
+
+def run_data_version() -> str:
+    """Version covering every source a backtest can depend on."""
+    from backend.config import EPL_TAPE, FIXTURE_MAP, FOOTBALL_TAPE, LIFECYCLE_PATH, MARKETS, POLYMARKET_MARKETS, SETTLEMENT_PATH
+
+    datasets: list[tuple[Path, str | None]] = [
+        (EPL_TAPE, "timestamp"),
+        (FOOTBALL_TAPE, "timestamp"),
+        (MARKETS, None),
+        (POLYMARKET_MARKETS, None),
+        (FIXTURE_MAP, None),
+        (LIFECYCLE_PATH, None),
+        (SETTLEMENT_PATH, None),
+    ]
+    return cached_version("run", datasets, BUILDER_VERSION)

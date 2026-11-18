@@ -57,3 +57,6 @@ Thumbs.db
 # The sibling research data source is read-only and lives outside this repo.
 # If a local symlink or copy is ever used, keep it out of git:
 /data/
+
+# Python environment
+.venv/

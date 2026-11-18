@@ -1,0 +1,34 @@
+[project]
+name = "hermit-trading-frontend"
+version = "0.1.0"
+description = "Local-first prediction-market research dashboard: OHLC charts, indicators and NautilusTrader backtests."
+requires-python = ">=3.13"
+dependencies = [
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.34",
+  "pydantic>=2.10",
+  "polars>=1.20",
+  "duckdb>=1.2",
+  "pyarrow>=19.0",
+  "nautilus_trader==2.0.0rc9",
+  "pytz>=2026.6",
+  "numpy>=2.5.5",
+  "pandas>=3.1.1",
+]
+
+[dependency-groups]
+dev = [
+  "pytest>=8.3",
+  "pytest-asyncio>=0.25",
+  "httpx>=0.28",
+]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+markers = [
+  "e2e: end-to-end tests that need a built frontend",
+]

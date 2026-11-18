@@ -270,3 +270,23 @@ def test_unknown_bar_alias_is_422(client):
     )
     assert r.status_code == 422
     assert r.json()["code"] == "bad_bar_type"
+
+
+def test_experiment_axis_path_must_exist(client):
+    r = client.post(
+        "/api/experiments",
+        json={
+            "name": "bad path",
+            "base": {
+                "strategy": {
+                    "instrument_id": "fixture-other-2024-10-19-other-YES.POLYMARKET",
+                    "bar_type": "1m",
+                    "builtin_id": "nautilus_ema_cross",
+                },
+                "evaluation": {"date_range": {"from": "2024-10-19", "to": "2024-10-19"}},
+            },
+            "axes": [{"path": "strategy.nope.deep", "values": [1]}],
+        },
+    )
+    assert r.status_code == 422
+    assert r.json()["code"] == "bad_axis_path"

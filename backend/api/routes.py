@@ -656,8 +656,16 @@ def create_experiment(req: ExperimentRequest) -> dict[str, Any]:
     created = []
     for combo in combos:
         data = req.base.model_dump(mode="json", exclude_none=True)
-        for path, value in combo.items():
-            _set_path(data, path, value)
+        try:
+            for path, value in combo.items():
+                _set_path(data, path, value)
+        except (KeyError, IndexError, TypeError, ValueError) as exc:
+            state.update_experiment(experiment_id, status="failed")
+            raise bad_request(
+                "bad_axis_path",
+                f"grid path {next(iter(combo))!r} does not exist in the base config",
+                {"variant": combo, "error": str(exc)},
+            ) from exc
         try:
             prepared = _prepare(RunRequest.model_validate(data))
         except Exception as exc:  # noqa: BLE001

@@ -16,6 +16,28 @@ measured. Keep entries short enough to scan; link the commit or PR.
 
 ---
 
+## 2026-11-18  Signals: execution-independent plan cache (criterion 19)
+
+- **Changed:** Added `backend/engine/signals.py` — a per-bar `SignalPlan` of
+  condition truths plus indicator snapshots, an LRU `SignalCache`, and runner
+  integration. `RuleStrategy` consumes a plan when supplied and still owns the
+  entry/exit state machine; the runtime-evaluation path is unchanged when no
+  plan is given.
+- **Why:** re-running one strategy under another execution profile must reuse
+  the same signals (`docs/BRIEF.md` §8.6 and acceptance criterion 19); only net
+  costs may move.
+- **Measured:** `uv run pytest tests/engine tests/api -q` passes, including
+  plan/runtime parity over crosses and warm-up nulls, profile-only cache hits,
+  miss on every key component, runner manifest hit/miss and identical
+  `signals` across a conservative and frictionless run with different net PnL.
+- **Notes:** key is `(data_version, bar_type, strategy_hash, warmup_bars,
+  indicator_impl_version)`; the instrument is covered by `strategy_hash`.
+  `lifecycle_version` is stored and checked, not keyed, because
+  `run_data_version()` already fingerprints the lifecycle parquet. Plans are
+  built from `bar_to_dict(bars_p)` so indicator and comparison inputs carry the
+  same venue price precision as the runtime path. The cache is in-process;
+  cross-process reuse would need a persisted plan store.
+
 ## 2026-11-18  v1: data layer, versions and bar builders
 
 - **Changed:** Added read-only source adapters, content-derived data versions,

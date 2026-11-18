@@ -167,7 +167,8 @@ def execute_run(config_dict: dict[str, Any], prepared: dict[str, Any] | None = N
     from backend.engine.analytics import FillRecord, SettlementRecord, SignalRecord, analyse
     from backend.engine.execution import ProfiledFeeModel, ProfiledFillModel, resolve_profile
     from backend.engine.instruments import build_binary_option
-    from backend.engine.rule_strategy import RuleStrategy, RuleStrategyConfig
+    from backend.engine.rule_strategy import RuleStrategy, RuleStrategyConfig, bar_to_dict
+    from backend.engine.signals import signal_plan_for_config
 
     started = time.time()
     config = RunConfig.model_validate(config_dict)
@@ -305,6 +306,17 @@ def execute_run(config_dict: dict[str, Any], prepared: dict[str, Any] | None = N
         }
 
     full_bar_type = str(replay_bar_type(primary))
+    lifecycle_version = _lifecycle_version()
+    # Signals are execution-independent: the plan is computed from exactly the
+    # bars Nautilus will dispatch (bar_to_dict round-trips the instrument's
+    # price precision), so plan and runtime truths are identical.
+    signal_plan, signal_cache_hit = signal_plan_for_config(
+        config,
+        [bar_to_dict(bar) for bar in bars_p],
+        lifecycle_at,
+        data_version=prepared["data_version"],
+        lifecycle_version=lifecycle_version,
+    )
     signals: list[dict[str, Any]] = []
     fill_sink: list[dict[str, Any]] = []
     strategy = RuleStrategy(
@@ -320,6 +332,7 @@ def execute_run(config_dict: dict[str, Any], prepared: dict[str, Any] | None = N
                 "impact_bps": fill_model.last_impact_bps,
             },
             lifecycle_lookup=lifecycle_at,
+            signal_plan=signal_plan,
         )
     )
 
@@ -453,7 +466,11 @@ def execute_run(config_dict: dict[str, Any], prepared: dict[str, Any] | None = N
         "data_version": prepared["data_version"],
         "code_version": prepared["code_version"],
         "nautilus_version": nautilus_version(),
-        "lifecycle_version": _lifecycle_version(),
+        "lifecycle_version": lifecycle_version,
+        "signal_cache": {
+            **signal_plan.metadata(),
+            "hit": signal_cache_hit,
+        },
         "source_paths": {
             "tape": "polymarket/{football,epl}/*_moneyline_tape.parquet",
             "markets": "polymarket/sii/markets.parquet",
@@ -493,6 +510,8 @@ def execute_run(config_dict: dict[str, Any], prepared: dict[str, Any] | None = N
         [
             f"run config: {json.dumps(config.canonical(), sort_keys=True)}",
             f"bars: primary={len(bars_primary)} complement={len(bars_complement)} bar_type={full_bar_type}",
+            f"signals: cache_hit={signal_cache_hit} rows={len(signal_plan)} "
+            f"spec={signal_plan.spec_hash} plan_hash={signal_plan.plan_hash}",
             f"strategy: {json.dumps(strategy.diagnostics(), default=str)}",
             f"fills: {len(fills)} rejects: {rejects}",
             f"trades: {len(result['trades'])}",

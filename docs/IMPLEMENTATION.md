@@ -197,9 +197,23 @@ Frictionless.
 - **Bars:** Parquet files under `var/bars/{instrument_id}/{alias}.parquet`; the
   metadata records `data_version`, `builder_version` and `bar_type`, and a
   matching key is reused without a rebuild.
-- **Signals:** there is no signal cache in v1. A new run recomputes the signal
-  series even when `strategy_hash` is unchanged. `docs/BRIEF.md` §8.6 describes
-  a signal cache as the target; treat that section as v1.1, not as shipped v1.
+- **Signals:** an in-process LRU (`SignalCache`, capacity 32) keyed by
+  `(data_version, bar_type, strategy_hash, warmup_bars,
+  indicator_impl_version)`. A plan is the per-bar truth of every rule tree plus
+  the indicator snapshot; it contains no positions, sizes, fees or profiles, so
+  a run that changes only `execution`/`risk`/`evaluation` reuses it. The plan
+  rows are built from exactly the bars Nautilus dispatches (`bar_to_dict`), so
+  plan and runtime truths use the same price precision. `RuleStrategy` still
+  owns the entry/exit state machine: it consumes the row truths instead of
+  re-evaluating the trees. `lifecycle_version` is stored on the plan and a
+  mismatched cached plan is served as a miss; it is not in the key because
+  `run_data_version()` already fingerprints the lifecycle parquet. The manifest
+  records `signal_cache` (key, hit, rows, warm-up, plan hash, true counts).
+  Workers are separate processes, so reuse covers repeats within one process;
+  a persisted plan store would be needed for cross-process reuse.
+- **Stats:** `GET /api/cache/stats` keeps the indicator cache's flat
+  `hits`/`misses`/`size`/`capacity` keys and adds `indicator` and `signal`
+  blocks with the same shape.
 
 ## Experiments
 

@@ -696,6 +696,11 @@ def cancel_experiment(experiment_id: str) -> dict[str, Any]:
 
 @router.get("/cache/stats")
 def cache_stats() -> dict[str, Any]:
+    from backend.engine.signals import cache_stats as signal_stats
     from backend.indicators.cache import cache_stats as stats
 
-    return stats()
+    indicator = stats()
+    signal = signal_stats()
+    # Flat keys stay the indicator cache's stats for backward compatibility;
+    # the per-cache blocks are additive.
+    return {**indicator, "indicator": indicator, "signal": signal}

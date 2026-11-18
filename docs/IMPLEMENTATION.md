@@ -42,6 +42,13 @@ instrument_id = "{market_slug}-YES.POLYMARKET"   # or -NO
 instruments of a condition are a pair: a long on the primary token buys it, a
 short buys the sibling token. Closing always sells the held token.
 
+`results/polymarket_events.parquet` supplies the match spine (`match_key`,
+league, event date, home/away names) used to join tape conditions to markets
+and results. `backend/data/instruments.py` reads it and
+`instrument_index_version` includes it. It is **not** one of the eight entries
+in `docs/DATA_REGISTER.md`; that register gap is real and must be closed before
+the next restore (see the session master's known gaps).
+
 ### Settlement
 
 `results/polymarket_markets.parquet` has one row per `(market_id, selection_index)`,

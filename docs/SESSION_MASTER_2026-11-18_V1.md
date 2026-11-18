@@ -130,6 +130,11 @@ uv run python scripts/data_register.py verify
 
 ## Known gaps to carry into v1.1
 
+- `results/polymarket_events.parquet` is read and versioned by
+  `backend/data/instruments.py` but is not one of the eight entries in
+  `docs/DATA_REGISTER.md`. Add the ninth register entry (path, size, source,
+  license, rebuild) before the next restore; do not treat the current register
+  as complete.
 - The UI sweep is one-axis and tabular; the API accepts two axes, but no
   heatmap component exists. Acceptance criterion 18 is partial.
 - There is no signal cache. `docs/BRIEF.md` §8.6 and acceptance criterion 19

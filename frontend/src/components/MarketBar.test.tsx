@@ -75,6 +75,29 @@ describe("market bar", () => {
     expect(screen.getByTestId("settlement-badge").textContent).toBe("settles 1");
   });
 
+  it("keeps a remembered selection visible outside the league filter", () => {
+    render(
+      <MarketBar
+        instruments={[yesInstrument, noInstrument]}
+        instrumentsLoading={false}
+        instrumentsError={null}
+        onReloadInstruments={vi.fn()}
+        selected={yesInstrument}
+        selectedId={yesInstrument.instrument_id}
+        onSelect={vi.fn()}
+        league="MLS"
+        onLeague={vi.fn()}
+        onOpenPalette={vi.fn()}
+        quality={quality}
+        qualityLoading={false}
+      />,
+    );
+    expect(screen.getByText(/outside league filter/)).toBeInTheDocument();
+    expect(
+      screen.getByRole("combobox", { name: /selected instrument/i }),
+    ).toHaveValue(yesInstrument.instrument_id);
+  });
+
   it("opens the search palette and filters by league", async () => {
     const onOpenPalette = vi.fn();
     const onLeague = vi.fn();

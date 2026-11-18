@@ -122,6 +122,13 @@ export function MarketBar({
             <option value="">
               {instrumentsLoading ? "Loading instruments…" : "Select an instrument"}
             </option>
+            {selectedId && !filtered.some((item) => item.instrument_id === selectedId) ? (
+              // Keep the remembered selection visible even when the league
+              // filter excludes it; the chart should not disagree with the bar.
+              <option value={selectedId}>
+                {selected ? instrumentLabel(selected) : selectedId} · outside league filter
+              </option>
+            ) : null}
             {filtered.map((instrument) => (
               <option key={instrument.instrument_id} value={instrument.instrument_id}>
                 {instrumentLabel(instrument)}

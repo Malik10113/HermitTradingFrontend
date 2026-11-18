@@ -10,7 +10,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from backend.api.routes import router
+from backend.api.routes import token_authorized, router
 from backend.config import ROOT, SETTINGS, ensure_dirs
 from backend.jobs.queue import QUEUE
 from backend.jobs.state import init_db
@@ -54,6 +54,23 @@ def create_app() -> FastAPI:
         )
 
     app.include_router(router)
+
+    @app.middleware("http")
+    async def enforce_app_token(request: Request, call_next):
+        # Router dependencies cover every declared route; this also protects
+        # framework routes under /api (docs, OpenAPI) and unknown API paths.
+        if request.url.path.startswith("/api/") and not token_authorized(
+            request.headers.get("authorization")
+        ):
+            return JSONResponse(
+                status_code=401,
+                content={
+                    "code": "unauthorized",
+                    "message": "missing or invalid bearer token",
+                    "details": {"scheme": "Bearer"},
+                },
+            )
+        return await call_next(request)
 
     if DIST.exists():
         app.mount("/assets", StaticFiles(directory=DIST / "assets"), name="assets")

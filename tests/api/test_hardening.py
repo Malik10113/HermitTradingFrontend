@@ -307,6 +307,13 @@ def test_app_token_protects_every_api_route_but_serves_static(api_env: ApiEnv, t
             )
             assert client.get("/api/meta", headers={"Authorization": "Bearer s3cret-token"}).status_code == 200
             assert client.get("/api/indicators").status_code == 401
+            # Framework routes under /api are protected by the app middleware.
+            assert client.get("/api/openapi.json").status_code == 401
+            assert (
+                client.get("/api/openapi.json", headers={"Authorization": "Bearer s3cret-token"}).status_code
+                == 200
+            )
+            assert client.get("/api/does-not-exist").status_code == 401
 
             # Static assets are outside the API router and stay public.
             index = client.get("/")

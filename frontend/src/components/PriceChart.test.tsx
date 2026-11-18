@@ -136,4 +136,20 @@ describe("price chart markers", () => {
     expect(ids).toContain("lifecycle:end");
     expect(screen.queryByText(/Phase unknown/i)).toBeNull();
   });
+
+  it("renders an empty position-window list without inventing shading or markers", () => {
+    render(
+      <ThemeProvider>
+        <PriceChart
+          bars={bars}
+          lifecycle={null}
+          trades={[]}
+          signals={[]}
+          positions={[]}
+        />
+      </ThemeProvider>,
+    );
+    expect(chartState.markers).toEqual([]);
+    expect(screen.getByRole("img", { name: /Price chart with 3 bars/ })).toBeInTheDocument();
+  });
 });

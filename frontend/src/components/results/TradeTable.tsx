@@ -157,6 +157,32 @@ export function TradeTable({
   );
 }
 
+function contextValue(value: unknown): string {
+  if (typeof value === "number") return fmtNumber(value, 4);
+  if (typeof value === "boolean") return value ? "true" : "false";
+  if (value == null) return NOT_AVAILABLE;
+  if (typeof value === "string") return value;
+  return JSON.stringify(value);
+}
+
+function contextIndicatorRows(
+  context: Record<string, unknown>,
+): Array<{ label: string; value: string }> {
+  const indicators = context.indicator_values;
+  if (!indicators || typeof indicators !== "object" || Array.isArray(indicators)) return [];
+  const rows: Array<{ label: string; value: string }> = [];
+  for (const [instance, values] of Object.entries(indicators as Record<string, unknown>)) {
+    if (values && typeof values === "object" && !Array.isArray(values)) {
+      for (const [output, value] of Object.entries(values as Record<string, unknown>)) {
+        rows.push({ label: `${instance}.${output}`, value: contextValue(value) });
+      }
+    } else {
+      rows.push({ label: instance, value: contextValue(values) });
+    }
+  }
+  return rows;
+}
+
 export function TradeInspector({
   trade,
   onClose,
@@ -169,6 +195,8 @@ export function TradeInspector({
     trade.entry_ts && trade.exit_ts
       ? (Date.parse(trade.exit_ts) - Date.parse(trade.entry_ts)) / 1000
       : null;
+  const context = trade.entry_context ?? null;
+  const indicatorRows = context ? contextIndicatorRows(context) : [];
   return (
     <section className="border-t border-line bg-surface-raised p-2" aria-label="Trade inspector">
       <div className="mb-1.5 flex items-center gap-2">
@@ -221,25 +249,63 @@ export function TradeInspector({
           { label: "Fees", value: fmtUsd(trade.fees_usd) },
           { label: "Slippage", value: fmtUsd(trade.slippage_usd) },
           {
-            label: "Execution source",
-            value: trade.execution_source ?? NOT_AVAILABLE,
+            label: "Entry source",
+            value: trade.entry_execution_source ?? NOT_AVAILABLE,
+          },
+          {
+            label: "Exit source",
+            value: trade.held_to_settlement
+              ? "settlement (no fill)"
+              : trade.exit_execution_source ?? NOT_AVAILABLE,
           },
           {
             // The artifact records the reason; fallback is never inferred from
             // the source label alone.
-            label: "Fallback reason",
-            value: trade.fallback_reason ?? NOT_AVAILABLE,
+            label: "Entry fallback",
+            value: trade.entry_fallback_reason ?? NOT_AVAILABLE,
+          },
+          {
+            label: "Exit fallback",
+            value: trade.held_to_settlement
+              ? NOT_AVAILABLE
+              : trade.exit_fallback_reason ?? NOT_AVAILABLE,
           },
           { label: "Held to settlement", value: trade.held_to_settlement ? "yes" : "no" },
           { label: "Phase", value: trade.phase ?? "unknown" },
         ]}
       />
-      {trade.entry_context && Object.keys(trade.entry_context).length > 0 ? (
+      {context ? (
         <div className="mt-2">
           <div className="label mb-1">Condition context at entry</div>
-          <pre className="numeric max-h-32 overflow-auto rounded border border-line bg-surface-sunken p-2 text-[10px] leading-relaxed text-ink-muted">
-            {JSON.stringify(trade.entry_context, null, 2)}
-          </pre>
+          <KeyValue
+            columns={2}
+            items={[
+              {
+                label: "Condition",
+                value:
+                  typeof context.condition === "string"
+                    ? context.condition
+                    : typeof context.action === "string"
+                      ? context.action
+                      : NOT_AVAILABLE,
+              },
+              {
+                label: "Signal time",
+                value: fmtTimestamp(
+                  typeof context.signal_ts === "string" ? context.signal_ts : null,
+                ),
+              },
+              ...indicatorRows,
+            ]}
+          />
+          <details className="mt-1">
+            <summary className="cursor-pointer text-[10px] text-ink-faint">
+              Raw entry context
+            </summary>
+            <pre className="numeric mt-1 max-h-32 overflow-auto rounded border border-line bg-surface-sunken p-2 text-[10px] leading-relaxed text-ink-muted">
+              {JSON.stringify(context, null, 2)}
+            </pre>
+          </details>
         </div>
       ) : (
         <SourceNote>No condition context artifact is available for this trade.</SourceNote>

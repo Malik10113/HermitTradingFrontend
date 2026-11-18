@@ -9,15 +9,15 @@ import {
   type Time,
   type UTCTimestamp,
 } from "lightweight-charts";
-import type { Bar, LifecycleMeta, SignalPoint, Trade } from "../api/types";
+import type { Bar, LifecycleMeta, PositionWindow, SignalPoint, Trade } from "../api/types";
 import type { PhaseFilter } from "../lib/urlState";
 import {
   barsToCandleData,
   barsToVolumeData,
   CHART_COLORS,
   lifecyclePhaseAvailable,
+  openPositionBands,
   phaseWindows,
-  positionBands,
   runChartMarkers,
   type SeriesPoint,
 } from "../lib/chartMarkers";
@@ -46,6 +46,8 @@ interface PriceChartProps {
   lifecycle?: LifecycleMeta | null;
   trades?: Trade[];
   signals?: SignalPoint[];
+  /** Artifact-derived position windows; shading is never inferred from trades. */
+  positions?: PositionWindow[];
   phaseFilter?: PhaseFilter;
   stale?: boolean;
   height?: number;
@@ -79,6 +81,7 @@ export function PriceChart({
   lifecycle = null,
   trades = [],
   signals = [],
+  positions = [],
   phaseFilter = "all",
   stale = false,
   height = 460,
@@ -144,6 +147,17 @@ export function PriceChart({
         ? `${lifecycle.actual_kickoff_utc ?? ""}|${lifecycle.actual_end_utc ?? ""}|${lifecycle.settlement_ts ?? ""}`
         : "",
     [lifecycle],
+  );
+
+  const positionSignature = useMemo(
+    () =>
+      positions
+        .map(
+          (window) =>
+            `${window.position_id ?? ""}:${window.entry_ts}:${window.exit_ts ?? ""}:${window.token ?? ""}:${window.side ?? ""}`,
+        )
+        .join("|"),
+    [positions],
   );
 
   let separateResizeCleanup: (() => void) | null = null;
@@ -320,7 +334,7 @@ export function PriceChart({
           kind: "phase",
         });
       }
-      const allPositions = positionBands(trades);
+      const allPositions = openPositionBands(positions);
       for (const [index, band] of allPositions.entries()) {
         const rawLeft = chart.timeScale().timeToCoordinate(band.from as UTCTimestamp);
         const rawRight = chart.timeScale().timeToCoordinate(band.to as UTCTimestamp);
@@ -439,6 +453,7 @@ export function PriceChart({
     indicatorSignature,
     markerSignature,
     lifecycleSignature,
+    positionSignature,
     theme,
     height,
     phaseFilter,

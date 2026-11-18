@@ -470,9 +470,12 @@ export interface HoldoutState {
 export interface Trade {
   trade_id: string;
   instrument_id?: string;
+  /** Actual entry order side; the intent lives in `direction`/`intent`. */
   side: "BUY" | "SELL";
   close_side?: "BUY" | "SELL" | null;
   order_side?: string | null;
+  /** Artifact intent direction, preserved alongside the order side. */
+  direction?: "long" | "short" | null;
   token: "YES" | "NO";
   intent?: "open_long" | "close_long" | "open_short" | "close_short" | string | null;
   entry_ts: string;
@@ -521,10 +524,23 @@ export interface SignalPoint {
 }
 
 export interface PositionWindow {
+  position_id?: string | null;
   entry_ts: string;
   exit_ts?: string | null;
+  instrument_id?: string | null;
   token?: string | null;
-  side?: string | null;
+  side?: "long" | "short" | string | null;
+  intent?: string | null;
+  quantity?: number | null;
+  entry_price?: number | null;
+  exit_price?: number | null;
+  settlement?: boolean | null;
+  exit_reason?: string | null;
+  status?: "closed" | "settled" | "open" | string | null;
+  entry_execution_source?: string | null;
+  entry_fallback_reason?: string | null;
+  exit_execution_source?: string | null;
+  exit_fallback_reason?: string | null;
 }
 
 export interface LifecycleMeta {
@@ -579,6 +595,7 @@ export interface RunDetail extends RunSummary {
   drawdown?: Array<{ ts: string; drawdown_pct: number }> | null;
   trades?: Trade[] | null;
   signals?: SignalPoint[] | null;
+  positions?: PositionWindow[] | null;
   open_positions?: PositionWindow[] | null;
   lifecycle?: LifecycleMeta | null;
   phase?: LifecyclePhase | null;

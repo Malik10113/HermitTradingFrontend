@@ -8,6 +8,7 @@ const trade: Trade = {
   trade_id: "T-0001",
   side: "BUY",
   close_side: "SELL",
+  direction: "long",
   token: "YES",
   intent: "open_long",
   entry_ts: "2024-10-19T10:05:00Z",
@@ -18,9 +19,21 @@ const trade: Trade = {
   gross_pnl_usd: 12,
   net_pnl_usd: 10,
   fees_usd: 1,
-  execution_source: "fixed",
+  slippage_usd: 0.25,
+  execution_source: "conservative_fallback",
+  fallback_reason: "book_snapshot_stale",
+  entry_execution_source: "conservative_fallback",
+  entry_fallback_reason: "book_snapshot_stale",
+  exit_execution_source: "book",
+  exit_fallback_reason: null,
   held_to_settlement: false,
   phase: "pre_match",
+  entry_context: {
+    signal_ts: "2024-10-19T10:00:00Z",
+    action: "long_entry",
+    condition: "long_entry",
+    indicator_values: { ema20: { value: 0.41 } },
+  },
 };
 
 describe("trade table", () => {
@@ -66,7 +79,26 @@ describe("trade inspector", () => {
     expect(screen.getByText("+$12.00")).toBeInTheDocument();
     expect(screen.getByText("+$10.00")).toBeInTheDocument();
     expect(screen.getByText("$1.00")).toBeInTheDocument();
-    expect(screen.getByText("fixed")).toBeInTheDocument();
+    expect(screen.getByText("$0.25")).toBeInTheDocument();
+  });
+
+  it("shows entry and exit execution provenance separately", () => {
+    render(<TradeInspector trade={trade} onClose={vi.fn()} />);
+    expect(screen.getByText("Entry source")).toBeInTheDocument();
+    expect(screen.getByText("Exit source")).toBeInTheDocument();
+    expect(screen.getByText("Entry fallback")).toBeInTheDocument();
+    expect(screen.getByText("Exit fallback")).toBeInTheDocument();
+    expect(screen.getByText("conservative_fallback")).toBeInTheDocument();
+    expect(screen.getByText("book")).toBeInTheDocument();
+    expect(screen.getByText("book_snapshot_stale")).toBeInTheDocument();
+  });
+
+  it("shows the entry signal condition and indicator snapshot", () => {
+    render(<TradeInspector trade={trade} onClose={vi.fn()} />);
+    expect(screen.getByText("Condition context at entry")).toBeInTheDocument();
+    expect(screen.getByText("long_entry")).toBeInTheDocument();
+    expect(screen.getByText("ema20.value")).toBeInTheDocument();
+    expect(screen.getByText("0.4100")).toBeInTheDocument();
   });
 
   it("shows not available for absent fields instead of inventing a fallback reason", () => {
@@ -84,15 +116,35 @@ describe("trade inspector", () => {
         onClose={vi.fn()}
       />,
     );
-    expect(screen.getAllByText("not available").length).toBeGreaterThanOrEqual(4);
+    expect(screen.getAllByText("not available").length).toBeGreaterThanOrEqual(6);
     expect(screen.queryByText(/stale or missing book snapshot/i)).toBeNull();
     expect(screen.queryByText(/^\$0\.00$/)).toBeNull();
   });
 
   it("does not claim a condition context that the artifact lacks", () => {
-    render(<TradeInspector trade={trade} onClose={vi.fn()} />);
+    render(
+      <TradeInspector
+        trade={{ ...trade, entry_context: null }}
+        onClose={vi.fn()}
+      />,
+    );
     expect(
       screen.getByText(/No condition context artifact is available/),
     ).toBeInTheDocument();
+  });
+
+  it("labels a settlement exit as having no fill source", () => {
+    render(
+      <TradeInspector
+        trade={{
+          ...trade,
+          held_to_settlement: true,
+          exit_execution_source: null,
+          exit_fallback_reason: null,
+        }}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("settlement (no fill)")).toBeInTheDocument();
   });
 });

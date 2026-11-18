@@ -23,23 +23,34 @@ plan and checked on lookup: if a caller supplies a lifecycle version that
 differs from the cached plan's, the entry is treated as a miss rather than
 served with stale lifecycle-conditioned truths.
 
-The cache is an in-process LRU, like the indicator cache.  Workers are separate
-processes (AGENTS.md §8), so a plan is reused by callers in the same process
-(tests, a sweep loop, the API process); cross-process reuse would need a
-persisted plan store, which is not part of this module.
+The cache is two-tier: a process LRU and a persistent store under
+``var/cache/signals/``.  Workers are separate processes (AGENTS.md §8), so the
+disk tier is what makes acceptance criterion 19 hold in the real path: the
+first worker writes the plan, the next worker (same strategy, different
+execution profile) reads it instead of recomputing.  Disk entries are one
+parquet file plus one JSON metadata file per ``signal_spec_hash(key)``; the
+metadata is the commit marker and a malformed or mismatched entry is deleted,
+never served.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import os
 import threading
 from collections import OrderedDict
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
 from types import MappingProxyType
 from typing import Any, NamedTuple
 
+import pyarrow as pa
+import pyarrow.parquet as pq
+
+from backend import config
 from backend.engine.rule_strategy import (
     ACTIONS,
     OperandResolver,
@@ -53,6 +64,10 @@ from backend.indicators.registry import get_spec
 from backend.rules.schema import RunConfig, strategy_hash as compute_strategy_hash
 
 DEFAULT_CAPACITY = 32
+DEFAULT_DISK_CAPACITY = 128
+DEFAULT_DISK_BYTE_CAP = 256 * 1024 * 1024
+DISK_FORMAT = "htf-signal-plan/1"
+_ORPHAN_GRACE_NS = 60 * 60 * 1_000_000_000  # 1 hour
 
 _EMPTY = MappingProxyType({})
 
@@ -431,6 +446,14 @@ def compute_signal_plan(
     )
 
 
+class CacheHit(NamedTuple):
+    """Outcome of a cache lookup: the plan, whether it was a hit, and where."""
+
+    plan: SignalPlan
+    hit: bool
+    source: str  # "memory" | "disk" | "none"
+
+
 def signal_plan_for_config(
     run_config: RunConfig,
     bars: Sequence[Mapping[str, Any]],
@@ -440,12 +463,13 @@ def signal_plan_for_config(
     lifecycle_version: str | None = None,
     cache: "SignalCache | None" = None,
     indicator_factory: Callable[[Sequence[Any]], Any] | None = None,
-) -> tuple[SignalPlan, bool]:
-    """Return ``(plan, hit)`` for a run, reusing the default cache.
+) -> CacheHit:
+    """Return the plan plus ``(hit, source)`` for a run.
 
     This is the runner's entry point: the key is derived from the run config
     and the data version only, so two runs that differ in execution, sizing or
-    evaluation share one plan.
+    evaluation share one plan.  The default cache is two-tier, so a worker
+    process reads a plan written by an earlier worker.
     """
     key = make_signal_key(
         data_version=data_version,
@@ -470,42 +494,497 @@ def signal_plan_for_config(
 
 
 # ---------------------------------------------------------------------------
+# Persistent store
+#
+# One parquet file (rows) plus one JSON file (key + provenance) per
+# ``signal_spec_hash(key)``.  The JSON is written last and is the commit
+# marker: a parquet without metadata, a metadata without parquet, or any file
+# that fails validation is a miss and is deleted.  Writes are temp-file +
+# ``os.replace`` so a reader (or a crash) never sees a half-written plan.
+
+_PLAN_SCHEMA = pa.schema(
+    [
+        pa.field("ts_event_ns", pa.int64(), nullable=False),
+        pa.field("close", pa.float64(), nullable=True),
+        pa.field("long_entry_ok", pa.bool_(), nullable=False),
+        pa.field("long_exit_ok", pa.bool_(), nullable=False),
+        pa.field("short_entry_ok", pa.bool_(), nullable=False),
+        pa.field("short_exit_ok", pa.bool_(), nullable=False),
+        pa.field("indicator_values", pa.string(), nullable=False),
+        pa.field("lifecycle", pa.string(), nullable=False),
+    ]
+)
+
+
+def _temp_path(path: Path) -> Path:
+    return path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+
+
+def _row_record(row: SignalRow) -> dict[str, Any]:
+    return {
+        "ts_event_ns": int(row.ts_event_ns),
+        "close": row.close,
+        "long_entry_ok": bool(row.long_entry_ok),
+        "long_exit_ok": bool(row.long_exit_ok),
+        "short_entry_ok": bool(row.short_entry_ok),
+        "short_exit_ok": bool(row.short_exit_ok),
+        "indicator_values": json.dumps(
+            {instance: dict(values) for instance, values in row.indicator_values.items()},
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+        ),
+        "lifecycle": json.dumps(
+            dict(row.lifecycle),
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            default=str,
+        ),
+    }
+
+
+def _row_from_record(record: Mapping[str, Any], index: int) -> SignalRow:
+    indicators = json.loads(record["indicator_values"] or "{}")
+    if not isinstance(indicators, Mapping):
+        raise ValueError("signal plan row has malformed indicator_values")
+    frozen: dict[str, dict[str, Any]] = {}
+    for instance, values in indicators.items():
+        if not isinstance(values, Mapping):
+            raise ValueError("signal plan row has malformed indicator values")
+        frozen[str(instance)] = dict(values)
+    lifecycle = json.loads(record["lifecycle"] or "{}")
+    if not isinstance(lifecycle, Mapping):
+        raise ValueError("signal plan row has malformed lifecycle")
+    close = record.get("close")
+    return SignalRow(
+        ts_event_ns=int(record["ts_event_ns"]),
+        close=None if close is None else float(close),
+        long_entry_ok=bool(record["long_entry_ok"]),
+        long_exit_ok=bool(record["long_exit_ok"]),
+        short_entry_ok=bool(record["short_entry_ok"]),
+        short_exit_ok=bool(record["short_exit_ok"]),
+        indicator_values=_freeze(frozen),
+        lifecycle=MappingProxyType(dict(lifecycle)),
+        index=index,
+    )
+
+
+def _lifecycle_matches(plan: SignalPlan, expected: str | None) -> bool:
+    """True when the caller cannot prove the cached plan is from other data.
+
+    ``None`` means "not known here" and is accepted; a known mismatch is not.
+    """
+    if expected is None or plan.lifecycle_version is None:
+        return True
+    return plan.lifecycle_version == expected
+
+
+def _metadata_lifecycle_matches(metadata: Any, expected: str | None) -> bool:
+    """Cheap pre-check so a lifecycle mismatch is a miss, not corruption."""
+    if expected is None or not isinstance(metadata, Mapping):
+        return True
+    stored = metadata.get("lifecycle_version")
+    if stored is None:
+        return True
+    return stored == expected
+
+
+class SignalPlanStore:
+    """Persistent, atomically written signal plans.
+
+    Location: ``config.SIGNAL_CACHE_DIR`` (``var/cache/signals/``).  Eviction
+    policy: at most ``capacity`` plans (default 128) **and** at most
+    ``byte_cap`` bytes (default 256 MiB; ``None`` disables the byte cap).
+    Least-recently-used entries are removed first, ordered by the metadata
+    file's mtime, which is refreshed on every load.  The most recent entry is
+    never evicted, so a single plan larger than the byte cap is still cached.
+    A plan being read or written is protected by the store lock; cross-process
+    writers only ever publish via atomic rename.
+    """
+
+    def __init__(
+        self,
+        root: Path | str | None = None,
+        *,
+        capacity: int = DEFAULT_DISK_CAPACITY,
+        byte_cap: int | None = DEFAULT_DISK_BYTE_CAP,
+    ) -> None:
+        if isinstance(capacity, bool) or not isinstance(capacity, int):
+            raise ValueError("signal store capacity must be an integer")
+        if capacity < 1:
+            raise ValueError("signal store capacity must be >= 1")
+        if byte_cap is not None:
+            if isinstance(byte_cap, bool) or not isinstance(byte_cap, int):
+                raise ValueError("signal store byte_cap must be an integer or None")
+            if byte_cap < 1:
+                raise ValueError("signal store byte_cap must be >= 1 or None")
+        self._root = Path(root) if root is not None else config.SIGNAL_CACHE_DIR
+        self._capacity = capacity
+        self._byte_cap = byte_cap
+        self._lock = threading.RLock()
+        self._disk_hits = 0
+        self._misses = 0
+        self._write_errors = 0
+
+    # -- paths -----------------------------------------------------------
+
+    @property
+    def root(self) -> Path:
+        return self._root
+
+    def _stem(self, key: SignalKey) -> str:
+        # Drop the "sha256:" prefix; the full hash stays in the metadata.
+        return signal_spec_hash(key).split(":", 1)[1]
+
+    def _paths(self, key: SignalKey) -> tuple[Path, Path]:
+        stem = self._stem(key)
+        return self._root / f"{stem}.parquet", self._root / f"{stem}.json"
+
+    # -- reading ---------------------------------------------------------
+
+    def load(
+        self, key: SignalKey, *, lifecycle_version: str | None = None
+    ) -> SignalPlan | None:
+        """Return the persisted plan, or ``None`` for a miss.
+
+        A known lifecycle-version mismatch is a miss but leaves the entry in
+        place (the plan is still valid for the data version it was written
+        under).  Malformed metadata, a partial pair, an unreadable parquet or a
+        content-hash mismatch is corruption: the entry is deleted, never served.
+        """
+        parquet_path, meta_path = self._paths(key)
+        with self._lock:
+            if not meta_path.exists() and not parquet_path.exists():
+                self._misses += 1
+                return None
+            try:
+                if not (meta_path.exists() and parquet_path.exists()):
+                    raise ValueError("partial signal plan entry")
+                metadata = json.loads(meta_path.read_text())
+            except Exception:  # noqa: BLE001 - corrupt entries are misses
+                self._discard(parquet_path, meta_path)
+                self._misses += 1
+                return None
+            if not _metadata_lifecycle_matches(metadata, lifecycle_version):
+                self._misses += 1
+                return None
+            try:
+                plan = self._plan_from_metadata(
+                    key, metadata, parquet_path, lifecycle_version
+                )
+            except Exception:  # noqa: BLE001 - corrupt entries are misses
+                self._discard(parquet_path, meta_path)
+                self._misses += 1
+                return None
+            try:
+                os.utime(meta_path, None)  # recency for LRU eviction
+            except OSError:
+                pass
+            self._disk_hits += 1
+            return plan
+
+    def _plan_from_metadata(
+        self,
+        key: SignalKey,
+        metadata: Mapping[str, Any],
+        parquet_path: Path,
+        lifecycle_version: str | None,
+    ) -> SignalPlan:
+        if not isinstance(metadata, Mapping):
+            raise ValueError("signal plan metadata must be an object")
+        if metadata.get("format") != DISK_FORMAT:
+            raise ValueError("unknown signal plan format")
+        if metadata.get("spec_hash") != signal_spec_hash(key):
+            raise ValueError("signal plan spec hash mismatch")
+        raw_key = metadata.get("key")
+        if not isinstance(raw_key, Mapping):
+            raise ValueError("signal plan metadata has no key")
+        if SignalKey(**dict(raw_key)) != key:
+            raise ValueError("signal plan key mismatch")
+        stored_lifecycle = metadata.get("lifecycle_version")
+        if stored_lifecycle is not None and not isinstance(stored_lifecycle, str):
+            raise ValueError("signal plan lifecycle_version must be a string or null")
+        if (
+            lifecycle_version is not None
+            and stored_lifecycle is not None
+            and lifecycle_version != stored_lifecycle
+        ):
+            raise ValueError("signal plan lifecycle_version mismatch")
+        plan_hash = metadata.get("plan_hash")
+        if not isinstance(plan_hash, str) or not plan_hash.startswith("sha256:"):
+            raise ValueError("signal plan metadata has no plan hash")
+        rows_expected = int(metadata["rows"])
+        if rows_expected < 0:
+            raise ValueError("signal plan row count is negative")
+        true_counts = metadata.get("true_counts") or {}
+        if not isinstance(true_counts, Mapping):
+            raise ValueError("signal plan true_counts must be an object")
+        missing = int(metadata.get("lifecycle_missing_bars") or 0)
+
+        table = pq.read_table(parquet_path)
+        if table.num_rows != rows_expected:
+            raise ValueError("signal plan row count does not match its metadata")
+        missing_columns = set(_PLAN_SCHEMA.names) - set(table.column_names)
+        if missing_columns:
+            raise ValueError(
+                f"signal plan parquet is missing columns {sorted(missing_columns)}"
+            )
+        rows = tuple(
+            _row_from_record(record, index)
+            for index, record in enumerate(table.to_pylist())
+        )
+        plan = SignalPlan(
+            data_version=key.data_version,
+            bar_type=key.bar_type,
+            strategy_hash=key.strategy_hash,
+            warmup_bars=key.warmup_bars,
+            indicator_impl_version=key.indicator_impl_version,
+            lifecycle_version=stored_lifecycle,
+            rows=rows,
+            true_counts=MappingProxyType(
+                {str(name): int(count) for name, count in true_counts.items()}
+            ),
+            lifecycle_missing_bars=missing,
+        )
+        if plan.plan_hash != plan_hash:
+            raise ValueError("signal plan content hash mismatch")
+        if dict(plan.true_counts) != {
+            str(name): int(count) for name, count in true_counts.items()
+        }:
+            raise ValueError("signal plan true_counts mismatch")
+        return plan
+
+    # -- writing ---------------------------------------------------------
+
+    def save(self, key: SignalKey, plan: SignalPlan) -> Path | None:
+        """Persist ``plan`` atomically; returns the metadata path or ``None``.
+
+        Failures are swallowed into ``write_errors``: a cache write must never
+        fail a backtest, and a half-written entry is removed rather than served.
+        """
+        if not isinstance(plan, SignalPlan):
+            raise TypeError("signal store writes SignalPlan values")
+        if plan.key != key:
+            raise ValueError("signal plan key does not match the store key")
+        parquet_path, meta_path = self._paths(key)
+        metadata = {
+            "format": DISK_FORMAT,
+            "key": dict(key._asdict()),
+            "spec_hash": signal_spec_hash(key),
+            "plan_hash": plan.plan_hash,
+            "lifecycle_version": plan.lifecycle_version,
+            "rows": len(plan.rows),
+            "warmup_bars": plan.warmup_bars,
+            "true_counts": dict(plan.true_counts),
+            "lifecycle_missing_bars": plan.lifecycle_missing_bars,
+            "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        }
+        with self._lock:
+            try:
+                self._root.mkdir(parents=True, exist_ok=True)
+                if plan.rows:
+                    table = pa.Table.from_pylist(
+                        [_row_record(row) for row in plan.rows], schema=_PLAN_SCHEMA
+                    )
+                else:
+                    table = _PLAN_SCHEMA.empty_table()
+                tmp_parquet = _temp_path(parquet_path)
+                try:
+                    pq.write_table(table, tmp_parquet)
+                    os.replace(tmp_parquet, parquet_path)
+                finally:
+                    tmp_parquet.unlink(missing_ok=True)
+                # Metadata last: its presence is the commit marker.
+                tmp_meta = _temp_path(meta_path)
+                try:
+                    tmp_meta.write_text(json.dumps(metadata, indent=2, sort_keys=True))
+                    os.replace(tmp_meta, meta_path)
+                finally:
+                    tmp_meta.unlink(missing_ok=True)
+                self._evict(keep_stem=parquet_path.stem)
+                return meta_path
+            except Exception:  # noqa: BLE001 - cache writes are best effort
+                self._write_errors += 1
+                self._discard(parquet_path, meta_path)
+                return None
+
+    def _evict(self, *, keep_stem: str | None = None) -> None:
+        # Caller holds the lock.  Ordering is by metadata mtime (recency), with
+        # the stem as a deterministic tie-break.
+        entries: list[dict[str, Any]] = []
+        for meta_path in self._root.glob("*.json"):
+            try:
+                stat = meta_path.stat()
+            except OSError:
+                continue
+            parquet_path = meta_path.with_suffix(".parquet")
+            size = stat.st_size
+            if parquet_path.exists():
+                try:
+                    size += parquet_path.stat().st_size
+                except OSError:
+                    pass
+            entries.append(
+                {
+                    "mtime_ns": stat.st_mtime_ns,
+                    "stem": meta_path.stem,
+                    "meta": meta_path,
+                    "parquet": parquet_path,
+                    "bytes": size,
+                }
+            )
+        entries.sort(key=lambda entry: (entry["mtime_ns"], entry["stem"]))
+        self._remove_orphans({entry["stem"] for entry in entries})
+
+        total_bytes = sum(entry["bytes"] for entry in entries)
+        count = len(entries)
+        candidates = [entry for entry in entries if entry["stem"] != keep_stem]
+        while (
+            count > self._capacity
+            or (self._byte_cap is not None and total_bytes > self._byte_cap)
+        ) and candidates:
+            victim = candidates.pop(0)
+            try:
+                victim["meta"].unlink(missing_ok=True)
+                victim["parquet"].unlink(missing_ok=True)
+            except OSError:
+                continue
+            total_bytes -= victim["bytes"]
+            count -= 1
+
+    def _remove_orphans(self, known_stems: set[str]) -> None:
+        # A parquet without metadata is a crashed write.  Only old orphans are
+        # removed so a concurrent writer's parquet is never deleted between
+        # its rename and its metadata commit.
+        now_ns = datetime.now(timezone.utc).timestamp() * 1_000_000_000
+        for parquet_path in self._root.glob("*.parquet"):
+            if parquet_path.stem in known_stems:
+                continue
+            try:
+                if now_ns - parquet_path.stat().st_mtime_ns < _ORPHAN_GRACE_NS:
+                    continue
+                parquet_path.unlink()
+            except OSError:
+                continue
+
+    def _discard(self, parquet_path: Path, meta_path: Path) -> None:
+        # Caller holds the lock.
+        try:
+            meta_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        try:
+            parquet_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    def discard(self, key: SignalKey) -> None:
+        parquet_path, meta_path = self._paths(key)
+        with self._lock:
+            self._discard(parquet_path, meta_path)
+
+    # -- maintenance / introspection ------------------------------------
+
+    def clear(self) -> None:
+        """Delete every persisted plan and reset the store counters."""
+        with self._lock:
+            if self._root.exists():
+                for path in list(self._root.glob("*.json")) + list(
+                    self._root.glob("*.parquet")
+                ):
+                    try:
+                        path.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                for path in list(self._root.glob(".*.tmp")):
+                    try:
+                        path.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+            self._disk_hits = 0
+            self._misses = 0
+            self._write_errors = 0
+
+    def stats(self) -> dict[str, Any]:
+        with self._lock:
+            metas = list(self._root.glob("*.json")) if self._root.exists() else []
+            total_bytes = 0
+            for meta_path in metas:
+                try:
+                    total_bytes += meta_path.stat().st_size
+                except OSError:
+                    continue
+                parquet_path = meta_path.with_suffix(".parquet")
+                try:
+                    total_bytes += parquet_path.stat().st_size
+                except OSError:
+                    continue
+            return {
+                "enabled": True,
+                "root": str(self._root),
+                "entries": len(metas),
+                "bytes": total_bytes,
+                "capacity": self._capacity,
+                "byte_cap": self._byte_cap,
+                "hits": self._disk_hits,
+                "misses": self._misses,
+                "write_errors": self._write_errors,
+            }
+
+    def __len__(self) -> int:
+        with self._lock:
+            return len(list(self._root.glob("*.json"))) if self._root.exists() else 0
+
+
+# ---------------------------------------------------------------------------
 # Cache
 
 
 class SignalCache:
-    """Bounded least-recently-used cache of immutable signal plans."""
+    """Two-tier (memory LRU + optional disk store) cache of signal plans."""
 
-    def __init__(self, capacity: int = DEFAULT_CAPACITY) -> None:
+    def __init__(
+        self, capacity: int = DEFAULT_CAPACITY, *, store: SignalPlanStore | None = None
+    ) -> None:
         if isinstance(capacity, bool) or not isinstance(capacity, int):
             raise ValueError("signal cache capacity must be an integer")
         if capacity < 1:
             raise ValueError("signal cache capacity must be >= 1")
         self._capacity = capacity
+        self._store = store
         self._entries: OrderedDict[SignalKey, SignalPlan] = OrderedDict()
         self._lock = threading.RLock()
-        self._hits = 0
+        self._memory_hits = 0
+        self._disk_hits = 0
         self._misses = 0
+
+    @property
+    def store(self) -> SignalPlanStore | None:
+        return self._store
 
     # -- reading ---------------------------------------------------------
 
     def get(
         self, key: SignalKey, *, lifecycle_version: str | None = None
     ) -> SignalPlan | None:
-        """Return the cached plan or ``None``; counts a hit or a miss."""
+        """Return the cached plan or ``None``; memory first, then disk."""
         with self._lock:
             entry = self._entries.get(key)
-            if entry is None:
-                self._misses += 1
-                return None
-            if not _lifecycle_matches(entry, lifecycle_version):
-                # A plan conditioned on other lifecycle data is not this run's
-                # plan: miss rather than serve stale phase/time truths.
-                self._misses += 1
-                return None
-            self._entries.move_to_end(key)
-            self._hits += 1
-            return entry
+            if entry is not None and _lifecycle_matches(entry, lifecycle_version):
+                self._entries.move_to_end(key)
+                self._memory_hits += 1
+                return entry
+        if self._store is not None:
+            plan = self._store.load(key, lifecycle_version=lifecycle_version)
+            if plan is not None:
+                with self._lock:
+                    self._disk_hits += 1
+                    self._remember(plan)
+                return plan
+        with self._lock:
+            self._misses += 1
+        return None
 
     def get_or_compute(
         self,
@@ -513,8 +992,8 @@ class SignalCache:
         factory: Callable[[], SignalPlan],
         *,
         lifecycle_version: str | None = None,
-    ) -> tuple[SignalPlan, bool]:
-        """Return ``(plan, hit)``, computing and storing on a miss.
+    ) -> CacheHit:
+        """Return ``CacheHit(plan, hit, source)``, computing on a miss.
 
         ``factory`` runs without the lock held so a slow plan never blocks
         readers; two concurrent misses may both compute and the later insert
@@ -524,9 +1003,15 @@ class SignalCache:
             entry = self._entries.get(key)
             if entry is not None and _lifecycle_matches(entry, lifecycle_version):
                 self._entries.move_to_end(key)
-                self._hits += 1
-                return entry, True
-            self._misses += 1
+                self._memory_hits += 1
+                return CacheHit(entry, True, "memory")
+        if self._store is not None:
+            plan = self._store.load(key, lifecycle_version=lifecycle_version)
+            if plan is not None:
+                with self._lock:
+                    self._disk_hits += 1
+                    self._remember(plan)
+                return CacheHit(plan, True, "disk")
         plan = factory()
         if not isinstance(plan, SignalPlan):
             raise TypeError("signal plan factory must return a SignalPlan")
@@ -536,9 +1021,10 @@ class SignalCache:
             )
         value = self.put(key, plan)
         with self._lock:
+            self._misses += 1
             # Another thread may have inserted an identical plan meanwhile.
             entry = self._entries.get(key)
-            return (entry if entry is not None else value), False
+            return CacheHit(entry if entry is not None else value, False, "none")
 
     # -- writing ---------------------------------------------------------
 
@@ -548,29 +1034,62 @@ class SignalCache:
         if plan.key != key:
             raise ValueError("signal plan key does not match the cache key")
         with self._lock:
-            self._entries[key] = plan
-            self._entries.move_to_end(key)
-            while len(self._entries) > self._capacity:
-                self._entries.popitem(last=False)
+            self._remember(plan)
+        if self._store is not None:
+            self._store.save(key, plan)
         return plan
 
-    def clear(self) -> None:
-        """Drop every entry and reset hit/miss counters."""
+    def _remember(self, plan: SignalPlan) -> None:
+        # Caller holds the lock.
+        self._entries[plan.key] = plan
+        self._entries.move_to_end(plan.key)
+        while len(self._entries) > self._capacity:
+            self._entries.popitem(last=False)
+
+    def clear(self, *, disk: bool = False) -> None:
+        """Drop memory entries and reset counters; ``disk`` also clears files."""
         with self._lock:
             self._entries.clear()
-            self._hits = 0
+            self._memory_hits = 0
+            self._disk_hits = 0
             self._misses = 0
+        if disk and self._store is not None:
+            self._store.clear()
 
     # -- introspection ---------------------------------------------------
 
-    def stats(self) -> dict[str, int]:
+    def stats(self) -> dict[str, Any]:
         with self._lock:
-            return {
-                "hits": self._hits,
-                "misses": self._misses,
-                "size": len(self._entries),
+            memory = {
+                "hits": self._memory_hits,
+                "entries": len(self._entries),
                 "capacity": self._capacity,
             }
+            disk_hits = self._disk_hits
+            misses = self._misses
+        if self._store is not None:
+            disk = self._store.stats()
+            disk["hits"] = disk_hits
+        else:
+            disk = {
+                "enabled": False,
+                "root": None,
+                "entries": 0,
+                "bytes": 0,
+                "capacity": 0,
+                "byte_cap": None,
+                "hits": 0,
+                "misses": 0,
+                "write_errors": 0,
+            }
+        return {
+            "hits": memory["hits"] + disk_hits,
+            "misses": misses,
+            "size": memory["entries"],
+            "capacity": self._capacity,
+            "memory": memory,
+            "disk": disk,
+        }
 
     @property
     def capacity(self) -> int:
@@ -585,33 +1104,30 @@ class SignalCache:
             return key in self._entries
 
 
-def _lifecycle_matches(plan: SignalPlan, expected: str | None) -> bool:
-    """True when the caller cannot prove the cached plan is from other data.
-
-    ``None`` means "not known here" and is accepted; a known mismatch is not.
-    """
-    if expected is None or plan.lifecycle_version is None:
-        return True
-    return plan.lifecycle_version == expected
+DEFAULT_SIGNAL_STORE = SignalPlanStore()
+DEFAULT_SIGNAL_CACHE = SignalCache(store=DEFAULT_SIGNAL_STORE)
 
 
-DEFAULT_SIGNAL_CACHE = SignalCache()
-
-
-def cache_stats() -> dict[str, int]:
+def cache_stats() -> dict[str, Any]:
     return DEFAULT_SIGNAL_CACHE.stats()
 
 
-def clear_cache() -> None:
-    DEFAULT_SIGNAL_CACHE.clear()
+def clear_cache(*, disk: bool = False) -> None:
+    DEFAULT_SIGNAL_CACHE.clear(disk=disk)
 
 
 __all__ = [
+    "CacheHit",
     "DEFAULT_CAPACITY",
+    "DEFAULT_DISK_BYTE_CAP",
+    "DEFAULT_DISK_CAPACITY",
     "DEFAULT_SIGNAL_CACHE",
+    "DEFAULT_SIGNAL_STORE",
+    "DISK_FORMAT",
     "SignalCache",
     "SignalKey",
     "SignalPlan",
+    "SignalPlanStore",
     "SignalRow",
     "cache_stats",
     "clear_cache",

@@ -42,6 +42,7 @@ LIFECYCLE_PATH = VAR_DIR / "lifecycle/match_lifecycle.parquet"
 SETTLEMENT_PATH = VAR_DIR / "settlement/settlement.parquet"
 INDEX_PATH = VAR_DIR / "instruments/instruments.parquet"
 RUNS_DIR = VAR_DIR / "runs"
+SIGNAL_CACHE_DIR = VAR_DIR / "cache" / "signals"
 APP_DB = VAR_DIR / "app.db"
 DATA_VERSIONS_PATH = VAR_DIR / "data_versions.json"
 LOGS_DIR = VAR_DIR / "logs"
@@ -72,6 +73,7 @@ def ensure_dirs() -> None:
         INDEX_PATH.parent,
         RUNS_DIR,
         LOGS_DIR,
+        SIGNAL_CACHE_DIR,
     ):
         path.mkdir(parents=True, exist_ok=True)
 

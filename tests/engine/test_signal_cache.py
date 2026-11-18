@@ -235,8 +235,10 @@ def test_cache_hit_when_only_execution_and_sizing_change(primary, complement):
         strategy_hash=strategy_hash(base),
         warmup_bars=declared_warmup(base.strategy.indicators),
     )
-    plan_a, hit_a = cache.get_or_compute(key_a, lambda: plan_for(base, bars))
-    assert hit_a is False
+    lookup_a = cache.get_or_compute(key_a, lambda: plan_for(base, bars))
+    assert lookup_a.hit is False
+    assert lookup_a.source == "none"
+    plan_a = lookup_a.plan
 
     key_b = make_signal_key(
         data_version="sha256:dv1",
@@ -245,13 +247,16 @@ def test_cache_hit_when_only_execution_and_sizing_change(primary, complement):
         warmup_bars=declared_warmup(variant.strategy.indicators),
     )
     assert key_a == key_b
-    plan_b, hit_b = cache.get_or_compute(
+    lookup_b = cache.get_or_compute(
         key_b,
         lambda: pytest.fail("a profile change must not recompute the plan"),
     )
-    assert hit_b is True
-    assert plan_b is plan_a
-    assert cache.stats() == {"hits": 1, "misses": 1, "size": 1, "capacity": 4}
+    assert lookup_b.hit is True
+    assert lookup_b.source == "memory"
+    assert lookup_b.plan is plan_a
+    stats = cache.stats()
+    assert (stats["hits"], stats["misses"], stats["size"], stats["capacity"]) == (1, 1, 1, 4)
+    assert stats["disk"]["enabled"] is False
 
     # No execution, sizing, fee or profile value is part of the plan.
     metadata = json.dumps(plan_a.metadata(), sort_keys=True)
@@ -398,7 +403,7 @@ def test_cache_is_thread_safe():
     def worker():
         try:
             for _ in range(25):
-                got, _hit = cache.get_or_compute(plan.key, lambda: plan)
+                got = cache.get_or_compute(plan.key, lambda: plan).plan
                 results.append(got)
         except BaseException as exc:  # noqa: BLE001 - surfaced below
             errors.append(exc)
@@ -438,7 +443,7 @@ def _instrument_row(instrument_id: str, outcome: str) -> dict:
 
 
 @pytest.fixture
-def runner_env(monkeypatch):
+def runner_env(monkeypatch, tmp_path):
     """Stub the data layer; the engine, fills and analytics stay real."""
     from backend.data import bars as bars_module
     from backend.data import books as books_module
@@ -446,7 +451,7 @@ def runner_env(monkeypatch):
     from backend.data import lifecycle as lifecycle_module
     from backend.data import readmodel, settlement
     from backend.engine import runner as runner_module
-    from backend.engine.signals import DEFAULT_SIGNAL_CACHE
+    from backend.engine import signals as signals_module
 
     primary_closes = [0.40, 0.50, 0.50, 0.40, 0.40]
     complement_closes = [0.60] * len(primary_closes)
@@ -478,16 +483,20 @@ def runner_env(monkeypatch):
     )
     monkeypatch.setattr(lifecycle_module, "lifecycle_for", lambda *args, **kwargs: None)
     monkeypatch.setattr(settlement, "get_settlement", lambda *args, **kwargs: None)
-    DEFAULT_SIGNAL_CACHE.clear()
+    # A fresh worker process starts with an empty memory LRU but the same disk
+    # store; isolate it in tmp_path so the test never touches var/.
+    cache = signals_module.SignalCache(
+        store=signals_module.SignalPlanStore(root=tmp_path / "signals")
+    )
+    monkeypatch.setattr(signals_module, "DEFAULT_SIGNAL_CACHE", cache)
     try:
-        yield
+        yield cache
     finally:
-        DEFAULT_SIGNAL_CACHE.clear()
+        cache.clear(disk=True)
 
 
-def test_runner_reuses_the_plan_across_execution_profiles(runner_env):
+def test_runner_reuses_a_disk_plan_across_worker_like_runs(runner_env):
     from backend.engine.runner import execute_run
-    from backend.engine.signals import DEFAULT_SIGNAL_CACHE
 
     conservative = make_config(
         long_entry={"gt": ["close", 0.45]},
@@ -501,22 +510,28 @@ def test_runner_reuses_the_plan_across_execution_profiles(runner_env):
     )
 
     first = execute_run(conservative.model_dump(mode="json"))
+    assert first.status == "complete"
+    # Simulate the next worker: it has no memory of the first run.
+    runner_env.clear()
     second = execute_run(frictionless.model_dump(mode="json"))
-    assert first.status == second.status == "complete"
+    assert second.status == "complete"
 
     manifest_a, manifest_b = first.manifest, second.manifest
     cache_a, cache_b = manifest_a["signal_cache"], manifest_b["signal_cache"]
     assert cache_a["hit"] is False
+    assert cache_a["source"] == "none"
     assert cache_b["hit"] is True
+    assert cache_b["source"] == "disk"
 
     # Criterion 19: same strategy hash and plan, different run hash and costs.
     assert manifest_a["strategy_hash"] == manifest_b["strategy_hash"]
     assert manifest_a["run_hash"] != manifest_b["run_hash"]
     assert cache_a["plan_hash"] == cache_b["plan_hash"]
     assert cache_a["key"] == cache_b["key"]
+    assert cache_a["spec_hash"] == cache_b["spec_hash"]
     assert cache_a["key"]["strategy_hash"] == manifest_a["strategy_hash"]
     assert cache_a["rows"] == cache_b["rows"] == 5
-    assert cache_a["warmup_bars"] == 0
+    assert cache_a["warmup_bars"] == cache_b["warmup_bars"] == 0
     assert cache_a["key"]["indicator_impl_version"] == INDICATOR_IMPL_VERSION
 
     result_a, result_b = first.result, second.result
@@ -525,9 +540,7 @@ def test_runner_reuses_the_plan_across_execution_profiles(runner_env):
     assert result_a["signals"], "expected signals from the synthetic bars"
     assert result_a["metrics"]["net_pnl_usd"] != result_b["metrics"]["net_pnl_usd"]
 
-    assert DEFAULT_SIGNAL_CACHE.stats() == {
-        "hits": 1,
-        "misses": 1,
-        "size": 1,
-        "capacity": 32,
-    }
+    stats = runner_env.stats()
+    assert stats["disk"]["hits"] == 1
+    assert stats["disk"]["entries"] == 1
+    assert stats["disk"]["bytes"] > 0

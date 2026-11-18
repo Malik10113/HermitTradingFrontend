@@ -309,14 +309,16 @@ def execute_run(config_dict: dict[str, Any], prepared: dict[str, Any] | None = N
     lifecycle_version = _lifecycle_version()
     # Signals are execution-independent: the plan is computed from exactly the
     # bars Nautilus will dispatch (bar_to_dict round-trips the instrument's
-    # price precision), so plan and runtime truths are identical.
-    signal_plan, signal_cache_hit = signal_plan_for_config(
+    # price precision), so plan and runtime truths are identical.  The default
+    # cache is two-tier, so a worker reads a plan persisted by an earlier one.
+    signal_cache_hit = signal_plan_for_config(
         config,
         [bar_to_dict(bar) for bar in bars_p],
         lifecycle_at,
         data_version=prepared["data_version"],
         lifecycle_version=lifecycle_version,
     )
+    signal_plan = signal_cache_hit.plan
     signals: list[dict[str, Any]] = []
     fill_sink: list[dict[str, Any]] = []
     strategy = RuleStrategy(
@@ -469,7 +471,8 @@ def execute_run(config_dict: dict[str, Any], prepared: dict[str, Any] | None = N
         "lifecycle_version": lifecycle_version,
         "signal_cache": {
             **signal_plan.metadata(),
-            "hit": signal_cache_hit,
+            "hit": signal_cache_hit.hit,
+            "source": signal_cache_hit.source,
         },
         "source_paths": {
             "tape": "polymarket/{football,epl}/*_moneyline_tape.parquet",
@@ -510,8 +513,8 @@ def execute_run(config_dict: dict[str, Any], prepared: dict[str, Any] | None = N
         [
             f"run config: {json.dumps(config.canonical(), sort_keys=True)}",
             f"bars: primary={len(bars_primary)} complement={len(bars_complement)} bar_type={full_bar_type}",
-            f"signals: cache_hit={signal_cache_hit} rows={len(signal_plan)} "
-            f"spec={signal_plan.spec_hash} plan_hash={signal_plan.plan_hash}",
+            f"signals: cache_hit={signal_cache_hit.hit} source={signal_cache_hit.source} "
+            f"rows={len(signal_plan)} spec={signal_plan.spec_hash} plan_hash={signal_plan.plan_hash}",
             f"strategy: {json.dumps(strategy.diagnostics(), default=str)}",
             f"fills: {len(fills)} rejects: {rejects}",
             f"trades: {len(result['trades'])}",

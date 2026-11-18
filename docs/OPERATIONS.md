@@ -142,8 +142,8 @@ tailscale serve status      # must show the tailnet URL, never funnel
 - If a public rule exists by mistake, remove it with `tailscale serve reset` and
   re-check the two commands above.
 - The optional bearer token is defence in depth, not a substitute for the
-  tailnet boundary. Set it with a systemd drop-in (`systemctl edit
-  hermit-frontend`), or with an `EnvironmentFile`, and never commit it.
+  tailnet boundary. Set it with a systemd drop-in
+  (`systemctl edit hermit-frontend`) or an `EnvironmentFile`, never in git.
 
 ## Upgrade
 

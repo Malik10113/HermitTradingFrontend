@@ -48,8 +48,9 @@ Notes:
 
 The sibling repo encodes the consequence in its own rules:
 
-- **Execution-aware claims stay 2026-only.** Anything that needs slippage,
-  spread, depth or queue is restricted to the 2026 Polymarket books.
+- **Book execution stays 2026-only.** Anything that needs actual spread, depth
+  or queue is restricted to the 2026 Polymarket books. Optimistic, Conservative
+  and Stress use fixed bps and work on any period.
 - **Pre-2026 is development/validation data.** The tape is trade price, not an
   executable book.
 - **Kalshi is signal/validation only.** It is not treated as an execution venue

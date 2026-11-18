@@ -29,7 +29,7 @@ Registered: **1 datasets** (0 raw, 1 derived), **0 B** on disk at registration.
   ```bash
   python scripts/build_match_lifecycle.py
   ```
-- **Notes:** One row per match: actual_kickoff_utc, actual_end_utc, source=espn_keyevents, precision=observed. 2026 fixtures use the existing data/events/espn cache and fixture map (1,006/1,007 with both events); pre-2026 is backfilled via the ESPN scoreboard API. Rows without wallclock are omitted and phase is unknown, never a nominal duration. Not built yet: the derived path is absent until the lifecycle builder lands.
+- **Notes:** One row per match: actual_kickoff_utc, actual_end_utc, source=espn_keyevents, precision=observed. 2026 fixtures use the existing data/events/espn cache and fixture map (1,006/1,007 with both events); pre-2026 is backfilled via the ESPN scoreboard API. Rows without wallclock are omitted and phase is unknown, never a nominal duration. Raw ESPN summaries are registered upstream as events_espn_raw; pre-2026 backfill will cache under var/raw/espn. Not built yet: the derived path is absent until the lifecycle builder lands.
 
 ---
 

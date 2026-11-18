@@ -140,7 +140,7 @@ test.describe("research workspace", () => {
     await page.locator('input[name="execution-profile"][value="book"]').check();
     await coveragePreflight;
     await expect(page.getByText(/requested Book · effective Book/)).toBeVisible();
-    await expect(page.getByText(/Book coverage: .*→/)).toBeVisible();
+    await expect(page.getByText(/Book coverage: 2026-09-06/)).toBeVisible();
     await expect(page.locator('[data-testid="fallback-badge"]')).toHaveCount(0);
     expect(page.url()).toContain("profile=book");
 

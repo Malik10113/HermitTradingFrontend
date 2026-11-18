@@ -423,6 +423,14 @@ def preflight(body: dict[str, Any]) -> dict[str, Any]:
 
     row = get_instrument(instrument_id)
     coverage = book_coverage(instrument_id, row.get("match_key") if row else None)
+    # Expose the window as ISO dates at the top level: the UI and the
+    # documented CoverageWindow shape read `from`/`to`, not raw nanoseconds.
+    window = coverage.get("window") or {}
+    if window.get("start_ns") is not None:
+        coverage["from"] = _iso(window["start_ns"])
+    if window.get("end_ns") is not None:
+        coverage["to"] = _iso(window["end_ns"])
+    coverage["snapshots"] = window.get("snapshots")
     effective = resolve_profile(cfg, has_book_coverage=bool(coverage.get("has_coverage")), coverage_window=None)
     ref = None
     for r in rows:

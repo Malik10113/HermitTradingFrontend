@@ -186,7 +186,8 @@ test.describe("secondary routes and holdout", () => {
     }
     // The history table must show a completed run's net P&L, not "not available".
     await page.goto("/runs");
-    const completeRow = page.locator("tbody tr").filter({ hasText: "complete" }).first();
+    const history = page.getByLabel("Run history");
+    const completeRow = history.locator("tbody tr").filter({ hasText: "complete" }).first();
     await expect(completeRow).toBeVisible();
     await expect(completeRow).toContainText("$");
     await expect(page.getByLabel("Experiments and sweeps")).toBeVisible();

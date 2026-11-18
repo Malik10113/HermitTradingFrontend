@@ -184,6 +184,11 @@ test.describe("secondary routes and holdout", () => {
       await page.goto(path);
       await expect(page.getByRole("heading", { name: heading, level: 1 })).toBeVisible();
     }
+    // The history table must show a completed run's net P&L, not "not available".
+    await page.goto("/runs");
+    const completeRow = page.locator("tbody tr").filter({ hasText: "complete" }).first();
+    await expect(completeRow).toBeVisible();
+    await expect(completeRow).toContainText("$");
     expect(errors).toEqual([]);
   });
 

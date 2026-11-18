@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import secrets
 import shutil
 import uuid
 from datetime import datetime, timezone
@@ -35,8 +36,23 @@ router = APIRouter(prefix="/api")
 
 
 def require_token(authorization: str | None = Header(default=None)) -> None:
-    if SETTINGS.app_token and authorization != f"Bearer {SETTINGS.app_token}":
-        raise ApiError(401, "unauthorized", "missing or invalid bearer token")
+    """Require ``Authorization: Bearer <HTF_APP_TOKEN>`` when a token is set.
+
+    Optional by design: the app is tailnet-only, and the token adds a second
+    lock for hosts whose tailnet includes devices the owner does not control.
+    Every ``/api`` route, including health, is protected; static assets are
+    served outside this router and stay public so the app can boot.
+    """
+    expected = SETTINGS.app_token
+    if not expected:
+        return
+    supplied = ""
+    if authorization:
+        scheme, _, value = authorization.partition(" ")
+        if scheme.lower() == "bearer":
+            supplied = value.strip()
+    if not supplied or not secrets.compare_digest(supplied, expected):
+        raise ApiError(401, "unauthorized", "missing or invalid bearer token", {"scheme": "Bearer"})
 
 
 router.dependencies = [Depends(require_token)]
@@ -438,6 +454,14 @@ def get_backtest(run_id: str) -> dict[str, Any]:
 
 @router.get("/backtests/{run_id}/events")
 async def run_events(run_id: str) -> StreamingResponse:
+    """Server-sent status and log frames for one run.
+
+    Two frames are emitted per status transition: a named ``status`` event for
+    listeners that add an event listener, and a default-message ``data:`` frame
+    so a plain ``EventSource.onmessage`` handler sees it too.  The stream ends
+    with an ``end`` event on a terminal status, including when the run already
+    finished before the client connected, so a fast run cannot lose it.
+    """
     if state.get_run(run_id) is None:
         raise not_found("run", run_id)
 
@@ -446,28 +470,32 @@ async def run_events(run_id: str) -> StreamingResponse:
         last_status = None
         idle = 0.0
         while True:
+            current = state.get_run(run_id)
+            status = current["status"] if current else "failed"
             evs = state.events(run_id, after=last)
             for e in evs:
                 last = max(last, int(e["id"]))
-                yield f"event: log\ndata: {json.dumps(e)}\n\n"
-            run = state.get_run(run_id)
-            status = run["status"] if run else "failed"
+                yield f"id: {e['id']}\nevent: log\ndata: {json.dumps(e, sort_keys=True)}\n\n"
             if status != last_status:
                 last_status = status
-                payload = json.dumps({"status": status})
+                payload = json.dumps({"status": status}, sort_keys=True)
                 yield f"event: status\ndata: {payload}\n\n"
                 # Default-message frame so a plain EventSource.onmessage sees it.
                 yield f"data: {payload}\n\n"
             if _terminal(status):
-                yield f"event: end\ndata: {json.dumps({'status': status})}\n\n"
-                break
+                yield f"event: end\ndata: {json.dumps({'status': status}, sort_keys=True)}\n\n"
+                return
             await asyncio.sleep(0.5)
             idle += 0.5
             if idle >= 15:
                 idle = 0.0
                 yield ": keep-alive\n\n"
 
-    return StreamingResponse(stream(), media_type="text/event-stream")
+    return StreamingResponse(
+        stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @router.get("/backtests/{run_id}/artifacts/{name}")
@@ -508,7 +536,9 @@ def delete_backtest(run_id: str) -> None:
     run = state.get_run(run_id)
     if run is None:
         raise not_found("run", run_id)
-    if run["status"] == "running":
+    # Stop the worker before removing its state, so it cannot keep writing into
+    # a run directory that is about to disappear.
+    if run["status"] in ("queued", "running"):
         QUEUE.cancel(run_id)
     state.delete_run(run_id)
     shutil.rmtree(RUNS_DIR / run_id, ignore_errors=True)
@@ -624,7 +654,12 @@ def get_experiment(experiment_id: str) -> dict[str, Any]:
     done = len([r for r in children if _terminal(r["status"])])
     exp["completed"] = done
     if done == len(children) and children:
-        exp["status"] = "complete" if all(r["status"] == "complete" for r in children) else "failed"
+        if all(r["status"] == "complete" for r in children):
+            exp["status"] = "complete"
+        elif exp.get("status") == "cancelled" or all(r["status"] == "cancelled" for r in children):
+            exp["status"] = "cancelled"
+        else:
+            exp["status"] = "failed"
     return exp
 
 
@@ -634,14 +669,29 @@ def cancel_experiment(experiment_id: str) -> dict[str, Any]:
     if exp is None:
         raise not_found("experiment", experiment_id)
     cancelled = []
+    pending = []
     for child in exp.get("runs") or []:
-        if not _terminal(child["status"]):
-            QUEUE.cancel(child["run_id"])
-            state.update_run(child["run_id"], status="cancelled")
-            cancelled.append(child["run_id"])
-    state.update_experiment(experiment_id, status="cancelled")
+        if _terminal(child["status"]):
+            continue
+        # Mark every child first: stopping a running worker releases a queue
+        # slot, and a still-queued sibling must not be able to claim it.
+        if QUEUE.request_cancel(child["run_id"]):
+            pending.append(child["run_id"])
+        cancelled.append(child["run_id"])
+    for run_id in pending:
+        QUEUE.stop(run_id)
     state.bump_experiment(experiment_id)
-    return {"experiment_id": experiment_id, "cancelled": cancelled}
+    # bump_experiment derives complete/failed from the children; a cancelled
+    # parent stays cancelled even if some children had already completed.
+    state.update_experiment(experiment_id, status="cancelled")
+    after = state.get_experiment(experiment_id) or {}
+    return {
+        "experiment_id": experiment_id,
+        "cancelled": cancelled,
+        "completed": after.get("completed"),
+        "total": after.get("total"),
+        "status": after.get("status"),
+    }
 
 
 @router.get("/cache/stats")

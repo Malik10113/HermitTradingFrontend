@@ -8,13 +8,18 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import sqlite3
 import threading
+import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Any, Iterator
 
 from backend.config import APP_DB, ensure_dirs
+
+#: A run in one of these states is finished; nothing else may move it.
+TERMINAL_STATUSES = ("complete", "failed", "cancelled", "orphaned")
 
 _LOCK = threading.RLock()
 _SCHEMA = """
@@ -197,6 +202,32 @@ def delete_run(run_id: str) -> bool:
     return cur.rowcount > 0
 
 
+def claim_run(run_id: str) -> bool:
+    """Atomically move a run from ``queued`` to ``running``.
+
+    The queue calls this before spawning a worker so two submissions of the
+    same run cannot both execute it.  Returns ``True`` only for the caller
+    that won the transition.
+    """
+    with _LOCK, _conn() as conn:
+        cur = conn.execute(
+            "UPDATE runs SET status='running', updated_at=? WHERE run_id=? AND status='queued'",
+            (utcnow(), run_id),
+        )
+    return cur.rowcount == 1
+
+
+def mark_cancelled(run_id: str) -> bool:
+    """Move a queued/running run to ``cancelled``; ``True`` if it moved."""
+    with _LOCK, _conn() as conn:
+        cur = conn.execute(
+            "UPDATE runs SET status='cancelled', updated_at=? "
+            "WHERE run_id=? AND status IN ('queued','running')",
+            (utcnow(), run_id),
+        )
+    return cur.rowcount == 1
+
+
 def append_event(run_id: str, level: str, message: str) -> None:
     with _LOCK, _conn() as conn:
         conn.execute(
@@ -354,16 +385,20 @@ def bump_experiment(experiment_id: str) -> None:
             "SELECT status FROM runs WHERE experiment_id=?", (experiment_id,)
         ).fetchall()
         total = conn.execute(
-            "SELECT total FROM experiments WHERE id=?", (experiment_id,)
+            "SELECT total,status FROM experiments WHERE id=?", (experiment_id,)
         ).fetchone()
         if total is None:
             return
-        done = len([r for r in rows if r["status"] in ("complete", "failed", "cancelled", "orphaned")])
+        statuses = [r["status"] for r in rows]
+        done = len([s for s in statuses if s in TERMINAL_STATUSES])
         status = "running"
-        if rows and done == len(rows):
-            status = "complete" if all(r["status"] == "complete" for r in rows) else "failed"
-        elif done and done == total[0]:
-            status = "complete" if all(r["status"] == "complete" for r in rows) else "failed"
+        if rows and done == len(rows) and done == total[0]:
+            if all(s == "complete" for s in statuses):
+                status = "complete"
+            elif all(s == "cancelled" for s in statuses) or total[1] == "cancelled":
+                status = "cancelled"
+            else:
+                status = "failed"
         conn.execute(
             "UPDATE experiments SET completed=?, status=?, updated_at=? WHERE id=?",
             (done, status, utcnow(), experiment_id),
@@ -390,43 +425,99 @@ def list_experiments() -> list[dict[str, Any]]:
 # ------------------------------------------------------------------- orphan reap
 
 
-def reap_orphans() -> list[str]:
+def _alive(pid: int) -> bool:
+    """True when ``pid`` is a live, non-zombie process."""
+    try:
+        with open(f"/proc/{pid}/stat", "rb") as fh:
+            raw = fh.read()
+    except FileNotFoundError:
+        return False
+    except OSError:
+        raw = b""
+    if raw:
+        try:
+            state = raw.rsplit(b")", 1)[1].split()[0]
+            return state != b"Z"
+        except (IndexError, ValueError):
+            pass
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def terminate_worker(pid: int, grace_s: float = 5.0) -> bool:
+    """SIGTERM the worker's process group, SIGKILL after ``grace_s``.
+
+    Returns ``True`` when the process is gone afterwards.  Workers are started
+    with ``start_new_session=True`` so the pid is also the process-group id.
+    """
+    if not _alive(pid):
+        return True
+
+    def _signal(sig: int) -> bool:
+        try:
+            os.killpg(pid, sig)
+            return True
+        except (ProcessLookupError, PermissionError):
+            try:
+                os.kill(pid, sig)
+                return True
+            except (ProcessLookupError, PermissionError):
+                return False
+
+    _signal(signal.SIGTERM)
+    deadline = time.monotonic() + grace_s
+    while time.monotonic() < deadline:
+        if not _alive(pid):
+            return True
+        time.sleep(0.05)
+    _signal(signal.SIGKILL)
+    deadline = time.monotonic() + 1.0
+    while time.monotonic() < deadline:
+        if not _alive(pid):
+            return True
+        time.sleep(0.05)
+    return not _alive(pid)
+
+
+def reap_orphans(grace_s: float = 5.0) -> list[str]:
     """Mark queued/running runs whose worker is gone as failed.
 
-    Called on API startup.  A run whose data version disappeared is not touched
-    here; the API labels it orphaned by comparing versions.
+    Called on API startup.  A live worker left over from a previous API
+    process is terminated (SIGTERM, then SIGKILL after the grace period) so it
+    cannot keep writing into a run this process now owns.  A run whose data
+    version disappeared is not touched here; the API labels it orphaned by
+    comparing versions and never re-runs it.
     """
+    with _conn() as conn:
+        rows = conn.execute("SELECT run_id,pid,status FROM runs WHERE status IN ('queued','running')").fetchall()
     reaped: list[str] = []
-    with _LOCK, _conn() as conn:
-        rows = conn.execute("SELECT run_id,pid FROM runs WHERE status IN ('queued','running')").fetchall()
-        for row in rows:
-            pid = row["pid"]
-            alive = False
-            if pid:
-                try:
-                    os.kill(int(pid), 0)
-                    alive = True
-                except OSError:
-                    alive = False
-            if alive and pid and int(pid) != os.getpid():
-                # A worker survived an API restart. Terminate it so it cannot
-                # write into a run the restarted API now considers failed.
-                try:
-                    os.killpg(int(pid), 15)
-                except (ProcessLookupError, PermissionError):
-                    try:
-                        os.kill(int(pid), 15)
-                    except (ProcessLookupError, PermissionError):
-                        pass
-                conn.execute(
-                    "UPDATE runs SET status='failed', error=?, updated_at=? WHERE run_id=?",
-                    ("worker process survived an API restart; terminated as an orphan", utcnow(), row["run_id"]),
+    for row in rows:
+        run_id = row["run_id"]
+        pid = row["pid"]
+        if pid and int(pid) != os.getpid():
+            if _alive(int(pid)):
+                terminate_worker(int(pid), grace_s)
+                message = (
+                    f"worker process {pid} survived an API restart; "
+                    "terminated as an orphan"
                 )
-                reaped.append(row["run_id"])
-            elif not alive:
-                conn.execute(
-                    "UPDATE runs SET status='failed', error=?, updated_at=? WHERE run_id=?",
-                    ("worker process was lost; run reaped on startup", utcnow(), row["run_id"]),
-                )
-                reaped.append(row["run_id"])
+            else:
+                message = "worker process was lost; run reaped on startup"
+        elif pid and int(pid) == os.getpid():
+            message = "run was owned by the API process; reaped on startup"
+        else:
+            message = "run had no worker process; reaped on startup"
+        with _LOCK, _conn() as conn:
+            conn.execute(
+                "UPDATE runs SET status='failed', error=?, updated_at=? WHERE run_id=?",
+                (message, utcnow(), run_id),
+            )
+            conn.execute(
+                "INSERT INTO run_events (run_id,ts,level,message) VALUES (?,?,?,?)",
+                (run_id, utcnow(), "error", message),
+            )
+        reaped.append(run_id)
     return reaped

@@ -50,10 +50,12 @@ where `market_id` is the `condition_id` and `selection_index = 0` is YES.
 `var/settlement/settlement.parquet`; when a row is missing the value is unknown
 and a run refuses to settle that instrument (the UI says so).
 
-`markets.parquet.end_date` is the metadata cutoff used as the instrument
-expiration. It is not a verified settlement timestamp; we do not invent one.
-Closed markets carry `updated_at`, which is recorded as `settled_ts` when
-present.
+`markets.parquet.end_date` is the expiry used by the instrument and the runner.
+It is market metadata, not a verified resolution timestamp; we do not invent
+one. When `end_date` is absent, the runner falls back to the settlement index's
+`settled_ts_utc` (built from `markets.updated_at` for closed markets) and
+records that source on the `SettlementRecord`. When both are absent, a position
+is reported as `unsettled`; no value or timestamp is imputed.
 
 ### Lifecycle
 
@@ -87,13 +89,23 @@ low, close, volume, trade_count, source, data_version`.
   produces no bar.
 - Bar types: `...-1-MINUTE-LAST-EXTERNAL`,
   `...-5-MINUTE-LAST-INTERNAL@1-MINUTE-EXTERNAL` (rc9 rendering), and the same for
-  15m/1h/1d.
+  15m/1h/1d. The composite's inner specification omits `-LAST` because it is
+  implicit; `docs/BRIEF.md` and `AGENTS.md` write the documentation form with
+  an inner `-1-MINUTE-LAST-EXTERNAL`, which `parse_bar_alias` accepts and
+  normalises. The stored artifact keeps the rc9 composite type.
+- Non-time bar types render as `...-100-TICK-LAST-EXTERNAL`,
+  `...-1000-VOLUME-LAST-EXTERNAL`, `...-10000-VALUE-LAST-EXTERNAL` and
+  `...-10-RENKO-LAST-EXTERNAL` for the default `renko_0.01` brick (0.01 / 0.001
+  price tick).
 - Non-time bars (`tick`, `volume`, `value`, `renko`) are built from the fill
   stream and use the same canonical schema. A `tick` bar closes every N fills,
   `volume` every N contracts (`token_amount`), `value` every N USD, and `renko`
   every brick of price movement (default 0.01). They are not supported by
-  Nautilus bar execution; a run that uses one sets `bar_execution=False` and
-  fills at the next bar's open quote.
+  Nautilus bar execution; a run that uses one delivers the bars to the strategy
+  with `bar_execution=False` and fills at the next bar's open quote.
+- The artifacts are precomputed, so the runner re-types every non-1m series as
+  `AggregationSource.EXTERNAL` before adding it to the engine. Nautilus would
+  otherwise try to aggregate a composite a second time.
 
 ## Nautilus 2.0 notes (verified)
 
@@ -107,10 +119,13 @@ low, close, volume, trade_count, source, data_version`.
   configured **next-bar-open** convention we also add one zero-spread
   `QuoteTick` per bar at the bar's open, with `ts_event = open` and
   `ts_init = open + 1 ns`. The strategy queues the intent in `on_bar` (close of
-  bar N) and submits it in `on_quote` (open of bar N+1). The +1 ns places the
-  open quote after the bar that closed at the same timestamp, so the signal
-  formed on bar N is the one that fills at the next open; quotes are added
-  before bars for stable replay order.
+  bar N) and submits it in `on_quote` (open of bar N+1). Bars are added before
+  the open quotes, so at a shared timestamp the signal bar closes before the
+  next open quote.
+- Composite (5m/15m/1h/1d) and non-time bars are replayed to Nautilus as
+  precomputed EXTERNAL bars. Only `1m` sets `bar_execution=True`; for every
+  other alias the engine receives the bars for `on_bar` but does not generate
+  fills from them, and fills come from the next bar's open quote.
 - Execution profiles are implemented with a `FillModel` that returns a
   synthetic L1 `OrderBook` at the profiled fill price, and a `FeeModel` that
   charges `fee_bps` of notional. The fill model receives the order and can read
@@ -120,15 +135,20 @@ low, close, volume, trade_count, source, data_version`.
   stake.
 - Settlement is applied by the analytics layer as an explicit cash flow for
   positions still open at expiry, using the indexed settlement value. The
-  settlement *timestamp* is the market metadata `end_date` (the brief's expiry);
-  `markets.updated_at` is a metadata timestamp and is not used to inflate
-  holding periods. The value itself is never inferred from a price.
-- Composite (5m/15m/1h/1d) and non-time bars are replayed to Nautilus as
-  precomputed EXTERNAL bars; only 1m bars drive Nautilus matching. Fills still
-  come from the next bar's open quote.
+  settlement *timestamp* is the market metadata `end_date` (the brief's expiry).
+  Only when `end_date` is absent does the runner use the settlement index's
+  `settled_ts_utc` (built from `markets.updated_at` for closed markets), and it
+  records that source. `updated_at` is never used to inflate a holding period
+  when `end_date` exists, and the value itself is never inferred from a price.
 - Out-of-sample metrics are hidden by the API until an explicit reveal; the
   unrevealed response reports the in-sample slice and `oos_hidden: true`.
-  Overall metrics are withheld because they would include the test window.
+  Overall metrics are withheld because they would include the test window. The
+  append-only ledger is keyed by `(universe, strategy_hash, split_hash)`; the
+  second reveal warns, execution and sizing changes do not reset the count, and
+  a new strategy hash increments the variant index.
+- `config.acknowledged_warnings` records the preflight warnings the user
+  accepted. The runner copies them into `manifest.json`; they are advisory and
+  do not block a run.
 - `FillModel.get_orderbook_for_fill_simulation` must not raise: an exception
   aborts the fill. Guard all lookups.
 
@@ -137,8 +157,17 @@ low, close, volume, trade_count, source, data_version`.
 The Polymarket tape's notional is USD (`usd_amount`). There is no verified GBP
 conversion in the stored data, so v1 sizes and reports in **USD**. The UI labels
 stake, bankroll and P&L in USD; `bankroll_gbp` is accepted only as a legacy
-input alias and stored as `bankroll_usd`. This corrects the £ wording in the
+input alias and normalised to `bankroll_usd`. This corrects the £ wording in the
 brief rather than inventing an exchange rate.
+
+Sizing is `risk.sizing` with two modes:
+
+- `fixed_stake`: `value` is the USD stake per entry;
+- `risk_pct`: `value` is the percent of `bankroll_usd` (0–100).
+
+`bankroll_usd` must be positive; the engine starts a CASH account with
+`Currency("USD")`. Fees, P&L, settlement and book impact are reported in USD
+(`_usd`) and basis points (`_bps`). No FX rate is stored, computed or assumed.
 
 ## Execution profiles
 
@@ -159,6 +188,39 @@ snapshot with `ts <= decision_ts`, walks asks for buys and bids for sells up to
 is missing or older than `book_staleness_s`. A run with no book coverage is
 priced as Conservative with `reason = no_book_coverage`; it never silently uses
 Frictionless.
+
+## Caching
+
+- **Indicator series:** in-process LRU (`IndicatorCache`, capacity 32) keyed by
+  `(data_version, bar_type, spec_hash, indicator_impl_version)`. Stats are at
+  `GET /api/cache/stats`. A parameter change is a new key, not a mutation.
+- **Bars:** Parquet files under `var/bars/{instrument_id}/{alias}.parquet`; the
+  metadata records `data_version`, `builder_version` and `bar_type`, and a
+  matching key is reused without a rebuild.
+- **Signals:** there is no signal cache in v1. A new run recomputes the signal
+  series even when `strategy_hash` is unchanged. `docs/BRIEF.md` §8.6 describes
+  a signal cache as the target; treat that section as v1.1, not as shipped v1.
+
+## Experiments
+
+`POST /api/experiments` takes a base `RunConfig` and one or two axes of
+`{path, values}`. The cartesian product is bounded: 50 variants by default and
+200 as a hard cap (`backend/config.py`). Each variant is a standard child run
+tagged with `experiment_id`; every variant is retained and none is
+auto-promoted. Cancelling the parent cancels its non-terminal children. The
+workspace sweep panel exposes a single axis and a progress table; a two-axis
+heatmap is not implemented.
+
+## Run artifacts
+
+Every completed run writes `config.json`, `summary.json`, `equity.parquet`,
+`trades.parquet`, `positions.parquet`, `signals.parquet`, `costs.parquet`,
+`diagnostics.json`, `log.txt` and `manifest.json` under `var/runs/<run_id>/`.
+The manifest records the strategy/run hashes, data/code/Nautilus/lifecycle
+versions, source paths, instrument and condition, bar type and aggregation
+chain, requested/effective execution profile with fallback reason and rate,
+book coverage, evaluation split and split hash, risk config and
+`acknowledged_warnings`.
 
 ## Package layout
 
@@ -201,6 +263,7 @@ POST /api/execution/preflight
 GET  /api/strategies
 POST /api/strategies
 GET  /api/presets  / POST /api/presets
+DELETE /api/presets/{preset_id}
 POST /api/backtests
 GET  /api/backtests
 GET  /api/backtests/{run_id}
@@ -211,6 +274,7 @@ GET  /api/runs/compare?ids=
 GET  /api/experiments  / POST /api/experiments
 GET  /api/experiments/{id}
 POST /api/experiments/{id}/cancel
+GET  /api/cache/stats
 DELETE /api/backtests/{run_id}
 ```
 
@@ -257,5 +321,8 @@ Status is `queued|running|complete|failed|cancelled|orphaned`.
 ## Testing domains
 
 `scripts/test_domains.sh` maps changed paths to `frontend`, `data`,
-`indicators`, `engine`, `api`, `e2e`, `tooling` and runs dependents. Until the
-frontend exists, `--domain frontend` reports nothing to run.
+`indicators`, `engine`, `api`, `e2e`, `tooling` and runs dependents. Domain
+behaviour is now real, not a placeholder: `frontend` runs Vitest when
+`frontend/node_modules` exists and skips with a reason otherwise; `e2e` runs
+Playwright only when `HTF_E2E=1`; a domain with no tests prints "nothing to
+run". `--changed` prints the mapping it used.

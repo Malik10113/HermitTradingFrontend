@@ -56,7 +56,7 @@ backend/             FastAPI app, API schemas, job orchestration
 backend/engine/      Nautilus adapter: instruments, catalog, RuleStrategy, runner
 backend/data/        Bar builders, data-version hashing, DuckDB read model
 backend/indicators/  IndicatorSpec registry and Nautilus replay adapter
-docs/                BRIEF.md, DATA_REGISTER.md, CHANGELOG.md, session masters
+docs/                BRIEF.md, DATA_TRACE.md, DATA_REGISTER.md, CHANGELOG.md, session masters
 scripts/             Operational entry points (build bars, build catalog, test)
 var/                 Generated: bars/, catalog/, runs/, app.db (gitignored)
 tests/               Domain-scoped tests (see §10)

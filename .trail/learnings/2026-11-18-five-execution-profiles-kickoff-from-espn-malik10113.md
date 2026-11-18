@@ -14,7 +14,6 @@ touches:
   - docs/BRIEF.md
   - docs/DATA_REGISTER.md
   - docs/DATA_TRACE.md
-  - docs/REVIEW_PLAN.md
   - docs/data_register.json
 ---
 

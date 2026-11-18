@@ -100,6 +100,16 @@ export function CommandPalette({
     setSearchError(null);
   }, [open]);
 
+  // Keep the keyboard-highlighted option inside the scroll viewport.
+  useEffect(() => {
+    if (!open) return;
+    const activeResult = results[active];
+    if (!activeResult) return;
+    document
+      .getElementById(`command-result-${activeResult.instrument_id}`)
+      ?.scrollIntoView({ block: "nearest" });
+  }, [active, open, results]);
+
   useEffect(() => {
     if (!open) return;
     const trimmed = debounced.trim();
@@ -143,6 +153,12 @@ export function CommandPalette({
     } else if (event.key === "ArrowUp") {
       event.preventDefault();
       setActive((index) => Math.max(index - 1, 0));
+    } else if (event.key === "Home") {
+      event.preventDefault();
+      setActive(0);
+    } else if (event.key === "End") {
+      event.preventDefault();
+      setActive(Math.max(results.length - 1, 0));
     } else if (event.key === "Enter") {
       event.preventDefault();
       const candidate = results[active];
@@ -205,7 +221,7 @@ export function CommandPalette({
                 type="button"
                 role="option"
                 aria-selected={index === active}
-                className={`flex w-full items-center gap-3 border-b border-line/60 px-3 py-2 text-left ${
+                className={`flex w-full items-center gap-3 border-b border-line/60 px-3 py-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent ${
                   index === active ? "bg-surface-sunken" : "hover:bg-surface-sunken"
                 }`}
                 onMouseEnter={() => setActive(index)}
@@ -236,8 +252,8 @@ export function CommandPalette({
           )}
         </div>
         <div className="flex items-center gap-3 border-t border-line px-3 py-1.5 text-[10px] text-ink-faint">
-          <span>{fmtInteger(results.length)} shown</span>
-          <span>↑↓ navigate · Enter select</span>
+          <span role="status" aria-live="polite">{fmtInteger(results.length)} shown</span>
+          <span>↑↓ navigate · Home/End · Enter select · Esc close</span>
           <span className="ml-auto">One instrument per run in v1</span>
         </div>
       </div>

@@ -27,6 +27,7 @@ import type {
   PresetListResponse,
   RunDetail,
   RunListResponse,
+  SignalPoint,
   SavedStrategy,
   SearchResponse,
   StrategiesResponse,
@@ -336,12 +337,17 @@ function normaliseTrade(raw: unknown, index: number): Trade {
     ...(source as unknown as Trade),
     trade_id: str(source.trade_id) ?? `T-${String(index + 1).padStart(4, "0")}`,
     side: payloadSide,
-    close_side: source.close_side === "BUY" ? "BUY" : "SELL",
+    // The artifact may omit the closing order side; an absent field stays
+    // absent so the trade table shows "not available" rather than guessing.
+    close_side:
+      source.close_side === "BUY" || source.close_side === "SELL"
+        ? source.close_side
+        : null,
     token,
     intent,
     entry_ts: str(source.entry_ts) ?? "",
     exit_ts: str(source.exit_ts),
-    entry_price: num(source.entry_price) ?? 0,
+    entry_price: num(source.entry_price),
     exit_price: num(source.exit_price),
     contracts: num(source.contracts) ?? num(source.quantity),
     fees_usd: num(source.fees_usd),
@@ -359,6 +365,33 @@ function normaliseTrade(raw: unknown, index: number): Trade {
 
 export function normaliseTrades(raw: unknown): Trade[] {
   return array(raw).map(normaliseTrade);
+}
+
+/**
+ * Signals carry `reference_price` in the artifact; the chart contract names the
+ * field `price`. Map the alias and leave a genuinely absent price null.
+ */
+export function normaliseSignals(raw: unknown): SignalPoint[] | null {
+  if (!Array.isArray(raw)) return null;
+  const points: SignalPoint[] = [];
+  for (const item of raw) {
+    const source = record(item);
+    const tsNs = num(source.ts_ns);
+    const ts =
+      str(source.ts) ??
+      (tsNs != null ? new Date(tsNs / 1e6).toISOString() : null);
+    if (!ts) continue;
+    points.push({
+      ...(source as unknown as SignalPoint),
+      ts,
+      kind: str(source.kind) ?? str(source.action) ?? "signal",
+      side: str(source.side),
+      token: str(source.token),
+      price: num(source.price) ?? num(source.reference_price),
+      reason: str(source.reason) ?? str(source.action),
+    });
+  }
+  return points;
 }
 
 export function normaliseEquity(raw: unknown): EquityPoint[] {
@@ -535,6 +568,8 @@ export function normaliseRun(raw: unknown): RunDetail {
     fallback_rate: num(source.fallback_rate),
     execution,
     metrics,
+    metrics_scope: str(source.metrics_scope) ?? null,
+    oos_hidden: bool(source.oos_hidden),
     diagnostics,
     costs: normaliseCosts(source.costs),
     phases: normalisePhases(phasesSource),
@@ -543,9 +578,7 @@ export function normaliseRun(raw: unknown): RunDetail {
     lifecycle,
     equity: equitySource != null ? normaliseEquity(equitySource) : null,
     trades,
-    signals: Array.isArray(source.signals)
-      ? (source.signals as RunDetail["signals"])
-      : null,
+    signals: normaliseSignals(source.signals),
     config: Object.keys(config).length > 0 ? (config as unknown as RunDetail["config"]) : null,
     warnings:
       (source.warnings as RunDetail["warnings"]) ??

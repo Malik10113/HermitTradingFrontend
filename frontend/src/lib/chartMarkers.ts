@@ -293,13 +293,14 @@ function tradeExitMarker(trade: Trade): ChartMarker | null {
       tradeId: trade.trade_id,
     };
   }
-  const closeSide = trade.close_side ?? "SELL";
+  // A missing close side is not assumed to be SELL: name the event instead.
+  const closeSide = trade.close_side;
   return {
     time,
     position: "aboveBar",
     color: CHART_COLORS.down,
     shape: "arrowDown",
-    text: `${closeSide} ${trade.token}`,
+    text: closeSide ? `${closeSide} ${trade.token}` : `EXIT ${trade.token}`,
     id: `${trade.trade_id}:exit`,
     kind: "exit",
     tradeId: trade.trade_id,
@@ -351,6 +352,56 @@ export function mergeMarkers(...groups: ChartMarker[][]): ChartMarker[] {
     merged.push(marker);
   }
   return merged.sort((a, b) => a.time - b.time || a.id.localeCompare(b.id));
+}
+
+/**
+ * Kickoff and end markers, only when both wallclocks are observed. A missing
+ * end time is not replaced by the kickoff (that would invent an end).
+ */
+export function lifecycleMarkers(
+  lifecycle: LifecycleMeta | null | undefined,
+): ChartMarker[] {
+  if (!lifecyclePhaseAvailable(lifecycle)) return [];
+  const kickoff = toSeconds(lifecycle?.actual_kickoff_utc);
+  const end = toSeconds(lifecycle?.actual_end_utc);
+  if (kickoff === null || end === null) return [];
+  return [
+    {
+      time: kickoff,
+      position: "aboveBar",
+      color: CHART_COLORS.neutral,
+      shape: "arrowDown",
+      text: "KICKOFF",
+      id: "lifecycle:kickoff",
+      kind: "signal",
+    },
+    {
+      time: end,
+      position: "aboveBar",
+      color: CHART_COLORS.neutral,
+      shape: "circle",
+      text: "END",
+      id: "lifecycle:end",
+      kind: "signal",
+    },
+  ];
+}
+
+/**
+ * Every marker the chart shows for a run: entry/exit/settlement from the trade
+ * artifact, signal/fill evidence from the signals artifact, then observed
+ * lifecycle events. Signatures are from the artifacts, never inferred here.
+ */
+export function runChartMarkers({
+  trades,
+  signals,
+  lifecycle,
+}: {
+  trades: Trade[];
+  signals: SignalPoint[];
+  lifecycle: LifecycleMeta | null | undefined;
+}): ChartMarker[] {
+  return mergeMarkers(tradeMarkers(trades), signalMarkers(signals), lifecycleMarkers(lifecycle));
 }
 
 export interface EquitySeries {

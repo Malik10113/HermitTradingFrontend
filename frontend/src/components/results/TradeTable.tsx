@@ -74,16 +74,20 @@ export function TradeTable({
             return (
               <tr
                 key={trade.trade_id}
-                className={`border-b border-line/60 ${
+                className={`cursor-pointer border-b border-line/60 ${
                   selected ? "bg-surface-sunken" : "hover:bg-surface-sunken/60"
                 }`}
                 aria-selected={selected}
+                onClick={() => onSelectTrade(selected ? null : trade.trade_id)}
               >
                 <td className="px-2 py-1">
                   <button
                     type="button"
-                    className="numeric text-[10px] text-accent underline decoration-accent/40 underline-offset-2 hover:decoration-accent"
-                    onClick={() => onSelectTrade(selected ? null : trade.trade_id)}
+                    className="numeric text-[10px] text-accent underline decoration-accent/40 underline-offset-2 hover:decoration-accent focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onSelectTrade(selected ? null : trade.trade_id);
+                    }}
                     aria-expanded={selected}
                     title={trade.trade_id}
                   >
@@ -179,21 +183,23 @@ export function TradeInspector({
       <KeyValue
         columns={3}
         items={[
-          { label: "Signal / entry time", value: fmtTimestamp(trade.entry_ts) },
+          { label: "Entry time", value: fmtTimestamp(trade.entry_ts) },
           {
             label: "Exit time",
             value: trade.held_to_settlement ? "held to settlement" : fmtTimestamp(trade.exit_ts),
           },
           { label: "Holding period", value: fmtDuration(holding) },
           {
-            label: "Side at entry",
+            label: "Entry side · token",
             value: `${trade.side} ${trade.token}`,
           },
           {
-            label: "Side at exit",
+            label: "Exit side · token",
             value: trade.held_to_settlement
               ? `settlement ${trade.token}`
-              : `${trade.close_side ?? "SELL"} ${trade.token}`,
+              : trade.close_side
+                ? `${trade.close_side} ${trade.token}`
+                : NOT_AVAILABLE,
           },
           {
             label: "Intent",
@@ -216,9 +222,12 @@ export function TradeInspector({
             value: trade.execution_source ?? NOT_AVAILABLE,
           },
           {
+            // The artifact records the reason; fallback is never inferred from
+            // the source label alone.
             label: "Fallback reason",
-            value: trade.fallback_reason ?? (trade.execution_source === "conservative_fallback" ? "stale or missing book snapshot" : "none"),
+            value: trade.fallback_reason ?? NOT_AVAILABLE,
           },
+          { label: "Held to settlement", value: trade.held_to_settlement ? "yes" : "no" },
           { label: "Phase", value: trade.phase ?? "unknown" },
         ]}
       />

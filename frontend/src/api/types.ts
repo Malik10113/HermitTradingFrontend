@@ -477,7 +477,8 @@ export interface Trade {
   intent?: "open_long" | "close_long" | "open_short" | "close_short" | string | null;
   entry_ts: string;
   exit_ts?: string | null;
-  entry_price: number;
+  /** Null when the artifact omits it; never substituted with a price. */
+  entry_price: number | null;
   exit_price?: number | null;
   contracts?: number | null;
   quantity?: number | null;
@@ -550,6 +551,9 @@ export interface RunSummary {
   config?: BacktestConfig | null;
   metrics?: Metrics | null;
   summary?: Metrics | null;
+  /** "in_sample" when an unrevealed holdout keeps out-of-sample metrics hidden. */
+  metrics_scope?: "in_sample" | "all" | string | null;
+  oos_hidden?: boolean | null;
   manifest?: Record<string, unknown> | null;
   diagnostics?: Diagnostics | null;
   costs?: CostBreakdown | null;

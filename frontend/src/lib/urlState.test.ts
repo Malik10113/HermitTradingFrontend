@@ -13,6 +13,7 @@ import {
 
 const fullState: WorkspaceState = {
   instrument: "epl-bou-ars-2024-10-19-bou-YES.POLYMARKET",
+  league: "EPL",
   barType: "5m",
   from: "2024-10-01",
   to: "2024-12-01",
@@ -34,6 +35,23 @@ describe("workspace URL state", () => {
     const parsed = parseWorkspaceSearch(search);
     expect(parsed.issues).toEqual([]);
     expect(parsed.state).toEqual(fullState);
+  });
+
+  it("parses run, compare, profile, league and the shared-run keys together", () => {
+    const parsed = parseWorkspaceSearch(
+      "?instrument=x-YES.POLYMARKET&league=EPL&profile=book&run=run_abc&compare=run_1,run_2",
+    );
+    expect(parsed.issues).toEqual([]);
+    expect(parsed.state.instrument).toBe("x-YES.POLYMARKET");
+    expect(parsed.state.league).toBe("EPL");
+    expect(parsed.state.profile).toBe("book");
+    expect(parsed.state.runId).toBe("run_abc");
+    expect(parsed.state.compare).toEqual(["run_1", "run_2"]);
+    const serialised = serializeWorkspaceState(parsed.state);
+    expect(serialised.get("run")).toBe("run_abc");
+    expect(serialised.get("compare")).toBe("run_1,run_2");
+    expect(serialised.get("profile")).toBe("book");
+    expect(serialised.get("league")).toBe("EPL");
   });
 
   it("round-trips an advanced strategy JSON instead of a builtin id", () => {
@@ -111,6 +129,7 @@ describe("workspace URL state", () => {
     rememberWorkspaceSettings(fullState);
     const remembered = loadRememberedDefaults();
     expect(remembered.instrument).toBe(fullState.instrument);
+    expect(remembered.league).toBe(fullState.league);
     expect(remembered.indicators).toEqual(fullState.indicators);
     expect(remembered.runId).toBe("");
     expect(remembered.compare).toEqual([]);

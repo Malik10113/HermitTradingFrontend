@@ -215,6 +215,16 @@ export function ResultsDrawer({
 
             {tab === "overview" ? (
               <div className="space-y-2 p-2">
+                {run.metrics_scope === "in_sample" || run.oos_hidden === true ? (
+                  <p
+                    className="rounded border border-warn/40 bg-warn/5 p-2 text-[11px] text-warn"
+                    role="note"
+                  >
+                    Metrics are <strong>in-sample only</strong>. Out-of-sample results stay hidden
+                    until the holdout is revealed; no overall figure is inferred from the visible
+                    slice.
+                  </p>
+                ) : null}
                 <MetricsGrid metrics={run.metrics} profile={execution.effective} />
                 <div className="grid gap-2 xl:grid-cols-[minmax(0,2fr)_minmax(280px,1fr)]">
                   <div className="panel">
@@ -324,10 +334,7 @@ export function ResultsDrawer({
             {tab === "diagnostics" ? <DiagnosticsPanel diagnostics={run.diagnostics} /> : null}
 
             {tab === "phases" ? (
-              <PhasePanel
-                phases={run.phases}
-                unknownPhase={run.phase === "unknown" || run.lifecycle == null}
-              />
+              <PhasePanel phases={run.phases} unknownPhase={run.phase === "unknown"} />
             ) : null}
 
             {tab === "compare" ? (

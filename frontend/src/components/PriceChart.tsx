@@ -16,11 +16,9 @@ import {
   barsToVolumeData,
   CHART_COLORS,
   lifecyclePhaseAvailable,
-  mergeMarkers,
   phaseWindows,
   positionBands,
-  signalMarkers,
-  tradeMarkers,
+  runChartMarkers,
   type SeriesPoint,
 } from "../lib/chartMarkers";
 import { useTheme } from "../state/theme";
@@ -258,31 +256,11 @@ export function PriceChart({
       });
     }
 
-    const markerList = mergeMarkers(
-      trades.length > 0 ? tradeMarkers(trades) : signalMarkers(signals),
-      lifecycle?.actual_kickoff_utc
-        ? [
-            {
-              time: Math.floor(Date.parse(lifecycle.actual_kickoff_utc) / 1000),
-              position: "aboveBar" as const,
-              color: CHART_COLORS.neutral,
-              shape: "arrowDown" as const,
-              text: "KICKOFF",
-              id: "lifecycle:kickoff",
-              kind: "signal" as const,
-            },
-            {
-              time: Math.floor(Date.parse(lifecycle.actual_end_utc ?? lifecycle.actual_kickoff_utc) / 1000),
-              position: "aboveBar" as const,
-              color: CHART_COLORS.neutral,
-              shape: "circle" as const,
-              text: "END",
-              id: "lifecycle:end",
-              kind: "signal" as const,
-            },
-          ]
-        : [],
-    ).filter((marker) => Number.isFinite(marker.time));
+    // Trades and signals are independent artifacts: merging (not choosing
+    // between them) keeps fill evidence visible once a trade list exists.
+    const markerList = runChartMarkers({ trades, signals, lifecycle }).filter((marker) =>
+      Number.isFinite(marker.time),
+    );
 
     const tickets = markerList.filter(
       (marker) =>

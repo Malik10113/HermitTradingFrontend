@@ -141,8 +141,11 @@ class RunOutcome:
 
 
 def _bar_dict(row: dict[str, Any]) -> dict[str, Any]:
+    ts_event = int(row.get("ts_event_ns") or _ns(row.get("ts_event")) or 0)
+    ts_init = int(row.get("ts_init_ns") or _ns(row.get("ts_init")) or 0) or ts_event + 1
     return {
-        "ts_event_ns": int(row.get("ts_event_ns") or _ns(row.get("ts_event")) or 0),
+        "ts_event_ns": ts_event,
+        "ts_init_ns": ts_init,
         "open": float(row["open"]),
         "high": float(row["high"]),
         "low": float(row["low"]),
@@ -156,7 +159,7 @@ def execute_run(config_dict: dict[str, Any], prepared: dict[str, Any] | None = N
     """Run one backtest; returns analytics and the manifest (no DB writes)."""
     from nautilus_trader.backtest import BacktestEngine, BacktestEngineConfig
     from nautilus_trader.common import LoggerConfig
-    from nautilus_trader.model import AccountType, Bar, BarType, BookType, Currency, Money, OmsType, QuoteTick, Venue
+    from nautilus_trader.model import AggregationSource, AccountType, Bar, BarType, BookType, Currency, Money, OmsType, QuoteTick, Venue
 
     from backend.data.lifecycle import lifecycle_for, phase_at
     from backend.data.readmodel import load_bars
@@ -219,12 +222,21 @@ def execute_run(config_dict: dict[str, Any], prepared: dict[str, Any] | None = N
     )
     fee_model = ProfiledFeeModel(execution.fee_bps)
 
-    def build_bars(rows: list[dict[str, Any]], instrument) -> tuple[list[Bar], list[QuoteTick]]:
-        bt = BarType.from_str(f"{instrument.id.value}-1-MINUTE-LAST-EXTERNAL") if alias == "1m" else None
-        if bt is None:
-            from backend.data.bars import parse_bar_alias
+    def replay_bar_type(instrument) -> Any:
+        # Precomputed bars are supplied to the engine as EXTERNAL. The data
+        # layer's canonical composite type stays on the artifact and the chart;
+        # only the replay type differs so Nautilus will dispatch it.
+        if alias == "1m":
+            return BarType.from_str(f"{instrument.id.value}-1-MINUTE-LAST-EXTERNAL")
+        from backend.data.bars import parse_bar_alias
 
-            bt = BarType.from_str(parse_bar_alias(alias, instrument.id.value))
+        parsed = BarType.from_str(parse_bar_alias(alias, instrument.id.value))
+        if parsed.aggregation_source == AggregationSource.EXTERNAL:
+            return parsed
+        return BarType(instrument.id, parsed.spec, AggregationSource.EXTERNAL)
+
+    def build_bars(rows: list[dict[str, Any]], instrument) -> tuple[list[Bar], list[QuoteTick]]:
+        bt = replay_bar_type(instrument)
         bars_out: list[Bar] = []
         quotes: list[QuoteTick] = []
         for r in rows:
@@ -239,7 +251,7 @@ def execute_run(config_dict: dict[str, Any], prepared: dict[str, Any] | None = N
                     close=price,
                     volume=qty,
                     ts_event=r["ts_event_ns"],
-                    ts_init=r["ts_event_ns"] + 60_000_000_000 if alias == "1m" else r["ts_event_ns"] + 1,
+                    ts_init=r.get("ts_init_ns") or (r["ts_event_ns"] + 60_000_000_000),
                 )
             )
             quote_size = instrument.make_qty(1)
@@ -292,12 +304,7 @@ def execute_run(config_dict: dict[str, Any], prepared: dict[str, Any] | None = N
             "market_status": None,
         }
 
-    if alias == "1m":
-        full_bar_type = f"{primary.id.value}-1-MINUTE-LAST-EXTERNAL"
-    else:
-        from backend.data.bars import parse_bar_alias
-
-        full_bar_type = parse_bar_alias(alias, primary.id.value)
+    full_bar_type = str(replay_bar_type(primary))
     signals: list[dict[str, Any]] = []
     fill_sink: list[dict[str, Any]] = []
     strategy = RuleStrategy(
@@ -324,7 +331,10 @@ def execute_run(config_dict: dict[str, Any], prepared: dict[str, Any] | None = N
         starting_balances=[Money(Decimal(str(config.risk.sizing.bankroll_usd)), Currency.from_str("USD"))],
         base_currency=Currency.from_str("USD"),
         book_type=BookType.L1_MBP,
-        bar_execution=(alias in ("1m", "5m", "15m", "1h", "1d")),
+        # Only externally aggregated 1m bars drive Nautilus matching. Composite
+        # and non-time bars are delivered to the strategy; their fills come
+        # from the open quote on the following bar.
+        bar_execution=(alias == "1m"),
         fill_model=fill_model,
         fee_model=fee_model,
         use_random_ids=False,
@@ -339,8 +349,8 @@ def execute_run(config_dict: dict[str, Any], prepared: dict[str, Any] | None = N
     # Bars first, then the open quotes: at a shared timestamp the signal bar
     # closes before the next open quote is replayed, which is the configured
     # next-bar-open fill convention.
-    eng.add_data(bars_p)
-    eng.add_data(bars_c)
+    eng.add_data(bars_p, validate=False)
+    eng.add_data(bars_c, validate=False)
     eng.add_data(quotes_p)
     eng.add_data(quotes_c)
     eng.add_strategy(strategy)

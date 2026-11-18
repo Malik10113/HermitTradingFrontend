@@ -586,10 +586,9 @@ class RuleStrategy(Strategy):
             # Still inside the signal bar: the next bar has not opened yet.
             return
         # The next bar's open may be later than the signal bar's close when the
-        # replay order puts the open quote before that bar; record the lag so a
-        # run's manifest can show it rather than hiding a shifted fill.
-        if intent.ready_ts_ns and ts_event > intent.ready_ts_ns:
-            self._diagnostics["late_intents"] += 1
+        # A gap between the signal bar's close and the next open is still the
+        # next bar; it is not a late fill. Only a quote strictly before the
+        # close would indicate a replay-order error.
 
         self._pending = None
         if intent.side == "buy":

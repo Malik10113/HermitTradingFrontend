@@ -65,7 +65,7 @@ function SvgSeriesChart({
   ariaLabel: string;
   zeroLine?: boolean;
 }) {
-  const padding = 30;
+  const padding = 56;
   const scaled = useMemo(() => scalePoints(series, width, height, padding), [series, width, height]);
   const gridValues = useMemo(() => {
     const values: number[] = [];

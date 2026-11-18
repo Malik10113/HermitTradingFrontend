@@ -22,6 +22,11 @@ import {
   SourceNote,
 } from "../components/ui";
 
+/**
+ * A preset restores the workspace URL. The URL only carries what the workspace
+ * can reproduce: instrument, bar type, date range, indicator instances,
+ * strategy, and execution profile. Risk/sizing stay in the stored config.
+ */
 export function presetWorkspaceSearch(preset: Preset): string {
   const config = preset.config;
   const strategy = config?.strategy;
@@ -34,6 +39,11 @@ export function presetWorkspaceSearch(preset: Preset): string {
   const dateRange = config?.evaluation?.date_range as
     | { from?: string; to?: string; start?: string; end?: string }
     | undefined;
+  // A preset may carry explicit rules alongside a builtin id for provenance.
+  // Keep the rule tree instead of silently reducing the preset to the builtin.
+  const hasRules = ["long_entry", "long_exit", "short_entry", "short_exit"].some(
+    (key) => (strategy as unknown as Record<string, unknown> | undefined)?.[key] != null,
+  );
   const state: WorkspaceState = {
     ...DEFAULT_WORKSPACE_STATE,
     instrument: strategy?.instrument_id ?? "",
@@ -42,7 +52,7 @@ export function presetWorkspaceSearch(preset: Preset): string {
     to: isoDateOnly(dateRange?.to ?? dateRange?.end),
     indicators: sanitiseIndicators(strategy?.indicators ?? []),
     builtin: strategy?.builtin_id || DEFAULT_WORKSPACE_STATE.builtin,
-    strategyJson: strategy?.builtin_id ? null : JSON.stringify(config),
+    strategyJson: config && (hasRules || !strategy?.builtin_id) ? JSON.stringify(config) : null,
     profile,
     runId: "",
     compare: [],
@@ -142,11 +152,17 @@ export function PresetsPage() {
                       <div className="numeric truncate text-[10px] text-ink-faint">
                         {config?.strategy?.instrument_id || "instrument not available"} ·{" "}
                         {config?.strategy?.bar_type || "bar type not available"} ·{" "}
+                        {isoDateOnly(config?.evaluation?.date_range?.from) || "from not available"} →{" "}
+                        {isoDateOnly(config?.evaluation?.date_range?.to) || "to not available"} ·{" "}
                         {profileLabel(config?.execution?.profile)} · created{" "}
                         {fmtTimestamp(preset.created_at, false)}
                       </div>
                     </div>
-                    <Link className="btn" to={`/${search}`}>
+                    <Link
+                      className="btn"
+                      to={{ pathname: "/", search }}
+                      aria-label={`Open preset ${preset.name} in the workspace`}
+                    >
                       Open
                     </Link>
                     <span className="numeric text-[9px] text-ink-faint" title={preset.id}>

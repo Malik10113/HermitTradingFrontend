@@ -338,8 +338,18 @@ def indicator_preview(body: dict[str, Any]) -> dict[str, Any]:
     from backend.indicators.compute import build_indicators
 
     data_version = run_data_version()
-    key = make_key(data_version, alias, instances)
-    series = thaw_series(get_or_compute(key, lambda: compute_series(rows, instances)))
+    # The cache key must identify this instrument's bar file, not just the
+    # semantic alias: two instruments share "1m" and the tape version.
+    key_data_version = (
+        str(page.get("data_version") or data_version) if isinstance(page, dict) else data_version
+    )
+    key_bar_type = str(page.get("bar_type") or alias) if isinstance(page, dict) else alias
+    series = thaw_series(
+        get_or_compute(
+            make_key(key_data_version, key_bar_type, instances),
+            lambda: compute_series(rows, instances),
+        )
+    )
     warmup = build_indicators(instances).warmup()
     return {
         "instrument_id": instrument_id,

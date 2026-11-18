@@ -214,3 +214,47 @@ def test_preflight_rejects_invalid_profile_parameters(monkeypatch):
     assert caught.value.status_code == 422
     detail = caught.value.detail
     assert detail["code"] == "invalid_execution"
+
+
+def test_indicator_preview_uses_the_cache(monkeypatch):
+    from backend.api import services
+    from backend.data import readmodel
+    from backend.indicators.cache import DEFAULT_CACHE
+
+    DEFAULT_CACHE.clear()
+    rows = [
+        {
+            "ts_event_ns": 1_700_000_000_000_000_000 + index * 60_000_000_000,
+            "open": 0.5 + index * 0.001,
+            "high": 0.5 + index * 0.001,
+            "low": 0.5 + index * 0.001,
+            "close": 0.5 + index * 0.001,
+            "volume": 10.0,
+            "trade_count": 1,
+        }
+        for index in range(40)
+    ]
+    monkeypatch.setattr(services, "get_instrument", lambda *args, **kwargs: {"instrument_id": "x"})
+    monkeypatch.setattr(services, "ensure_bars", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        readmodel,
+        "load_bars",
+        lambda *args, **kwargs: {
+            "bar_type": "x-YES.POLYMARKET-1-MINUTE-LAST-EXTERNAL",
+            "data_version": "sha256:fixture",
+            "bars": rows,
+        },
+    )
+    body = {
+        "instrument_id": "x-YES.POLYMARKET",
+        "bar_type": "1m",
+        "indicators": [{"instance_id": "ema", "type": "ema", "params": {"period": 10}}],
+    }
+    first = services.indicator_preview(body)
+    second = services.indicator_preview(body)
+
+    assert first["series"] == second["series"]
+    stats = DEFAULT_CACHE.stats()
+    assert stats["misses"] == 1
+    assert stats["hits"] == 1
+    DEFAULT_CACHE.clear()

@@ -861,8 +861,9 @@ export function SweepsPanel() {
           </table>
         </div>
         <SourceNote>
-          Gross and net are simulation artifacts from stored data. Net includes fees and slippage
-          under the run's effective execution profile; an absent metric reads “not available”. A
+          Gross and net are simulation artifacts from stored data. Gross is after spread and
+          slippage embedded in the fill prices, before fees; net subtracts the separate fee line
+          under the run's effective execution profile. An absent metric reads “not available”. A
           child run whose split has not been revealed reports its in-sample slice only, labelled
           “in-sample only”; no out-of-sample figure is inferred.
         </SourceNote>

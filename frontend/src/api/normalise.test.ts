@@ -187,6 +187,20 @@ describe("wire normalisation", () => {
     });
   });
 
+  it("keeps absent trade prices and close side absent instead of inventing them", () => {
+    const trades = normaliseTrades([
+      {
+        entry_ts: "2024-10-19T10:00:00Z",
+        token: "YES",
+        side: "long",
+        quantity: 5,
+      },
+    ]);
+    expect(trades[0].entry_price).toBeNull();
+    expect(trades[0].exit_price).toBeNull();
+    expect(trades[0].close_side).toBeNull();
+  });
+
   it("normalises builtin parameter keys so the rail can edit them", () => {
     const strategies = normaliseStrategies({
       builtins: [

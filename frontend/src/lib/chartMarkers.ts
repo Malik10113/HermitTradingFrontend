@@ -293,13 +293,14 @@ function tradeExitMarker(trade: Trade): ChartMarker | null {
       tradeId: trade.trade_id,
     };
   }
-  const closeSide = trade.close_side ?? "SELL";
+  // A missing close side is not assumed to be SELL: name the event instead.
+  const closeSide = trade.close_side;
   return {
     time,
     position: "aboveBar",
     color: CHART_COLORS.down,
     shape: "arrowDown",
-    text: `${closeSide} ${trade.token}`,
+    text: closeSide ? `${closeSide} ${trade.token}` : `EXIT ${trade.token}`,
     id: `${trade.trade_id}:exit`,
     kind: "exit",
     tradeId: trade.trade_id,

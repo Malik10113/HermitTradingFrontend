@@ -477,7 +477,8 @@ export interface Trade {
   intent?: "open_long" | "close_long" | "open_short" | "close_short" | string | null;
   entry_ts: string;
   exit_ts?: string | null;
-  entry_price: number;
+  /** Null when the artifact omits it; never substituted with a price. */
+  entry_price: number | null;
   exit_price?: number | null;
   contracts?: number | null;
   quantity?: number | null;

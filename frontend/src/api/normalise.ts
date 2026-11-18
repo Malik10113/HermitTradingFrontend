@@ -336,12 +336,17 @@ function normaliseTrade(raw: unknown, index: number): Trade {
     ...(source as unknown as Trade),
     trade_id: str(source.trade_id) ?? `T-${String(index + 1).padStart(4, "0")}`,
     side: payloadSide,
-    close_side: source.close_side === "BUY" ? "BUY" : "SELL",
+    // The artifact may omit the closing order side; an absent field stays
+    // absent so the trade table shows "not available" rather than guessing.
+    close_side:
+      source.close_side === "BUY" || source.close_side === "SELL"
+        ? source.close_side
+        : null,
     token,
     intent,
     entry_ts: str(source.entry_ts) ?? "",
     exit_ts: str(source.exit_ts),
-    entry_price: num(source.entry_price) ?? 0,
+    entry_price: num(source.entry_price),
     exit_price: num(source.exit_price),
     contracts: num(source.contracts) ?? num(source.quantity),
     fees_usd: num(source.fees_usd),

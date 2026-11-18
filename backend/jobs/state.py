@@ -233,7 +233,7 @@ def list_runs(
     where, params = _status_filter(status, data_version)
     with _conn() as conn:
         rows = conn.execute(
-            f"SELECT * FROM runs {where} ORDER BY created_at DESC LIMIT ? OFFSET ?",
+            f"SELECT * FROM runs {where} ORDER BY created_at DESC, run_id DESC LIMIT ? OFFSET ?",
             (*params, limit, offset),
         ).fetchall()
     return [r for row in rows if (r := _row(row)) is not None]

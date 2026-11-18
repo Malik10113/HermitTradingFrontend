@@ -396,13 +396,14 @@ def _matching_rows(
             date_to=upper,
         )
     ]
-    def sort_key(row: dict[str, Any]) -> tuple[int, str, str, int]:
+    def sort_key(row: dict[str, Any]) -> tuple[int, str, str, int, str]:
         observed = _event_date_value(row.get("event_date"))
         return (
             -(observed.toordinal()) if observed else 0,
             row.get("match_key") or "",
             row.get("selection") or "",
             row["token_index"],
+            row.get("instrument_id") or "",
         )
 
     matches.sort(key=sort_key)

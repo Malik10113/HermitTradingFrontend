@@ -168,8 +168,10 @@ class DateRange(BaseModel):
             b = date.fromisoformat(self.end)
         except ValueError as exc:
             raise ValueError("dates must be ISO-8601 (YYYY-MM-DD)") from exc
-        if a >= b:
-            raise ValueError("date range start must be before end")
+        # A single UTC day is a valid range (one match day); only a reversed
+        # range is a request error.
+        if a > b:
+            raise ValueError("date range start must not be after end")
         return self
 
 

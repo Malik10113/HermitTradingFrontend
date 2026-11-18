@@ -50,7 +50,18 @@ Rules for the runner:
 ## Conventions
 
 - Unit: Vitest for `frontend`; pytest for the Python domains.
-- E2E: Playwright against a built app with a small fixture catalog.
+- E2E: Playwright against a built app with real `var/` fixtures. It uses the
+  system Google Chrome (`channel: "chrome"`); never download a browser. Build
+  the frontend and start the app first:
+
+  ```bash
+  cd frontend && npm run build
+  uv run uvicorn backend.main:app --host 127.0.0.1 --port 8788
+  cd frontend && HTF_E2E=1 HTF_E2E_BASE_URL=http://127.0.0.1:8788 npx playwright test
+  ```
+
+  Without a reachable app the spec skips with a reason; it never silently
+  passes.
 - Golden fixtures: one indicator fixture per indicator, one deterministic
   backtest fixture with a known equity curve and trade count, and one fixture per
   execution profile (Frictionless = zero cost, Optimistic/Conservative/Stress =

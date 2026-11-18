@@ -261,27 +261,30 @@ export function WorkspacePage() {
     [state.indicators],
   );
   const debouncedSignature = useDebouncedValue(indicatorSignature, 280);
+  const previewInstances = useMemo(() => {
+    try {
+      const parsed = JSON.parse(debouncedSignature) as Array<
+        Pick<IndicatorInstance, "instance_id" | "type" | "params">
+      >;
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }, [debouncedSignature]);
   const previewResource = useApiResource(
-    (signal) => {
-      let indicators: Array<Pick<IndicatorInstance, "instance_id" | "type" | "params">> = [];
-      try {
-        indicators = JSON.parse(debouncedSignature) as typeof indicators;
-      } catch {
-        indicators = [];
-      }
-      return api.previewIndicator(
+    (signal) =>
+      api.previewIndicator(
         {
           instrument_id: state.instrument,
           bar_type: state.barType,
           from: state.from || undefined,
           to: state.to || undefined,
-          indicators,
+          indicators: previewInstances,
         },
         signal,
-      );
-    },
+      ),
     [state.instrument, state.barType, state.from, state.to, debouncedSignature],
-    !!state.instrument && state.indicators.length > 0,
+    !!state.instrument && previewInstances.length > 0,
   );
 
   const bars: Bar[] = barsResource.data?.bars ?? [];  const chartIndicators = useMemo(

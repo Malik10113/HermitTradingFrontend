@@ -52,7 +52,7 @@ owns() {
     engine) [[ "$path" == backend/engine/* || "$path" == backend/strategies/* || "$path" == backend/rules/* ]] ;;
     api) [[ "$path" == backend/api/* || "$path" == backend/jobs/* || "$path" == backend/main.py || "$path" == backend/config.py ]] ;;
     frontend) [[ "$path" == frontend/src/* || "$path" == frontend/package.json || "$path" == frontend/vite.config.* || "$path" == frontend/tsconfig*.json ]] ;;
-    e2e) [[ "$path" == tests/e2e/* || "$path" == frontend/playwright* ]] ;;
+    e2e) [[ "$path" == tests/e2e/* || "$path" == frontend/e2e/* || "$path" == frontend/playwright* ]] ;;
     tooling) [[ "$path" == scripts/* || "$path" == pyproject.toml || "$path" == docs/* || "$path" == AGENTS.md || "$path" == TESTING.md ]] ;;
     *) return 1 ;;
   esac

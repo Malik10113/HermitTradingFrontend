@@ -25,7 +25,9 @@ def test_data_version_does_not_depend_on_the_checkout_path(tmp_path, monkeypatch
     first = first_root / "var/lifecycle/match_lifecycle.parquet"
     second = second_root / "var/lifecycle/match_lifecycle.parquet"
     _write(first)
-    _write(second)
+    second.parent.mkdir(parents=True, exist_ok=True)
+    # copy2 keeps size and mtime_ns identical; both are part of the fingerprint.
+    shutil.copy2(first, second)
 
     monkeypatch.setattr(config, "VAR_DIR", first_root / "var")
     version_a = versions.compute_version([(first, None)], "fixture-1")

@@ -5,6 +5,7 @@ import type {
   IndicatorPreviewResponse,
   IndicatorSpec,
 } from "../api/types";
+import { errorMessage } from "../api/client";
 import { defaultParams, makeInstanceId } from "../lib/config";
 import { INDICATOR_PALETTE } from "../lib/palette";
 import { ErrorState } from "./ui";
@@ -24,10 +25,24 @@ interface IndicatorChipsProps {
   previewMismatch: string | null;
 }
 
+/** Parameter bounds are declared by the server registry; surface violations. */
+function parameterError(
+  parameter: IndicatorParameter,
+  value: number | boolean | string | undefined,
+): string | null {
+  const isBoolean = parameter.type === "bool" || parameter.type === "boolean";
+  if (isBoolean) return null;
+  if (typeof value !== "number" || !Number.isFinite(value)) return "enter a number";
+  if (parameter.min != null && value < parameter.min) return `minimum ${parameter.min}`;
+  if (parameter.max != null && value > parameter.max) return `maximum ${parameter.max}`;
+  return null;
+}
+
 function parameterInput(
   parameter: IndicatorParameter,
   value: number | boolean | string | undefined,
   onChange: (value: number | boolean) => void,
+  invalid = false,
 ) {
   const isBoolean = parameter.type === "bool" || parameter.type === "boolean";
   if (isBoolean) {
@@ -37,12 +52,15 @@ function parameterInput(
         checked={value === true}
         onChange={(event) => onChange(event.target.checked)}
         aria-label={parameter.label ?? parameter.name}
+        className="focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
       />
     );
   }
   return (
     <input
-      className="input-numeric w-20 py-0.5"
+      className={`input-numeric w-20 py-0.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent ${
+        invalid ? "border-negative" : ""
+      }`}
       type="number"
       value={typeof value === "number" ? value : ""}
       min={parameter.min ?? undefined}
@@ -53,6 +71,7 @@ function parameterInput(
         if (Number.isFinite(parsed)) onChange(parsed);
       }}
       aria-label={parameter.label ?? parameter.name}
+      aria-invalid={invalid || undefined}
     />
   );
 }
@@ -144,7 +163,7 @@ export function IndicatorChips({
           </label>
           <select
             id="indicator-add"
-            className="input py-1"
+            className="input py-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
             value={addType}
             onChange={(event) => setAddType(event.target.value)}
             disabled={specsLoading || specs.length === 0}
@@ -158,7 +177,12 @@ export function IndicatorChips({
               </option>
             ))}
           </select>
-          <button type="button" className="btn" onClick={add} disabled={!addType}>
+          <button
+            type="button"
+            className="btn focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+            onClick={add}
+            disabled={!addType}
+          >
             Add
           </button>
         </div>
@@ -215,7 +239,7 @@ export function IndicatorChips({
                     <span className="ml-auto flex items-center gap-0.5">
                       <button
                         type="button"
-                        className="btn-ghost"
+                        className="btn-ghost focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
                         onClick={() =>
                           update(instance.instance_id, {
                             visible: instance.visible === false,
@@ -231,7 +255,7 @@ export function IndicatorChips({
                       </button>
                       <button
                         type="button"
-                        className="btn-ghost text-negative"
+                        className="btn-ghost text-negative focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
                         onClick={() => remove(instance.instance_id)}
                         aria-label={`Remove ${instance.instance_id}`}
                       >
@@ -249,27 +273,39 @@ export function IndicatorChips({
                           No parameters declared by the registry.
                         </span>
                       ) : (
-                        parameters.map((parameter) => (
-                          <label
-                            key={parameter.name}
-                            className="flex flex-col gap-0.5 text-[10px] text-ink-muted"
-                          >
-                            <span>
-                              {parameter.label ?? parameter.name}
-                              {parameter.min != null || parameter.max != null ? (
-                                <span className="ml-1 text-ink-faint">
-                                  [{parameter.min ?? "-∞"}, {parameter.max ?? "∞"}]
+                        parameters.map((parameter) => {
+                          const error = parameterError(
+                            parameter,
+                            instance.params[parameter.name],
+                          );
+                          return (
+                            <label
+                              key={parameter.name}
+                              className="flex flex-col gap-0.5 text-[10px] text-ink-muted"
+                            >
+                              <span>
+                                {parameter.label ?? parameter.name}
+                                {parameter.min != null || parameter.max != null ? (
+                                  <span className="ml-1 text-ink-faint">
+                                    [{parameter.min ?? "-∞"}, {parameter.max ?? "∞"}]
+                                  </span>
+                                ) : null}
+                              </span>
+                              {parameterInput(
+                                parameter,
+                                instance.params[parameter.name],
+                                (value) =>
+                                  setParam(instance.instance_id, parameter.name, value),
+                                !!error,
+                              )}
+                              {error ? (
+                                <span className="text-negative" role="alert">
+                                  {error}
                                 </span>
                               ) : null}
-                            </span>
-                            {parameterInput(
-                              parameter,
-                              instance.params[parameter.name],
-                              (value) =>
-                                setParam(instance.instance_id, parameter.name, value),
-                            )}
-                          </label>
-                        ))
+                            </label>
+                          );
+                        })
                       )}
                       <span className="ml-auto text-[10px] text-ink-faint">
                         {spec?.pane ?? "overlay"} pane · values in{" "}
@@ -286,8 +322,9 @@ export function IndicatorChips({
         )}
 
         {previewError ? (
-          <p className="text-[10px] text-warn" role="status">
-            Indicator preview unavailable. The chart will not invent values.
+          <p className="text-[10px] text-negative" role="alert">
+            Indicator preview unavailable: {errorMessage(previewError)}. The chart will not invent
+            values.
           </p>
         ) : previewSummary ? (
           <p

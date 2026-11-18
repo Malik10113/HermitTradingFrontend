@@ -6,6 +6,7 @@ import { useApiResource } from "../hooks/useApi";
 import { resolveExecution } from "../lib/execution";
 import { fmtDate, fmtInteger, fmtTimestamp, fmtUsd } from "../lib/format";
 import { netMetric } from "../components/results/MetricsGrid";
+import { SweepsPanel } from "../components/results/SweepsPanel";
 import {
   EmptyState,
   ErrorState,
@@ -115,6 +116,8 @@ export function RunsPage() {
           Select 2–3 runs, then open the comparison overlay.
         </span>
       </div>
+
+      <SweepsPanel />
 
       <section className="panel overflow-hidden" aria-label="Run history">
         {runsResource.loading ? (

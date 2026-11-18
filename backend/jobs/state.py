@@ -282,10 +282,15 @@ def record_reveal(universe: str, strategy_hash: str, split_hash: str, run_id: st
             "SELECT count(*) FROM holdout_ledger WHERE universe=? AND strategy_hash=? AND split_hash=?",
             (universe, strategy_hash, split_hash),
         ).fetchone()[0]
-        variant = conn.execute(
-            "SELECT count(*) FROM holdout_ledger WHERE universe=? AND strategy_hash=?",
-            (universe, strategy_hash),
-        ).fetchone()[0] + 1
+        has_variant = conn.execute(
+            "SELECT count(*) FROM holdout_ledger WHERE universe=? AND split_hash=? AND strategy_hash=?",
+            (universe, split_hash, strategy_hash),
+        ).fetchone()[0]
+        seen_variants = conn.execute(
+            "SELECT count(DISTINCT strategy_hash) FROM holdout_ledger WHERE universe=? AND split_hash=?",
+            (universe, split_hash),
+        ).fetchone()[0]
+        variant = seen_variants if has_variant else seen_variants + 1
         conn.execute(
             "INSERT INTO holdout_ledger (universe,strategy_hash,split_hash,run_id,revealed_at,variant_index) "
             "VALUES (?,?,?,?,?,?)",

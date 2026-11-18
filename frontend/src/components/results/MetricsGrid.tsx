@@ -142,7 +142,7 @@ export function MetricsGrid({
           <MetricCard
             label="Max drawdown"
             value={fmtPct(maxDrawdown, 2)}
-            tone={maxDrawdown != null && maxDrawdown > 0 ? "negative" : "neutral"}
+            tone={maxDrawdown != null && maxDrawdown !== 0 ? "negative" : "neutral"}
           />
           <MetricCard
             label="Trades"

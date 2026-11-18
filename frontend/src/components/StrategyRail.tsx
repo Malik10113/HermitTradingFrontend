@@ -12,13 +12,14 @@ import type {
 } from "../api/types";
 import { buildBacktestConfig, prettyConfig, type SizingState } from "../lib/config";
 import {
+  bookCoverageText,
   costEstimateText,
   defaultExecution,
   fallbackWarning,
   PROFILE_META,
   profileLabel,
 } from "../lib/execution";
-import { fmtDate, fmtDuration, fmtGbp, fmtNumber, fmtPct, fmtUsd } from "../lib/format";
+import { fmtDate, fmtDuration, fmtNumber, fmtPct, fmtUsd } from "../lib/format";
 import { EXECUTION_PROFILES } from "../lib/barTypes";
 import { validateConfigJson, type ValidationIssue } from "../lib/strategyValidation";
 import { getStorage } from "../lib/storage";
@@ -331,6 +332,7 @@ export function StrategyRail(props: StrategyRailProps) {
     !instrumentId ||
     !from ||
     !to ||
+    from >= to ||
     submitting ||
     (advanced && (!advancedValue || advancedIssues.length > 0)) ||
     (!advanced && !builtin);
@@ -549,7 +551,7 @@ export function StrategyRail(props: StrategyRailProps) {
               }
               aria-label="Sizing mode"
             >
-              <option value="fixed_stake">Fixed stake USD</option>
+              <option value="fixed_stake">Fixed stake (USD)</option>
               <option value="risk_pct">Risk % of bankroll</option>
             </select>
             <input
@@ -594,8 +596,8 @@ export function StrategyRail(props: StrategyRailProps) {
           </label>
           <p className="text-[10px] leading-relaxed text-ink-faint">
             {sizing.mode === "fixed_stake"
-              ? `Stake ${fmtGbp(sizing.value)} per entry.`
-              : `Risk ${fmtNumber(sizing.value, 2)}% of ${fmtGbp(sizing.bankroll)} bankroll per entry.`}{" "}
+              ? `Stake ${fmtUsd(sizing.value)} per entry.`
+              : `Risk ${fmtNumber(sizing.value, 2)}% of ${fmtUsd(sizing.bankroll)} bankroll per entry.`}{" "}
             One position per instrument; no pyramiding. Fractional Kelly is not offered in v1.
           </p>
         </section>
@@ -686,12 +688,7 @@ export function StrategyRail(props: StrategyRailProps) {
                 cost estimate: {costEstimateText(preflight)}
               </p>
               <p className="text-[10px] text-ink-faint">
-                Book coverage:{" "}
-                {preflight.book_coverage?.from && preflight.book_coverage?.to
-                  ? `${fmtDate(preflight.book_coverage.from)} → ${fmtDate(
-                      preflight.book_coverage.to,
-                    )}`
-                  : "not available"}
+                Book coverage: {bookCoverageText(preflight.book_coverage)}
               </p>
               {(preflight.warnings ?? []).map((warning) => (
                 <p key={warningText(warning)} className="text-[10px] text-warn">
@@ -790,9 +787,11 @@ export function StrategyRail(props: StrategyRailProps) {
                 ? "Select an instrument first."
                 : !from || !to
                   ? "Set a from and to date before running."
-                  : advanced
-                    ? "Fix the rule JSON issues before running."
-                    : "Select a built-in strategy."}
+                  : from >= to
+                    ? "The from date must be before the to date."
+                    : advanced
+                      ? "Fix the rule JSON issues before running."
+                      : "Select a built-in strategy."}
             </p>
           ) : null}
           {submitError ? (

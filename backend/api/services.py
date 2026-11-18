@@ -310,14 +310,17 @@ def indicator_preview(body: dict[str, Any]) -> dict[str, Any]:
         instances.append({"instance_id": inst.instance_id, "type": inst.type, "params": inst.params})
     if not instances:
         raise bad_request("no_indicators", "at least one indicator is required")
-    series = compute_series(rows, instances)
+    from backend.indicators.cache import get_or_compute, make_key, thaw_series
     from backend.indicators.compute import build_indicators
 
+    data_version = run_data_version()
+    key = make_key(data_version, alias, instances)
+    series = thaw_series(get_or_compute(key, lambda: compute_series(rows, instances)))
     warmup = build_indicators(instances).warmup()
     return {
         "instrument_id": instrument_id,
         "bar_type": alias,
-        "data_version": run_data_version(),
+        "data_version": data_version,
         "bars": len(rows),
         "series": series,
         "warmup": warmup,

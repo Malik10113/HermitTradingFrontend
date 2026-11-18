@@ -16,6 +16,7 @@ import type {
 import {
   normaliseBars,
   normaliseCompare,
+  normaliseExecution,
   normaliseIndicatorSpecs,
   normaliseInstrument,
   normaliseInstrumentList,
@@ -208,8 +209,19 @@ export const api = {
       signal,
     }),
 
-  preflight: (body: PreflightRequest, signal?: AbortSignal) =>
-    request<PreflightResponse>("/execution/preflight", { method: "POST", body, signal }),
+  preflight: async (body: PreflightRequest, signal?: AbortSignal) => {
+    const raw = await request<Record<string, unknown>>("/execution/preflight", {
+      method: "POST",
+      body,
+      signal,
+    });
+    const execution = normaliseExecution(raw, raw);
+    return {
+      ...(raw as unknown as PreflightResponse),
+      ...(execution ?? {}),
+      warnings: Array.isArray(raw.warnings) ? (raw.warnings as string[]) : [],
+    } as PreflightResponse;
+  },
 
   strategies: async (signal?: AbortSignal) =>
     normaliseStrategies(await request<unknown>("/strategies", { signal })),

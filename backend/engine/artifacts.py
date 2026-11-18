@@ -50,7 +50,12 @@ def write_artifacts(
     run_dir = RUNS_DIR / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
     _write_json(run_dir / "config.json", config)
-    _write_json(run_dir / "summary.json", result.get("metrics", {}))
+    summary = dict(result.get("metrics", {}))
+    if result.get("in_sample") is not None:
+        summary["in_sample"] = result.get("in_sample")
+    if result.get("out_of_sample") is not None:
+        summary["out_of_sample"] = result.get("out_of_sample")
+    _write_json(run_dir / "summary.json", summary)
     _write_json(run_dir / "diagnostics.json", result.get("diagnostics", {}))
     _write_parquet(run_dir / "equity.parquet", result.get("equity", []))
     _write_parquet(

@@ -1,6 +1,6 @@
 import type { CostBreakdown, Diagnostics, EffectiveExecution, PhaseMetric } from "../../api/types";
 import { fmtBps, fmtInteger, fmtNumber, fmtPct, fmtRate, fmtUsd } from "../../lib/format";
-import { fallbackWarning, profileLabel } from "../../lib/execution";
+import { fallbackWarning, bookCoverageText, profileLabel } from "../../lib/execution";
 import { FallbackBadge, KeyValue, ProfileBadge, SourceNote } from "../ui";
 
 export function CostsPanel({
@@ -59,10 +59,7 @@ export function CostsPanel({
           },
           {
             label: "Book coverage",
-            value:
-              execution?.book_coverage?.from && execution?.book_coverage?.to
-                ? `${execution.book_coverage.from} → ${execution.book_coverage.to}`
-                : "not available",
+            value: bookCoverageText(execution?.book_coverage),
           },
         ]}
       />

@@ -180,6 +180,19 @@ def _run_payload(run: dict[str, Any], include_summary: bool = True, detail: bool
         "experiment_id": run.get("experiment_id"),
     }
     if include_summary:
+        # Out-of-sample metrics stay hidden until an explicit reveal. Overall
+        # metrics would leak the test window, so an unrevealed split reports
+        # the in-sample slice only.
+        if summary and split and not (holdout or {}).get("revealed"):
+            in_sample = summary.get("in_sample")
+            if in_sample is not None:
+                summary = {**in_sample, "in_sample": in_sample, "out_of_sample": None, "oos_hidden": True}
+                payload["metrics_scope"] = "in_sample"
+            else:
+                summary = {**summary, "oos_hidden": True}
+                payload["metrics_scope"] = "in_sample"
+        elif summary:
+            payload["metrics_scope"] = "all"
         payload["summary"] = summary
         payload["manifest"] = manifest
         payload["metrics"] = summary
@@ -333,7 +346,8 @@ def save_strategy(req: SaveStrategyRequest) -> dict[str, Any]:
 
 @router.get("/presets")
 def presets() -> dict[str, Any]:
-    return {"items": state.list_presets()}
+    items = state.list_presets()
+    return {"items": items, "presets": items}
 
 
 @router.post("/presets", status_code=201)
@@ -531,7 +545,8 @@ def compare(ids: str = Query(min_length=1)) -> dict[str, Any]:
 
 @router.get("/experiments")
 def experiments() -> dict[str, Any]:
-    return {"items": state.list_experiments()}
+    items = state.list_experiments()
+    return {"items": items, "experiments": items}
 
 
 def _set_path(obj: Any, path: str, value: Any) -> None:

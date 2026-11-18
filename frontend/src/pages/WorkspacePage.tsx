@@ -238,10 +238,15 @@ export function WorkspacePage() {
         null,
     );
     if ((!state.from && from) || (!state.to && to)) {
+      const nextFrom = state.from || from || "";
+      let nextTo = state.to || to || "";
+      // A run requires start < end. A one-day coverage window is widened to the
+      // next UTC day; the range is a query boundary, not a displayed datum.
+      if (nextFrom && nextTo && nextFrom >= nextTo) nextTo = addDaysIso(nextFrom, 1);
       setState((current) => ({
         ...current,
-        from: current.from || from || "",
-        to: current.to || to || "",
+        from: current.from || nextFrom,
+        to: current.to || nextTo,
       }));
     }
   }, [
@@ -260,10 +265,10 @@ export function WorkspacePage() {
 
   const applyPresetRanges = (rangeId: string) => {
     if (rangeId === "all") {
-      patch({
-        from: isoDateOnly(qualityResource.data?.available_from ?? selected?.coverage?.from),
-        to: isoDateOnly(qualityResource.data?.available_to ?? selected?.coverage?.to),
-      });
+      const from = isoDateOnly(qualityResource.data?.available_from ?? selected?.coverage?.from);
+      let to = isoDateOnly(qualityResource.data?.available_to ?? selected?.coverage?.to);
+      if (from && to && from >= to) to = addDaysIso(from, 1);
+      patch({ from, to });
       return;
     }
     const days = RANGE_DAYS[rangeId];

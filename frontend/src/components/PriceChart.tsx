@@ -285,8 +285,14 @@ export function PriceChart({
         : [],
     ).filter((marker) => Number.isFinite(marker.time));
 
+    const tickets = markerList.filter(
+      (marker) =>
+        Number.isFinite(marker.time) &&
+        marker.time >= candle.data[0].time &&
+        marker.time <= candle.data[candle.data.length - 1].time,
+    );
     candleSeries.setMarkers(
-      markerList.map((marker) => ({
+      tickets.map((marker) => ({
         time: marker.time as UTCTimestamp,
         position: marker.position,
         color: marker.color,

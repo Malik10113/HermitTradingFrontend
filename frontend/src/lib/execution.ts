@@ -158,3 +158,19 @@ export function costEstimateText(execution: EffectiveExecution | PreflightRespon
   }
   return parts.length > 0 ? parts.join(" · ") : "not available";
 }
+
+/** Book coverage can be a timestamp window or a months window from the index. */
+export function bookCoverageText(
+  coverage: EffectiveExecution["book_coverage"] | null | undefined,
+): string {
+  if (!coverage) return "not available";
+  if (coverage.first_month && coverage.last_month) {
+    return `${coverage.first_month} → ${coverage.last_month}`;
+  }
+  if (coverage.from && coverage.to) {
+    return `${coverage.from.slice(0, 10)} → ${coverage.to.slice(0, 10)}`;
+  }
+  if (coverage.from) return coverage.from.slice(0, 10);
+  if (coverage.to) return coverage.to.slice(0, 10);
+  return coverage.has_coverage === false ? "no coverage" : "not available";
+}

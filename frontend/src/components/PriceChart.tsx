@@ -587,6 +587,25 @@ export function PriceChart({
                 : null,
             )}
           </span>
+          <span className="flex items-center gap-2">
+            {(
+              [
+                ["pre_match", CHART_COLORS.preMatch],
+                ["in_play", CHART_COLORS.inPlay],
+                ["post_match", CHART_COLORS.postMatch],
+                ["settled", CHART_COLORS.settled],
+              ] as const
+            ).map(([phase, color]) => (
+              <span key={phase} className="inline-flex items-center gap-1">
+                <span
+                  aria-hidden="true"
+                  className="inline-block h-2 w-3 rounded-sm border border-line"
+                  style={{ background: color }}
+                />
+                {PHASE_LABELS[phase]}
+              </span>
+            ))}
+          </span>
           <span className="ml-auto">
             {phaseFilter === "all" ? "all phases shaded" : `${PHASE_LABELS[phaseFilter]} shaded`}
           </span>

@@ -16,10 +16,10 @@ export const CHART_COLORS = {
   settlement: "#CC79A7",
   positionLong: "rgba(0,158,115,0.10)",
   positionShort: "rgba(213,94,0,0.10)",
-  preMatch: "rgba(86,180,233,0.06)",
-  inPlay: "rgba(230,159,0,0.07)",
-  postMatch: "rgba(204,121,167,0.06)",
-  settled: "rgba(154,167,180,0.06)",
+  preMatch: "rgba(86,180,233,0.10)",
+  inPlay: "rgba(230,159,0,0.13)",
+  postMatch: "rgba(204,121,167,0.10)",
+  settled: "rgba(154,167,180,0.08)",
 } as const;
 
 export interface CandlePoint {

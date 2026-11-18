@@ -9,90 +9,90 @@
     "size_bytes": 0,
     "license": "ESPN terms of service; personal research use only, not redistributable",
     "rebuild": "python scripts/build_match_lifecycle.py",
-    "notes": "One row per match: actual_kickoff_utc, actual_end_utc, source=espn_keyevents, precision=observed. 2026 fixtures use the existing data/events/espn cache and fixture map (1,006/1,007 with both events); pre-2026 is backfilled via the ESPN scoreboard API. Rows without wallclock are omitted and phase is unknown, never a nominal duration. Raw ESPN summaries are registered upstream as events_espn_raw; pre-2026 backfill will cache under var/raw/espn. Not built yet: the derived path is absent until the lifecycle builder lands."
+    "notes": "One row per match: actual_kickoff_utc, actual_end_utc, source=espn_keyevents, precision=observed. Built by scripts/build_match_lifecycle.py; 2026 fixtures use data/events/espn/summary plus events/fixture_map.parquet (1,006/1,007 with both events); pre-2026 is backfilled through the ESPN scoreboard API. Rows without wallclock are omitted and phase is unknown, never a nominal duration. The derived file lives under var/, so a clean clone has no file and size_bytes is 0; run verify after building and re-measure the size if it is recorded."
   },
   {
     "name": "polymarket_epl_tape",
     "kind": "raw",
     "path": "../FundedBetBacktesting/data/polymarket/epl/epl_moneyline_tape.parquet",
     "source": "Derived from SII sports trades + market metadata (EPL moneyline)",
-    "source_url": null,
+    "source_url": "https://huggingface.co/datasets/SII-WANGZJ/Polymarket_data",
     "retrieved": "2026-11-18",
     "size_bytes": 173110881,
-    "license": "MIT (upstream SII data)",
+    "license": "MIT (upstream SII data); this repo does not redistribute it",
     "rebuild": "python scripts/build_bars.py --all --league epl",
-    "notes": "Read-only v1 source; see docs/IMPLEMENTATION.md."
+    "notes": "Read-only v1 source. One row per fill with YES-normalised price_yes and USD notional usd_amount; token_amount is contracts. Provenance: SII-WANGZJ/Polymarket_data on HuggingFace, transformed by the sibling repo. See docs/IMPLEMENTATION.md."
   },
   {
     "name": "polymarket_football_tape",
     "kind": "raw",
     "path": "../FundedBetBacktesting/data/polymarket/football/football_moneyline_tape.parquet",
     "source": "Derived from SII sports trades + market metadata (Big-4 moneyline)",
-    "source_url": null,
+    "source_url": "https://huggingface.co/datasets/SII-WANGZJ/Polymarket_data",
     "retrieved": "2026-11-18",
     "size_bytes": 376483503,
-    "license": "MIT (upstream SII data)",
+    "license": "MIT (upstream SII data); this repo does not redistribute it",
     "rebuild": "python scripts/build_bars.py --all --league big4",
-    "notes": "Read-only v1 source; see docs/IMPLEMENTATION.md."
+    "notes": "Read-only v1 source for the Big-4 leagues. One row per fill with YES-normalised price_yes and USD notional usd_amount. Provenance: SII-WANGZJ/Polymarket_data on HuggingFace, transformed by the sibling repo. See docs/IMPLEMENTATION.md."
   },
   {
     "name": "polymarket_sii_markets",
     "kind": "raw",
     "path": "../FundedBetBacktesting/data/polymarket/sii/markets.parquet",
     "source": "SII Polymarket market metadata",
-    "source_url": null,
+    "source_url": "https://huggingface.co/datasets/SII-WANGZJ/Polymarket_data",
     "retrieved": "2026-11-18",
     "size_bytes": 545510579,
-    "license": "MIT (upstream SII metadata)",
+    "license": "MIT (upstream SII metadata); this repo does not redistribute it",
     "rebuild": "restore from the sibling repo; never modified",
-    "notes": "Read-only v1 source; see docs/IMPLEMENTATION.md."
+    "notes": "Read-only metadata source: condition_id, slug, token1/token2, end_date and outcome_prices. 4,049,900 rows upstream. This repo uses it for the YES/NO instrument pair and expiry, never writes it. See docs/IMPLEMENTATION.md."
   },
   {
     "name": "polymarket_results_markets",
     "kind": "raw",
     "path": "../FundedBetBacktesting/data/results/polymarket_markets.parquet",
     "source": "Derived from local SII market metadata + Big-4 results",
-    "source_url": null,
+    "source_url": "https://huggingface.co/datasets/SII-WANGZJ/Polymarket_data",
     "retrieved": "2026-11-18",
     "size_bytes": 1313866,
     "license": "MIT (upstream SII metadata)",
     "rebuild": "python scripts/build_match_lifecycle.py; settlement index is derived from this file",
-    "notes": "Read-only v1 source; see docs/IMPLEMENTATION.md."
+    "notes": "Derived in the sibling repo from local SII market metadata plus Big-4 results. The result side inherits football-data.co.uk terms (personal use; not redistributable) and the metadata side is MIT. One row per (market_id, selection_index); settlement_value is 0/1. This repo indexes it into var/settlement/ and never rebuilds or edits the source table."
   },
   {
     "name": "polymarket_orderbooks_compact",
     "kind": "raw",
     "path": "../FundedBetBacktesting/data/cache/orderbooks_compact",
     "source": "Derived compaction of the Predexon per-token L2 files",
-    "source_url": null,
+    "source_url": "https://api.predexon.com/v2/polymarket/orderbooks",
     "retrieved": "2026-11-18",
     "size_bytes": 1550607921,
-    "license": "inherits Predexon API terms",
+    "license": "Predexon API terms of service; not redistributable",
     "rebuild": "v1 reads coverage only; L2 replay is deferred to v2",
-    "notes": "Read-only v1 source; see docs/IMPLEMENTATION.md."
+    "notes": "Predexon L2 snapshots, 2026-01-01..2026-10-21 (17,182,464 rows; no 2026-06/07 partitions because the Big-4 seasons are off). Snapshots carry depth but no queue position. v1 reads coverage and the latest snapshot at or before a decision; tick-by-tick L2 replay is deferred to v2. Read-only; not redistributed."
   },
   {
     "name": "espn_fixture_map",
     "kind": "raw",
     "path": "../FundedBetBacktesting/data/events/fixture_map.parquet",
     "source": "ESPN fixture spine (match_key to event id)",
-    "source_url": null,
+    "source_url": "https://site.api.espn.com/apis/site/v2/sports/soccer/eng.1/scoreboard",
     "retrieved": "2026-11-18",
     "size_bytes": 32882,
     "license": "ESPN terms of service; personal research use only, not redistributable",
     "rebuild": "python scripts/build_match_lifecycle.py",
-    "notes": "Read-only v1 source; see docs/IMPLEMENTATION.md."
+    "notes": "ESPN fixture spine mapping match_key to event id; used by scripts/build_match_lifecycle.py. ESPN terms of service: personal research use only, not redistributable."
   },
   {
     "name": "espn_summary_cache",
     "kind": "raw",
     "path": "../FundedBetBacktesting/data/events/espn/summary",
     "source": "ESPN match summaries with keyEvents kickoff/end wallclock",
-    "source_url": null,
+    "source_url": "https://site.api.espn.com/apis/site/v2/sports/soccer/eng.1/summary",
     "retrieved": "2026-11-18",
     "size_bytes": 34147446,
     "license": "ESPN terms of service; personal research use only, not redistributable",
     "rebuild": "python scripts/build_match_lifecycle.py",
-    "notes": "Read-only v1 source; see docs/IMPLEMENTATION.md."
+    "notes": "2026 ESPN match-summary cache (1,006/1,007 fixtures with both kickoff and end-regular-time wallclocks). Only keyEvents[].wallclock is read for lifecycle; pre-2026 backfill is cached under var/raw/espn. ESPN terms of service: personal research use only, not redistributable."
   }
 ]

@@ -193,8 +193,8 @@ def lifecycle_version(
 
     Callers pass the exact summary files they read so the version changes when a
     cached ESPN payload changes.  ``extra_inputs`` covers the backfill spine and
-    ``extra_tokens`` carries a stable content token for rows preserved from a
-    prior artifact.  ``load_lifecycle`` does not recompute this; the builder
+    caches, and ``extra_tokens`` carries a stable row-content token for a
+    backfill run.  ``load_lifecycle`` does not recompute this; the builder
     stores it on the artifact.
     """
     datasets: list[tuple[Path, str | None]] = [(config.FIXTURE_MAP, None)]

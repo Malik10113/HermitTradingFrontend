@@ -208,8 +208,11 @@ describe("workspace wiring", () => {
     await waitFor(() => {
       expect(screen.getAllByText(/Bournemouth vs Arsenal/).length).toBeGreaterThan(0);
     });
-    expect(screen.getAllByText("EMA").length).toBeGreaterThan(0);
-    expect(screen.getByText(/preview mismatch|preview/i)).toBeInTheDocument();
+    expect(screen.getAllByText(/ema/i).length).toBeGreaterThan(0);
+    expect(screen.getByRole("button", { name: /remove ema20/i })).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getAllByText(/preview/i).length).toBeGreaterThan(0);
+    });
     await waitFor(() => {
       expect(screen.getByRole("button", { name: /run backtest/i })).toBeEnabled();
     });

@@ -48,11 +48,22 @@ export function buildBacktestConfig(args: BuildConfigArgs): BacktestConfig {
   const advancedRisk = asRecord(advanced?.risk) ?? {};
   const advancedEvaluation = asRecord(advanced?.evaluation) ?? {};
 
+  const advancedIndicators = Array.isArray(advancedStrategy.indicators)
+    ? (advancedStrategy.indicators as IndicatorInstance[])
+    : [];
+  const indicatorMap = new Map<string, IndicatorInstance>();
+  for (const indicator of advancedIndicators) {
+    indicatorMap.set(indicator.instance_id, indicator);
+  }
+  for (const indicator of args.indicators) {
+    indicatorMap.set(indicator.instance_id, indicator);
+  }
+
   const strategy: StrategySection = {
     ...(advancedStrategy as Partial<StrategySection>),
     instrument_id: args.instrumentId,
     bar_type: args.barType,
-    indicators: args.indicators,
+    indicators: Array.from(indicatorMap.values()),
     direction: args.direction,
   };
 

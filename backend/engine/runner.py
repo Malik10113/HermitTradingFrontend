@@ -485,6 +485,7 @@ def execute_run(config_dict: dict[str, Any], prepared: dict[str, Any] | None = N
             "holdout_reveal_count": 0,
         },
         "risk": config.risk.model_dump(mode="json"),
+        "acknowledged_warnings": list(config.acknowledged_warnings),
         "lifecycle_source": "espn_keyevents",
         "elapsed_s": round(time.time() - started, 3),
     }

@@ -11,6 +11,8 @@ import type {
   Diagnostics,
   EffectiveExecution,
   EquityPoint,
+  Experiment,
+  ExperimentListResponse,
   HoldoutState,
   IndicatorParameter,
   IndicatorSpec,
@@ -563,8 +565,7 @@ export function normaliseCompare(raw: unknown): CompareResponse {
   return { runs: array(source.runs).map(normaliseRun) };
 }
 
-export function normalisePresets(raw: unknown): PresetListResponse {
-  const source = record(raw);
+export function normalisePresets(raw: unknown): PresetListResponse {  const source = record(raw);
   const items = Array.isArray(raw) ? raw : array(source.items ?? source.presets);
   return {
     presets: items.map((item) => {
@@ -575,6 +576,25 @@ export function normalisePresets(raw: unknown): PresetListResponse {
         config: preset.config as Preset["config"],
         created_at: str(preset.created_at),
         updated_at: str(preset.updated_at),
+      };
+    }),
+  };
+}
+
+export function normaliseExperiments(raw: unknown): ExperimentListResponse {
+  const source = record(raw);
+  const items = Array.isArray(raw) ? raw : array(source.items ?? source.experiments);
+  return {
+    experiments: items.map((item) => {
+      const experiment = record(item);
+      return {
+        id: str(experiment.id) ?? str(experiment.experiment_id) ?? "",
+        name: str(experiment.name),
+        status: (str(experiment.status) ?? "queued") as Experiment["status"],
+        completed: num(experiment.completed),
+        total: num(experiment.total),
+        created_at: str(experiment.created_at),
+        config: (experiment.config ?? null) as Experiment["config"],
       };
     }),
   };

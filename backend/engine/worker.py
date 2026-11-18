@@ -43,6 +43,8 @@ def main(argv: list[str]) -> int:
             fallback_rate=(outcome.result or {}).get("costs", {}).get("fallback_rate"),
         )
         state.append_event(run_id, "info", "complete")
+        if current and current.get("experiment_id"):
+            state.bump_experiment(current["experiment_id"])
         return 0
     except Exception as exc:  # noqa: BLE001
         tb = traceback.format_exc()
@@ -52,6 +54,8 @@ def main(argv: list[str]) -> int:
             return 0
         state.update_run(run_id, status="failed", error=f"{exc}\n{tb[-4000:]}")
         state.append_event(run_id, "error", f"{type(exc).__name__}: {exc}")
+        if current and current.get("experiment_id"):
+            state.bump_experiment(current["experiment_id"])
         try:
             (__import__("backend.config", fromlist=["RUNS_DIR"]).RUNS_DIR / run_id).mkdir(parents=True, exist_ok=True)
             (__import__("backend.config", fromlist=["RUNS_DIR"]).RUNS_DIR / run_id / "log.txt").write_text(tb)

@@ -84,12 +84,18 @@ def book_coverage(instrument_id: str, match_key: str | None = None) -> dict[str,
         con.close()
     if not count:
         return {"has_coverage": False, "reason": "no_book_coverage", "window": None, "match_key": row.get("match_key")}
+    from datetime import datetime, timezone
+
+    start_ns = int(first_ms) * 1_000_000
+    end_ns = int(last_ms) * 1_000_000
     return {
         "has_coverage": True,
         "reason": None,
         "window": {
-            "start_ns": int(first_ms) * 1_000_000,
-            "end_ns": int(last_ms) * 1_000_000,
+            "start_ns": start_ns,
+            "end_ns": end_ns,
+            "from": datetime.fromtimestamp(start_ns / 1e9, tz=timezone.utc).isoformat().replace("+00:00", "Z"),
+            "to": datetime.fromtimestamp(end_ns / 1e9, tz=timezone.utc).isoformat().replace("+00:00", "Z"),
             "snapshots": int(count),
             "months": sorted({p.parent.parent.name.split("=", 1)[1] for p in files}),
         },

@@ -89,6 +89,9 @@ function diagnosticValue(key: string, value: unknown): string {
       if (seconds < 60) return `${seconds.toFixed(1)} s`;
       return `${(seconds / 60).toFixed(1)} min`;
     }
+    if (key.endsWith("_minutes") || key.endsWith("_min")) {
+      return `${value.toFixed(1)} min`;
+    }
     if (key.includes("price") || key.includes("probability")) return fmtNumber(value, 3);
     return Number.isInteger(value) ? fmtInteger(value) : fmtNumber(value, 2);
   }

@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { api } from "../../api/client";
 import type { BuiltinStrategy, Experiment, Instrument } from "../../api/types";
 import { useApiResource } from "../../hooks/useApi";
+import { instrumentLabel } from "../../api/normalise";
 import { fmtInteger, fmtTimestamp } from "../../lib/format";
 import { ErrorState, LoadingState, StatusPill } from "../ui";
 
@@ -130,7 +131,7 @@ export function SweepsPanel() {
             >
               {items.slice(0, 200).map((item) => (
                 <option key={item.instrument_id} value={item.instrument_id}>
-                  {item.question ?? item.instrument_id} ({fmtInteger(item.trade_count)} fills)
+                  {instrumentLabel(item)} ({fmtInteger(item.trade_count)} fills)
                 </option>
               ))}
             </select>

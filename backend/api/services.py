@@ -405,8 +405,30 @@ def preflight(body: dict[str, Any]) -> dict[str, Any]:
         if r.get("close") is not None:
             ref = float(r["close"])
     estimate = calculate_cost_estimate(ref, effective, 1.0) if ref is not None else None
+    if estimate is not None:
+        if estimate.get("slippage_bps") is not None:
+            estimate["per_side_bps"] = round(float(estimate.get("fee_bps") or 0) + float(estimate["slippage_bps"]), 4)
+            estimate["per_side_price_points"] = estimate.get("slip_price_points")
+        estimate.setdefault("note", "Per-side estimate; not a profitability claim.")
+    report = None
+    warnings: list[Any] = []
+    if body.get("include_quality", True):
+        try:
+            report = quality(instrument_id, body.get("from"), body.get("to"))
+            warnings.extend(report.get("warnings") or [])
+        except Exception:  # noqa: BLE001
+            report = None
+    if effective.fallback_reason:
+        warnings.append(
+            {
+                "code": "book_fallback",
+                "message": f"Book requested but this run will be priced as {effective.effective} ({effective.fallback_reason}).",
+            }
+        )
     return {
         "instrument_id": instrument_id,
+        "quality": report,
+        "warnings": warnings,
         "requested": effective.requested,
         "effective": effective.effective,
         "cost_source": effective.cost_source,

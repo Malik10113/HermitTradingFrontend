@@ -424,6 +424,9 @@ export interface Diagnostics {
   early_exits?: number | null;
   avg_time_between_signals_s?: number | null;
   avg_holding_time_s?: number | null;
+  avg_holding_minutes?: number | null;
+  avg_minutes_between_signals?: number | null;
+  equity_points?: number | null;
   time_in_market_pct?: number | null;
   avg_entry_price?: number | null;
   avg_exit_price?: number | null;
@@ -600,6 +603,7 @@ export interface PresetListResponse {
 
 export interface Experiment {
   id: string;
+  name?: string | null;
   status: RunStatus;
   completed?: number | null;
   total?: number | null;

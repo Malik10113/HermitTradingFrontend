@@ -38,6 +38,10 @@ const RANGE_DAYS: Record<string, number> = {
   "1y": 366,
 };
 
+// Captured when the module loads, before any router or effect can rewrite the
+// address bar. A shared run URL must survive the first paint.
+const BOOT_SEARCH = typeof window !== "undefined" ? window.location.search : "";
+
 const PHASE_OPTIONS: Array<{ id: PhaseFilter; label: string }> = [
   { id: "all", label: "All" },
   { id: "pre_match", label: "Pre-match" },
@@ -52,13 +56,17 @@ export function WorkspacePage() {
 
   const initial = useRef<{ state: WorkspaceState; issues: string[] } | null>(null);
   if (initial.current === null) {
-    const hasQuery = location.search.length > 1;
+    // The module-level boot search is the only value that cannot have been
+    // rewritten by an effect from an earlier render.
+    const initialSearch = BOOT_SEARCH;
+    const hasQuery = initialSearch.length > 1;
     initial.current = hasQuery
-      ? parseWorkspaceSearch(location.search)
+      ? parseWorkspaceSearch(initialSearch)
       : { state: loadRememberedDefaults(), issues: [] };
   }
   const [state, setState] = useState<WorkspaceState>(initial.current.state);
   const [urlIssues, setUrlIssues] = useState<string[]>(initial.current.issues);
+  const [hydrated, setHydrated] = useState(false);
   const [league, setLeague] = useState("");
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [railOpen, setRailOpen] = useState(true);
@@ -67,6 +75,8 @@ export function WorkspacePage() {
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<unknown | null>(null);
   const [copied, setCopied] = useState(false);
+  const appliedRunRange = useRef<string | null>(null);
+  const skipPersistState = useRef<WorkspaceState | null>(initial.current.state);
 
   const patch = (next: Partial<WorkspaceState>) =>
     setState((current) => ({ ...current, ...next }));
@@ -81,19 +91,64 @@ export function WorkspacePage() {
     setUrlIssues([]);
   };
 
+  // Restore a run id from the browser URL even if the first paint raced the
+  // router. This effect is declared before the URL-sync effect on purpose.
+  useEffect(() => {
+    const params = new URLSearchParams(
+      location.search.length > 1 ? location.search : window.location.search,
+    );
+    const runId = params.get("run");
+    const instrumentId = params.get("instrument");
+    if (!runId && !instrumentId) return;
+    setState((current) => ({
+      ...current,
+      runId: current.runId || runId || "",
+      instrument: current.instrument || instrumentId || "",
+    }));
+    // Initial hydration only; later changes are user-driven.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // The router can commit its search string after the first render. Hydrate
+  // the full shareable state once it is available, before URL synchronisation.
+  useEffect(() => {
+    const search = location.search.length > 1 ? location.search : window.location.search;
+    if (search.length > 1) {
+      const parsed = parseWorkspaceSearch(search);
+      skipPersistState.current = parsed.state;
+      setState(parsed.state);
+      setUrlIssues(parsed.issues);
+    }
+    setHydrated(true);
+    // Mount only: later navigation is user-driven and already in state.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Keep the URL shareable and restore remembered settings after a reset.
   const serialised = useMemo(() => serializeWorkspaceState(state).toString(), [state]);
   useEffect(() => {
+    if (!hydrated) return;
     const current = location.search.startsWith("?") ? location.search.slice(1) : location.search;
-    if (current !== serialised) {
-      setSearchParams(new URLSearchParams(serialised), { replace: true });
+    const desired = new URLSearchParams(serialised);
+    const browser = new URLSearchParams(window.location.search);
+    // Never drop a run/instrument that arrived in the URL before state caught
+    // up; the run is the shareable object, not a display preference.
+    for (const key of ["run", "instrument"] as const) {
+      if (!desired.get(key) && browser.get(key)) desired.set(key, browser.get(key)!);
     }
-  }, [serialised, location.search, setSearchParams]);
+    const next = desired.toString();
+    if (current !== next) {
+      setSearchParams(desired, { replace: true });
+    }
+  }, [serialised, location.search, setSearchParams, hydrated]);
 
   useEffect(() => {
     // Do not overwrite the remembered view with a shared URL on first paint;
     // only user-driven changes update the remembered defaults.
-    if (state === initial.current?.state) return;
+    if (state === skipPersistState.current) {
+      skipPersistState.current = null;
+      return;
+    }
     rememberWorkspaceSettings(state);
   }, [state]);
 
@@ -119,7 +174,26 @@ export function WorkspacePage() {
   const instruments = instrumentsResource.data?.instruments ?? [];
 
   useEffect(() => {
-    if (state.instrument || instruments.length === 0) return;
+    if (!state.runId || state.instrument) return;
+    // A shared run URL carries the run, not necessarily the instrument. Use
+    // the run's own instrument and preserve the run id.
+    let cancelled = false;
+    void api
+      .run(state.runId)
+      .then((run) => {
+        const iid = run.config?.strategy?.instrument_id;
+        if (!cancelled && iid) setState((current) => ({ ...current, instrument: iid }));
+      })
+      .catch(() => {
+        /* the drawer reports the run error */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [state.runId, state.instrument]);
+
+  useEffect(() => {
+    if (state.runId || state.instrument || instruments.length === 0) return;
     const first =
       instruments.find((instrument) => (instrument.trade_count ?? 0) >= 100) ??
       instruments[0];
@@ -260,6 +334,19 @@ export function WorkspacePage() {
 
   const runController = useRun(state.runId || null);
   const run = runController.run;
+
+  useEffect(() => {
+    if (!run || appliedRunRange.current === run.run_id) return;
+    appliedRunRange.current = run.run_id;
+    const range = run.config?.evaluation?.date_range as
+      | { from?: string; to?: string; start?: string; end?: string }
+      | undefined;
+    const from = isoDateOnly(range?.from ?? range?.start);
+    const to = isoDateOnly(range?.to ?? range?.end);
+    if (from && to) {
+      setState((current) => ({ ...current, from, to }));
+    }
+  }, [run]);
   const lifecycle = selected?.lifecycle ?? run?.lifecycle ?? null;
   const stale = bars.some((bar) => bar.is_stale === true);
 
@@ -556,6 +643,11 @@ export function WorkspacePage() {
                 {chartIndicators.mismatch ? (
                   <span className="badge-warn" role="status">
                     indicator series mismatch: {chartIndicators.mismatch}
+                  </span>
+                ) : null}
+                {(run?.trades?.length ?? 0) > 0 || (run?.signals?.length ?? 0) > 0 ? (
+                  <span className="text-[9px] text-ink-faint" aria-label="Marker legend">
+                    markers: ▲ buy · ▼ sell · ● settlement
                   </span>
                 ) : null}
               </div>

@@ -347,6 +347,29 @@ def update_experiment(experiment_id: str, **fields: Any) -> None:
         conn.execute(f"UPDATE experiments SET {cols} WHERE id=?", (*fields.values(), experiment_id))
 
 
+def bump_experiment(experiment_id: str) -> None:
+    """Recompute completed/status from the child runs."""
+    with _LOCK, _conn() as conn:
+        rows = conn.execute(
+            "SELECT status FROM runs WHERE experiment_id=?", (experiment_id,)
+        ).fetchall()
+        total = conn.execute(
+            "SELECT total FROM experiments WHERE id=?", (experiment_id,)
+        ).fetchone()
+        if total is None:
+            return
+        done = len([r for r in rows if r["status"] in ("complete", "failed", "cancelled", "orphaned")])
+        status = "running"
+        if rows and done == len(rows):
+            status = "complete" if all(r["status"] == "complete" for r in rows) else "failed"
+        elif done and done == total[0]:
+            status = "complete" if all(r["status"] == "complete" for r in rows) else "failed"
+        conn.execute(
+            "UPDATE experiments SET completed=?, status=?, updated_at=? WHERE id=?",
+            (done, status, utcnow(), experiment_id),
+        )
+
+
 def get_experiment(experiment_id: str) -> dict[str, Any] | None:
     with _conn() as conn:
         d = _row(conn.execute("SELECT * FROM experiments WHERE id=?", (experiment_id,)).fetchone())

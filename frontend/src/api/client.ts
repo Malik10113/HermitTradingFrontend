@@ -4,7 +4,6 @@ import type {
   CreateBacktestResponse,
   ExecutionSection,
   Experiment,
-  ExperimentListResponse,
   IndicatorPreviewRequest,
   IndicatorPreviewResponse,
   IndicatorSpec,
@@ -17,6 +16,7 @@ import {
   normaliseBars,
   normaliseCompare,
   normaliseExecution,
+  normaliseExperiments,
   normaliseIndicatorSpecs,
   normaliseInstrument,
   normaliseInstrumentList,
@@ -279,8 +279,8 @@ export const api = {
       signal,
     }),
 
-  experiments: (signal?: AbortSignal) =>
-    request<ExperimentListResponse>("/experiments", { signal }),
+  experiments: async (signal?: AbortSignal) =>
+    normaliseExperiments(await request<unknown>("/experiments", { signal })),
 
   createExperiment: (body: unknown, signal?: AbortSignal) =>
     request<Experiment>("/experiments", { method: "POST", body, signal }),

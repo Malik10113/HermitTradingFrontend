@@ -67,3 +67,16 @@ def test_reap_orphans_marks_lost_workers(tmp_path, monkeypatch):
     reaped = state.reap_orphans()
     assert "run_1" in reaped
     assert state.get_run("run_1")["status"] == "failed"
+
+
+def test_holdout_variant_counter_tracks_strategy_hashes(tmp_path, monkeypatch):
+    _init(tmp_path, monkeypatch)
+    state.create_run("run_1", {}, "sha256:a", "sha256:r1", "sha256:d", "conservative", "conservative")
+    state.create_run("run_2", {}, "sha256:b", "sha256:r2", "sha256:d", "conservative", "conservative")
+    first = state.record_reveal("x-YES.POLYMARKET", "sha256:a", "sha256:split", "run_1")
+    again = state.record_reveal("x-YES.POLYMARKET", "sha256:a", "sha256:split", "run_1")
+    variant = state.record_reveal("x-YES.POLYMARKET", "sha256:b", "sha256:split", "run_2")
+    assert first["variant_index"] == 1
+    assert again["variant_index"] == 1
+    assert again["warning"] is True
+    assert variant["variant_index"] == 2

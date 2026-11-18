@@ -636,6 +636,7 @@ def cancel_experiment(experiment_id: str) -> dict[str, Any]:
             state.update_run(child["run_id"], status="cancelled")
             cancelled.append(child["run_id"])
     state.update_experiment(experiment_id, status="cancelled")
+    state.bump_experiment(experiment_id)
     return {"experiment_id": experiment_id, "cancelled": cancelled}
 
 

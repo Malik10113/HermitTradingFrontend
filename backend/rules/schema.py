@@ -211,6 +211,8 @@ class RunConfig(BaseModel):
     execution: ExecutionConfig = Field(default_factory=ExecutionConfig)
     risk: RiskConfig = Field(default_factory=RiskConfig)
     evaluation: EvaluationConfig
+    # Preflight warnings the user explicitly accepted; recorded in the manifest.
+    acknowledged_warnings: list[str] = Field(default_factory=list)
 
     def canonical_strategy(self) -> dict[str, Any]:
         return self.strategy.model_dump(mode="json", exclude_none=True)

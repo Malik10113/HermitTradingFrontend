@@ -259,8 +259,7 @@ export function PriceChart({
     }
 
     const markerList = mergeMarkers(
-      tradeMarkers(trades),
-      signalMarkers(signals),
+      trades.length > 0 ? tradeMarkers(trades) : signalMarkers(signals),
       lifecycle?.actual_kickoff_utc
         ? [
             {
@@ -291,13 +290,21 @@ export function PriceChart({
         marker.time >= candle.data[0].time &&
         marker.time <= candle.data[candle.data.length - 1].time,
     );
+    // Dense runs keep the arrows but drop labels; settlement stays explicit.
+    const compactMarkers = tickets.length > 24;
     candleSeries.setMarkers(
       tickets.map((marker) => ({
         time: marker.time as UTCTimestamp,
         position: marker.position,
         color: marker.color,
         shape: marker.shape,
-        text: marker.text,
+        size: compactMarkers ? 0.6 : 1,
+        text:
+          compactMarkers &&
+          marker.kind !== "settlement" &&
+          !marker.id.startsWith("lifecycle:")
+            ? ""
+            : marker.text,
         id: marker.id,
       })) as SeriesMarker<Time>[],
     );

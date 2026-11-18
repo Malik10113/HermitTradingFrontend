@@ -193,6 +193,7 @@ export const VARIANT_METRICS: Array<{ value: VariantMetric; label: string }> = [
 export interface VariantRow {
   run_id: string;
   status: RunStatus;
+  metrics_scope: string | null;
   values: Record<string, unknown>;
   gross_pnl_usd: number | null;
   net_pnl_usd: number | null;
@@ -220,6 +221,10 @@ export function buildVariantRows(axes: ExperimentAxis[], runs: RunDetail[]): Var
     return {
       run_id: run.run_id,
       status: run.status,
+      metrics_scope:
+        typeof (run as unknown as Record<string, unknown>).metrics_scope === "string"
+          ? ((run as unknown as Record<string, unknown>).metrics_scope as string)
+          : null,
       values,
       gross_pnl_usd: metricNumber(run.metrics, "gross_pnl_usd"),
       net_pnl_usd: metricNumber(run.metrics, "net_pnl_usd"),
@@ -817,6 +822,11 @@ export function SweepsPanel() {
                   </td>
                   <td className="numeric px-2 py-1 text-[10px] text-ink-muted" title={row.run_id}>
                     {row.run_id.length > 22 ? `${row.run_id.slice(0, 22)}…` : row.run_id}
+                    {row.metrics_scope === "in_sample" ? (
+                      <span className="block text-[9px] text-warn" title="Out-of-sample metrics stay hidden until an explicit reveal">
+                        in-sample only
+                      </span>
+                    ) : null}
                   </td>
                   <td className="px-2 py-1"><StatusPill status={row.status} /></td>
                   <td className="numeric px-2 py-1 text-right">
@@ -852,9 +862,9 @@ export function SweepsPanel() {
         </div>
         <SourceNote>
           Gross and net are simulation artifacts from stored data. Net includes fees and slippage
-          under the run's effective execution profile; an absent metric reads “not available”.
-          In-sample and out-of-sample columns appear only where a split exists and the holdout is
-          revealed.
+          under the run's effective execution profile; an absent metric reads “not available”. A
+          child run whose split has not been revealed reports its in-sample slice only, labelled
+          “in-sample only”; no out-of-sample figure is inferred.
         </SourceNote>
       </div>
     );

@@ -161,6 +161,7 @@ function makeRow(
   return {
     run_id: runId,
     status: "complete",
+    metrics_scope: null,
     values: {
       "strategy.builtin_params.fast_period": fast,
       "strategy.builtin_params.slow_period": slow,

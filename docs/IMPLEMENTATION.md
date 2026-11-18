@@ -86,7 +86,7 @@ low, close, volume, trade_count, source, data_version`.
 - Higher timeframes are aggregated from 1m bars; a bucket with no 1m bars
   produces no bar.
 - Bar types: `...-1-MINUTE-LAST-EXTERNAL`,
-  `...-5-MINUTE-LAST-INTERNAL@1-MINUTE-LAST-EXTERNAL`, and the same for
+  `...-5-MINUTE-LAST-INTERNAL@1-MINUTE-EXTERNAL` (rc9 rendering), and the same for
   15m/1h/1d.
 - Non-time bars (`tick`, `volume`, `value`, `renko`) are built from the fill
   stream and use the same canonical schema. A `tick` bar closes every N fills,

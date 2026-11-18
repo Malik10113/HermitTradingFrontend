@@ -35,6 +35,7 @@ class FillRecord:
     fee_usd: float = 0.0
     reference_price: float | None = None
     execution_source: str = "fixed"
+    impact_bps: float | None = None
     slippage_bps: float = 0.0
     fallback_reason: str | None = None
     order_id: str | None = None
@@ -212,6 +213,7 @@ def build_equity(
     starting_cash_usd: float,
     settlements: dict[str, SettlementRecord],
     primary_instrument_id: str,
+    condition_by_instrument: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
     """Cash + marked positions at every stored bar timestamp."""
     fills = sorted(fills, key=lambda x: x.ts_ns)
@@ -266,7 +268,7 @@ def build_equity(
                     qty.pop(f.instrument_id, None)
         # settle anything whose settlement timestamp is here
         for iid in list(qty):
-            cid = _condition_from_instrument(iid)
+            cid = (condition_by_instrument or {}).get(iid, _condition_from_instrument(iid))
             s = settlements.get(cid)
             if s is None or s.settled_ts_ns is None or s.settled_ts_ns > ts:
                 continue
@@ -377,7 +379,7 @@ def compute_metrics(
         for t in trades
         if t["entry_yes_prob"] is not None and t["exit_yes_prob"] is not None
     ]
-    return {
+    metrics = {
         "starting_cash_usd": starting_cash_usd,
         "final_equity_usd": final_equity,
         "net_pnl_usd": net,
@@ -412,6 +414,26 @@ def compute_metrics(
         "gross_return_pct": (gross / starting_cash_usd * 100.0) if starting_cash_usd else None,
         "net_return_pct": (net / starting_cash_usd * 100.0) if starting_cash_usd else None,
     }
+    # Presentation aliases used by the workspace; same numbers, explicit units.
+    metrics["avg_entry_probability"] = metrics["avg_entry_prob"]
+    metrics["avg_exit_probability"] = metrics["avg_exit_prob"]
+    metrics["avg_probability_move_pts"] = metrics["avg_yes_points_captured"]
+    metrics["avg_holding_period_s"] = (
+        metrics["avg_holding_minutes"] * 60.0 if metrics["avg_holding_minutes"] is not None else None
+    )
+    metrics["gross"] = {
+        "gross_pnl_usd": metrics["gross_pnl_usd"],
+        "gross_return_pct": metrics["gross_return_pct"],
+        "fees_usd": metrics["fees_usd"],
+        "slippage_usd": metrics["slippage_usd"],
+    }
+    metrics["net"] = {
+        "net_pnl_usd": metrics["net_pnl_usd"],
+        "net_return_pct": metrics["net_return_pct"],
+        "trade_count": metrics["trade_count"],
+        "win_rate": metrics["win_rate"],
+    }
+    return metrics
 
 
 def phase_breakdown(trades: list[dict[str, Any]]) -> dict[str, Any]:
@@ -439,7 +461,10 @@ def cost_breakdown(
     fees = sum(f.fee_usd for f in fills)
     slip_usd = 0.0
     spread_usd = 0.0
+    impact_usd = 0.0
     for f in fills:
+        if f.impact_bps is not None:
+            impact_usd += f.price * f.quantity * float(f.impact_bps) / 10_000.0
         if f.reference_price is None:
             continue
         if f.side == "BUY":
@@ -452,6 +477,9 @@ def cost_breakdown(
         "fees_usd": fees,
         "slippage_usd": slip_usd,
         "spread_usd": spread_usd,
+        # Informational: the book impact is already inside the fill price and
+        # therefore inside slippage_usd; do not add it twice.
+        "impact_usd": impact_usd,
         "total_cost_usd": fees + slip_usd + spread_usd,
         "total_cost_bps": ((fees + slip_usd + spread_usd) / notional * 10_000.0) if notional else None,
         "fee_bps": fee_bps,
@@ -480,6 +508,11 @@ def diagnostics(
     in_market_minutes = 0.0
     for a, b in _merge_intervals(intervals):
         in_market_minutes += (b - a) / 60_000_000_000
+    span_minutes = 0.0
+    if equity_curve:
+        span_minutes = max((int(equity_curve[-1].get("ts_ns") or 0) - int(equity_curve[0].get("ts_ns") or 0)) / 60_000_000_000.0, 0.0)
+    avg_gap_minutes = (sum(gaps) / len(gaps)) if gaps else None
+    avg_hold_minutes = (sum(holding) / len(holding)) if holding else None
     return {
         "signals_generated": len(signals),
         "orders_submitted": len(fills) + rejects,
@@ -488,9 +521,12 @@ def diagnostics(
         "trades_completed": len(trades),
         "held_to_settlement": len([t for t in trades if t["exit_reason"] == "settlement"]),
         "early_exits": len([t for t in trades if t["exit_reason"] != "settlement"]),
-        "avg_minutes_between_signals": (sum(gaps) / len(gaps)) if gaps else None,
-        "avg_holding_minutes": (sum(holding) / len(holding)) if holding else None,
+        "avg_minutes_between_signals": avg_gap_minutes,
+        "avg_time_between_signals_s": avg_gap_minutes * 60.0 if avg_gap_minutes is not None else None,
+        "avg_holding_minutes": avg_hold_minutes,
+        "avg_holding_time_s": avg_hold_minutes * 60.0 if avg_hold_minutes is not None else None,
         "time_in_market_minutes": in_market_minutes,
+        "time_in_market_pct": (in_market_minutes / span_minutes * 100.0) if span_minutes > 0 else None,
         "avg_entry_price": (sum(t["entry_price"] for t in trades) / len(trades)) if trades else None,
         "avg_exit_price": (sum(t["exit_price"] for t in trades) / len(trades)) if trades else None,
         "equity_points": len(equity_curve),
@@ -529,7 +565,14 @@ def analyse(
         for f in fills:
             f.condition_id = condition_by_instrument.get(f.instrument_id, f.condition_id)
     trades, positions = reconstruct_trades(fills, settlements, primary_instrument_id)
-    curve = build_equity(fills, bars_by_instrument, starting_cash_usd, settlements, primary_instrument_id)
+    curve = build_equity(
+        fills,
+        bars_by_instrument,
+        starting_cash_usd,
+        settlements,
+        primary_instrument_id,
+        condition_by_instrument,
+    )
     diag = diagnostics(signals, fills, trades, rejects, curve)
     costs = cost_breakdown(fills, fee_bps, slippage_bps, min_abs_slippage)
     metrics = compute_metrics(

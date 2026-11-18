@@ -1,0 +1,237 @@
+import type { Trade } from "../../api/types";
+import {
+  fmtContracts,
+  fmtDuration,
+  fmtNumber,
+  fmtProbability,
+  fmtTimestamp,
+  fmtUsd,
+  NOT_AVAILABLE,
+} from "../../lib/format";
+import { EmptyState, KeyValue, ProfileBadge, SourceNote } from "../ui";
+
+const INTENT_LABELS: Record<string, string> = {
+  open_long: "open long",
+  close_long: "close long",
+  open_short: "open short (NO)",
+  close_short: "close short (NO)",
+};
+
+function sideClass(side: string): string {
+  return side === "SELL" ? "text-negative" : "text-positive";
+}
+
+export function TradeTable({
+  trades,
+  profile,
+  selectedTradeId,
+  onSelectTrade,
+}: {
+  trades: Trade[] | null | undefined;
+  profile: string | null | undefined;
+  selectedTradeId: string | null;
+  onSelectTrade: (tradeId: string | null) => void;
+}) {
+  if (!trades || trades.length === 0) {
+    return (
+      <EmptyState
+        title="No trades in this run"
+        message="The strategy produced no completed trades. Zero signals is a valid result; it is not replaced with a placeholder trade."
+      />
+    );
+  }
+
+  return (
+    <div className="overflow-auto">
+      <div className="flex flex-wrap items-center gap-2 border-b border-line px-2 py-1 text-[10px] text-ink-faint">
+        <span>{trades.length.toLocaleString("en-GB")} completed trade(s)</span>
+        <ProfileBadge profile={profile} prefix="Net" />
+        <span>Side and token are the actual order intent; a complement buy is never an exit.</span>
+      </div>
+      <table className="w-full border-collapse text-[11px]">
+        <caption className="sr-only">Completed trades with gross and net P&amp;L</caption>
+        <thead className="sticky top-0 bg-surface-raised">
+          <tr className="border-b border-line">
+            <th scope="col" className="table-head px-2 py-1">Trade</th>
+            <th scope="col" className="table-head px-2 py-1">Entry (UTC)</th>
+            <th scope="col" className="table-head px-2 py-1">Side · token</th>
+            <th scope="col" className="table-head px-2 py-1">Intent</th>
+            <th scope="col" className="table-head px-2 py-1 text-right">Entry</th>
+            <th scope="col" className="table-head px-2 py-1 text-right">Exit</th>
+            <th scope="col" className="table-head px-2 py-1 text-right">Contracts</th>
+            <th scope="col" className="table-head px-2 py-1 text-right">Gross $</th>
+            <th scope="col" className="table-head px-2 py-1 text-right">Net $</th>
+            <th scope="col" className="table-head px-2 py-1 text-right">Fees $</th>
+            <th scope="col" className="table-head px-2 py-1">Source</th>
+            <th scope="col" className="table-head px-2 py-1">Phase</th>
+          </tr>
+        </thead>
+        <tbody>
+          {trades.map((trade) => {
+            const selected = trade.trade_id === selectedTradeId;
+            const fallbackSource =
+              trade.execution_source === "conservative_fallback" || !!trade.fallback_reason;
+            return (
+              <tr
+                key={trade.trade_id}
+                className={`border-b border-line/60 ${
+                  selected ? "bg-surface-sunken" : "hover:bg-surface-sunken/60"
+                }`}
+                aria-selected={selected}
+              >
+                <td className="px-2 py-1">
+                  <button
+                    type="button"
+                    className="numeric text-[10px] text-accent underline decoration-accent/40 underline-offset-2 hover:decoration-accent"
+                    onClick={() => onSelectTrade(selected ? null : trade.trade_id)}
+                    aria-expanded={selected}
+                    title={trade.trade_id}
+                  >
+                    {trade.trade_id.length > 14 ? `${trade.trade_id.slice(0, 10)}…` : trade.trade_id}
+                  </button>
+                </td>
+                <td className="numeric whitespace-nowrap px-2 py-1 text-ink-muted">
+                  {fmtTimestamp(trade.entry_ts, false)}
+                </td>
+                <td className="numeric whitespace-nowrap px-2 py-1">
+                  <span className={sideClass(trade.side)}>{trade.side}</span>{" "}
+                  <span className="text-ink-muted">{trade.token}</span>
+                  {trade.close_side ? (
+                    <span className="text-ink-faint">
+                      {" "}
+                      → <span className={sideClass(trade.close_side)}>{trade.close_side}</span>{" "}
+                      {trade.token}
+                    </span>
+                  ) : null}
+                </td>
+                <td className="px-2 py-1 text-ink-muted">
+                  {trade.intent ? INTENT_LABELS[trade.intent] ?? trade.intent : NOT_AVAILABLE}
+                </td>
+                <td className="numeric px-2 py-1 text-right">{fmtProbability(trade.entry_price)}</td>
+                <td className="numeric px-2 py-1 text-right">
+                  {trade.held_to_settlement ? (
+                    <span className="badge-positive">settle</span>
+                  ) : (
+                    fmtProbability(trade.exit_price)
+                  )}
+                </td>
+                <td className="numeric px-2 py-1 text-right">{fmtNumber(trade.contracts, 1)}</td>
+                <td className="numeric px-2 py-1 text-right">
+                  {fmtUsd(trade.gross_pnl_usd, { signed: true })}
+                </td>
+                <td
+                  className={`numeric px-2 py-1 text-right ${
+                    (trade.net_pnl_usd ?? 0) < 0 ? "text-negative" : ""
+                  }`}
+                >
+                  {fmtUsd(trade.net_pnl_usd, { signed: true })}
+                </td>
+                <td className="numeric px-2 py-1 text-right">{fmtUsd(trade.fees_usd)}</td>
+                <td className="px-2 py-1">
+                  {fallbackSource ? (
+                    <span
+                      className="badge-warn"
+                      title={trade.fallback_reason ?? "Conservative fallback fill"}
+                    >
+                      fallback
+                    </span>
+                  ) : (
+                    <span className="badge">{trade.execution_source ?? "not available"}</span>
+                  )}
+                </td>
+                <td className="px-2 py-1 text-ink-muted">{trade.phase ?? "unknown"}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+      <p className="px-2 py-1 text-[10px] text-ink-faint">
+        Held-to-settlement exits settle to 0 or 1 from the mapped results table, never from a
+        price. Fallback rows were priced at Conservative costs.
+      </p>
+    </div>
+  );
+}
+
+export function TradeInspector({
+  trade,
+  onClose,
+}: {
+  trade: Trade | null;
+  onClose: () => void;
+}) {
+  if (!trade) return null;
+  const holding =
+    trade.entry_ts && trade.exit_ts
+      ? (Date.parse(trade.exit_ts) - Date.parse(trade.entry_ts)) / 1000
+      : null;
+  return (
+    <section className="border-t border-line bg-surface-raised p-2" aria-label="Trade inspector">
+      <div className="mb-1.5 flex items-center gap-2">
+        <h4 className="text-[11px] font-semibold uppercase tracking-[0.08em] text-ink">
+          Trade inspector
+        </h4>
+        <span className="numeric text-[10px] text-ink-faint">{trade.trade_id}</span>
+        <button type="button" className="btn-ghost ml-auto" onClick={onClose}>
+          Close
+        </button>
+      </div>
+      <KeyValue
+        columns={3}
+        items={[
+          { label: "Signal / entry time", value: fmtTimestamp(trade.entry_ts) },
+          {
+            label: "Exit time",
+            value: trade.held_to_settlement ? "held to settlement" : fmtTimestamp(trade.exit_ts),
+          },
+          { label: "Holding period", value: fmtDuration(holding) },
+          {
+            label: "Side at entry",
+            value: `${trade.side} ${trade.token}`,
+          },
+          {
+            label: "Side at exit",
+            value: trade.held_to_settlement
+              ? `settlement ${trade.token}`
+              : `${trade.close_side ?? "SELL"} ${trade.token}`,
+          },
+          {
+            label: "Intent",
+            value: trade.intent ? (INTENT_LABELS[trade.intent] ?? trade.intent) : NOT_AVAILABLE,
+          },
+          { label: "Entry price", value: fmtProbability(trade.entry_price) },
+          {
+            label: "Exit price",
+            value: trade.held_to_settlement
+              ? "settlement value from results"
+              : fmtProbability(trade.exit_price),
+          },
+          { label: "Contracts", value: fmtContracts(trade.contracts) },
+          { label: "Gross P&L", value: fmtUsd(trade.gross_pnl_usd, { signed: true }) },
+          { label: "Net P&L", value: fmtUsd(trade.net_pnl_usd, { signed: true }) },
+          { label: "Fees", value: fmtUsd(trade.fees_usd) },
+          { label: "Slippage", value: fmtUsd(trade.slippage_usd) },
+          {
+            label: "Execution source",
+            value: trade.execution_source ?? NOT_AVAILABLE,
+          },
+          {
+            label: "Fallback reason",
+            value: trade.fallback_reason ?? (trade.execution_source === "conservative_fallback" ? "stale or missing book snapshot" : "none"),
+          },
+          { label: "Phase", value: trade.phase ?? "unknown" },
+        ]}
+      />
+      {trade.entry_context && Object.keys(trade.entry_context).length > 0 ? (
+        <div className="mt-2">
+          <div className="label mb-1">Condition context at entry</div>
+          <pre className="numeric max-h-32 overflow-auto rounded border border-line bg-surface-sunken p-2 text-[10px] leading-relaxed text-ink-muted">
+            {JSON.stringify(trade.entry_context, null, 2)}
+          </pre>
+        </div>
+      ) : (
+        <SourceNote>No condition context artifact is available for this trade.</SourceNote>
+      )}
+    </section>
+  );
+}

@@ -93,7 +93,50 @@ def _terminal(status: str) -> bool:
     return status in ("complete", "failed", "cancelled", "orphaned")
 
 
-def _run_payload(run: dict[str, Any], include_summary: bool = True) -> dict[str, Any]:
+def _trade_rows(run_id: str) -> list[dict[str, Any]]:
+    rows = parquet_rows(run_id, "trades.parquet", 100_000)
+    out = []
+    for i, t in enumerate(rows):
+        intent = "open_long" if t.get("side") == "long" else "open_short"
+        out.append(
+            {
+                **t,
+                "trade_id": f"T-{i + 1:04d}",
+                "side": "BUY",
+                "close_side": "SELL",
+                "intent": intent,
+                "contracts": t.get("quantity"),
+                "held_to_settlement": t.get("exit_reason") == "settlement",
+                "phase": t.get("entry_phase"),
+            }
+        )
+    return out
+
+
+def _signal_rows(run_id: str) -> list[dict[str, Any]]:
+    rows = parquet_rows(run_id, "signals.parquet", 100_000)
+    out = []
+    for s in rows:
+        action = str(s.get("action", "signal"))
+        ts_ns = s.get("ts_ns")
+        ts = None
+        if ts_ns:
+            from datetime import datetime, timezone
+
+            ts = datetime.fromtimestamp(int(ts_ns) / 1e9, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+        out.append(
+            {
+                **s,
+                "ts": ts,
+                "kind": "signal",
+                "side": "BUY" if action.endswith("entry") else "SELL",
+                "reason": action,
+            }
+        )
+    return out
+
+
+def _run_payload(run: dict[str, Any], include_summary: bool = True, detail: bool = False) -> dict[str, Any]:
     run_id = run["run_id"]
     manifest = read_json_artifact(run_id, "manifest.json") if include_summary else None
     summary = read_json_artifact(run_id, "summary.json") if include_summary else None
@@ -139,11 +182,35 @@ def _run_payload(run: dict[str, Any], include_summary: bool = True) -> dict[str,
     if include_summary:
         payload["summary"] = summary
         payload["manifest"] = manifest
+        payload["metrics"] = summary
         payload["phase_breakdown"] = (manifest or {}).get("phase_breakdown") if manifest else None
         payload["artifacts"] = [
             {"name": n, "sha256": h}
             for n, h in ((manifest or {}).get("artifacts") or {}).items()
         ]
+        if detail:
+            payload["execution"] = (manifest or {}).get("execution")
+            payload["lifecycle_version"] = (manifest or {}).get("lifecycle_version")
+            payload["diagnostics"] = read_json_artifact(run_id, "diagnostics.json")
+            costs = parquet_rows(run_id, "costs.parquet", 1)
+            payload["costs"] = costs[0] if costs else None
+            if payload["costs"] is not None:
+                payload["costs"]["requested_profile"] = (manifest or {}).get("execution", {}).get("requested")
+                payload["costs"]["effective_profile"] = (manifest or {}).get("execution", {}).get("effective")
+                payload["costs"]["fallback_reason"] = (manifest or {}).get("execution", {}).get("fallback_reason")
+            payload["equity"] = parquet_rows(run_id, "equity.parquet", 100_000)
+            payload["trades"] = _trade_rows(run_id)
+            payload["signals"] = _signal_rows(run_id)
+            phases = payload.get("phase_breakdown") or {}
+            payload["phases"] = [
+                {
+                    "phase": phase,
+                    "trades": metrics.get("trade_count"),
+                    "pnl_usd": metrics.get("net_pnl_usd"),
+                    "return_pct": metrics.get("return_pct"),
+                }
+                for phase, metrics in phases.items()
+            ]
     return payload
 
 
@@ -180,7 +247,7 @@ def meta() -> dict[str, Any]:
 def instruments(
     q: str | None = None,
     league: str | None = None,
-    limit: int = Query(default=50, ge=1, le=500),
+    limit: int = Query(default=50, ge=1, le=5000),
     offset: int = Query(default=0, ge=0),
 ) -> dict[str, Any]:
     return services.list_instruments(q, league, limit, offset)
@@ -206,7 +273,7 @@ def instrument_quality(
 @router.get("/search")
 def search(q: str = Query(min_length=1), limit: int = Query(default=25, ge=1, le=100)) -> dict[str, Any]:
     out = services.list_instruments(q, None, limit, 0)
-    return {"query": q, "items": out["items"], "total": out["total"]}
+    return {"query": q, "items": out["items"], "instruments": out["items"], "total": out["total"]}
 
 
 # ----------------------------------------------------------------------- bars
@@ -288,8 +355,23 @@ def delete_preset(preset_id: str) -> None:
 def _prepare(req: RunRequest) -> dict[str, Any]:
     from backend.engine.runner import prepare_run
 
+    strategy = req.strategy
+    if strategy.builtin_id and not any(
+        (strategy.long_entry, strategy.long_exit, strategy.short_entry, strategy.short_exit)
+    ):
+        from backend.strategies.builtins import build as build_builtin
+
+        rules = build_builtin(
+            strategy.builtin_id,
+            strategy.instrument_id,
+            strategy.bar_type,
+            strategy.builtin_params,
+        )
+        if strategy.direction:
+            rules["direction"] = strategy.direction
+        strategy = StrategySection.model_validate(rules)
     config = RunConfig(
-        strategy=req.strategy,
+        strategy=strategy,
         execution=req.execution,
         risk=req.risk,
         evaluation=req.evaluation,
@@ -328,7 +410,8 @@ def create_backtest(req: RunRequest) -> dict[str, Any]:
 @router.get("/backtests")
 def list_backtests(limit: int = Query(default=100, ge=1, le=500), offset: int = Query(default=0, ge=0)) -> dict[str, Any]:
     runs = state.list_runs(limit=limit, offset=offset)
-    return {"items": [_run_payload(r, include_summary=False) for r in runs], "total": len(runs)}
+    items = [_run_payload(r, include_summary=False) for r in runs]
+    return {"items": items, "runs": items, "total": len(runs)}
 
 
 @router.get("/backtests/{run_id}")
@@ -336,7 +419,7 @@ def get_backtest(run_id: str) -> dict[str, Any]:
     run = state.get_run(run_id)
     if run is None:
         raise not_found("run", run_id)
-    return _run_payload(run)
+    return _run_payload(run, detail=True)
 
 
 @router.get("/backtests/{run_id}/events")
@@ -357,7 +440,10 @@ async def run_events(run_id: str) -> StreamingResponse:
             status = run["status"] if run else "failed"
             if status != last_status:
                 last_status = status
-                yield f"event: status\ndata: {json.dumps({'status': status})}\n\n"
+                payload = json.dumps({"status": status})
+                yield f"event: status\ndata: {payload}\n\n"
+                # Default-message frame so a plain EventSource.onmessage sees it.
+                yield f"data: {payload}\n\n"
             if _terminal(status):
                 yield f"event: end\ndata: {json.dumps({'status': status})}\n\n"
                 break
@@ -398,7 +484,9 @@ def reveal_holdout(run_id: str) -> dict[str, Any]:
         raise bad_request("no_split", "this run has no train/test split")
     sh = split_hash(RunConfig.model_validate(config))
     universe = (config.get("strategy") or {}).get("instrument_id", "")
-    return state.record_reveal(universe, run["strategy_hash"], sh or "", run_id)
+    result = state.record_reveal(universe, run["strategy_hash"], sh or "", run_id)
+    result["revealed"] = True
+    return result
 
 
 @router.delete("/backtests/{run_id}", status_code=204)

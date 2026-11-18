@@ -11,7 +11,7 @@ import json
 import re
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 PRICE_OPERANDS = {"open", "high", "low", "close", "volume", "trade_count"}
 LIFECYCLE_OPERANDS = {
@@ -76,12 +76,29 @@ class StrategySection(BaseModel):
     direction: Literal["long", "short", "both"] = "both"
     settlement: Literal["hold_to_expiry", "rule_exit"] = "hold_to_expiry"
     lifecycle_filters: LifecycleFilter | None = None
+    # Quick-authoring hints; the API expands them into a full rule tree before
+    # a job exists and they never enter the hashed strategy section.
+    builtin_id: str | None = None
+    builtin_params: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("settlement", mode="before")
+    @classmethod
+    def _settlement_alias(cls, value: Any) -> Any:
+        if value in ("exit_on_signal", "rule_exit"):
+            return "rule_exit"
+        if value == "hold_to_expiry":
+            return "hold_to_expiry"
+        return value
 
     @model_validator(mode="after")
     def _validate_rules(self) -> "StrategySection":
         ids = [i.instance_id for i in self.indicators]
         if len(ids) != len(set(ids)):
             raise ValueError("indicator instance_id values must be unique")
+        if self.builtin_id is not None:
+            # Quick authoring: the API expands the catalogue entry into rules
+            # before a job exists; there is nothing to validate yet.
+            return self
         if self.direction in ("long", "both") and self.long_entry is None and self.short_entry is None:
             raise ValueError("at least one entry rule is required")
         if self.direction == "long" and self.long_entry is None:
@@ -110,11 +127,11 @@ class ExecutionConfig(BaseModel):
 
 
 class SizingConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
     mode: Literal["fixed_stake", "risk_pct"] = "fixed_stake"
     value: float = Field(default=100.0, gt=0)
-    bankroll_usd: float = Field(default=1000.0, gt=0)
+    bankroll_usd: float = Field(default=1000.0, gt=0, validation_alias=AliasChoices("bankroll_usd", "bankroll_gbp"))
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     @field_validator("value")
     @classmethod
@@ -137,10 +154,10 @@ class RiskConfig(BaseModel):
 
 
 class DateRange(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
-    start: str
-    end: str
+    start: str = Field(validation_alias=AliasChoices("start", "from"))
+    end: str = Field(validation_alias=AliasChoices("end", "to"))
 
     @model_validator(mode="after")
     def _order(self) -> "DateRange":

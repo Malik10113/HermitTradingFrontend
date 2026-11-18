@@ -15,10 +15,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
-from backend.config import DATA_ROOT, DATA_VERSIONS_PATH
+from backend import config
 
 BUILDER_VERSION = "bars-1.0.0"
 LIFECYCLE_BUILDER_VERSION = "lifecycle-1.0.0"
+SETTLEMENT_BUILDER_VERSION = "settlement-1.0.0"
+INSTRUMENT_INDEX_BUILDER_VERSION = "instruments-1.0.0"
+
+DATA_ROOT = config.DATA_ROOT
 
 
 @dataclass(frozen=True)
@@ -36,7 +40,7 @@ class Fingerprint:
 
 def _rel(path: Path) -> str:
     try:
-        return str(path.resolve().relative_to(DATA_ROOT.resolve()))
+        return str(path.resolve().relative_to(config.DATA_ROOT.resolve()))
     except ValueError:
         return str(path.resolve())
 
@@ -94,16 +98,17 @@ def compute_version(
 
 def _cache_load() -> dict[str, str]:
     try:
-        return json.loads(DATA_VERSIONS_PATH.read_text())
+        return json.loads(config.DATA_VERSIONS_PATH.read_text())
     except Exception:  # noqa: BLE001
         return {}
 
 
 def _cache_store(cache: dict[str, str]) -> None:
-    DATA_VERSIONS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    tmp = DATA_VERSIONS_PATH.with_suffix(".tmp")
+    path = config.DATA_VERSIONS_PATH
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(cache, indent=2, sort_keys=True))
-    os.replace(tmp, DATA_VERSIONS_PATH)
+    os.replace(tmp, path)
 
 
 def cached_version(key: str, datasets: list[tuple[Path, str | None]], builder_version: str) -> str:
@@ -155,3 +160,36 @@ def run_data_version() -> str:
         (SETTLEMENT_PATH, None),
     ]
     return cached_version("run", datasets, BUILDER_VERSION)
+
+
+def instrument_index_version() -> str:
+    """Version of the instrument index inputs (tapes, metadata, results)."""
+    datasets: list[tuple[Path, str | None]] = [
+        (config.EPL_TAPE, "timestamp"),
+        (config.FOOTBALL_TAPE, "timestamp"),
+        (config.MARKETS, None),
+        (config.POLYMARKET_MARKETS, None),
+        (config.POLYMARKET_EVENTS, None),
+    ]
+    return cached_version("instruments", datasets, INSTRUMENT_INDEX_BUILDER_VERSION)
+
+
+def settlement_version() -> str:
+    """Version of the indexed settlement inputs."""
+    datasets: list[tuple[Path, str | None]] = [
+        (config.POLYMARKET_MARKETS, None),
+        (config.MARKETS, None),
+    ]
+    return cached_version("settlement", datasets, SETTLEMENT_BUILDER_VERSION)
+
+
+def lifecycle_version(summary_files: Iterable[Path] = ()) -> str:
+    """Version of the lifecycle inputs: fixture map plus the cached summaries.
+
+    Callers pass the exact summary files they read so the version changes when a
+    cached ESPN payload changes.  ``load_lifecycle`` does not recompute this; the
+    builder stores it on the artifact.
+    """
+    datasets: list[tuple[Path, str | None]] = [(config.FIXTURE_MAP, None)]
+    datasets.extend((Path(path), None) for path in sorted(summary_files))
+    return cached_version("lifecycle", datasets, LIFECYCLE_BUILDER_VERSION)

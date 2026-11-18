@@ -77,10 +77,18 @@ def _parse_date(value: str | None, end: bool = False) -> int | None:
 
 
 def meta() -> dict[str, Any]:
+    lifecycle_version = None
+    try:
+        from backend.data.lifecycle import lifecycle_version as lv
+
+        lifecycle_version = lv()
+    except Exception:  # noqa: BLE001
+        pass
     return {
         "code_version": code_version(),
         "nautilus_version": nautilus_version(),
         "data_version": run_data_version(),
+        "lifecycle_version": lifecycle_version,
     }
 
 
@@ -114,8 +122,9 @@ def list_instruments(q: str | None, league: str | None, limit: int, offset: int)
             out = search(q=q, league=league, limit=limit, offset=offset)
             if isinstance(out, dict):
                 items = [serialize_instrument(r) for r in out.get("items", [])]
-                return {"items": items, "total": int(out.get("total", len(items)))}
-            return {"items": [serialize_instrument(r) for r in _records(out)], "total": len(_records(out))}
+                return {"items": items, "instruments": items, "total": int(out.get("total", len(items)))}
+            items = [serialize_instrument(r) for r in _records(out)]
+            return {"items": items, "instruments": items, "total": len(items)}
         except TypeError:
             pass
     rows = _index_rows()
@@ -129,7 +138,8 @@ def list_instruments(q: str | None, league: str | None, limit: int, offset: int)
             if needle in json.dumps({k: r.get(k) for k in ("question", "market_slug", "match_key", "home_name", "away_name", "instrument_id")}, default=str).lower()
         ]
     total = len(rows)
-    return {"items": [serialize_instrument(r) for r in rows[offset : offset + limit]], "total": total}
+    items = [serialize_instrument(r) for r in rows[offset : offset + limit]]
+    return {"items": items, "instruments": items, "total": total}
 
 
 def serialize_instrument(row: dict[str, Any]) -> dict[str, Any]:
@@ -205,9 +215,8 @@ def ensure_bars(instrument_id: str, alias: str, start_ns: int | None = None, end
     loader = getattr(readmodel, "load_bars", None)
     if loader is not None:
         try:
-            got = loader(instrument_id=instrument_id, bar_type=alias, start_ns=start_ns, end_ns=end_ns, limit=1)
-            rows = got[0] if isinstance(got, tuple) else got
-            if _records(rows):
+            got = loader(instrument_id, alias, start_ns, end_ns, 1)
+            if isinstance(got, dict) and got.get("bars"):
                 return
         except Exception:  # noqa: BLE001
             pass
@@ -233,21 +242,11 @@ def bars(instrument_id: str, alias: str, start: str | None, end: str | None, lim
     ensure_bars(instrument_id, alias, start_ns, end_ns)
     loader = getattr(readmodel, "load_bars", None)
     rows: list[dict[str, Any]] = []
+    page: dict[str, Any] = {}
     if loader is not None:
         try:
-            got = loader(
-                instrument_id=instrument_id,
-                bar_type=alias,
-                start_ns=start_ns,
-                end_ns=end_ns,
-                limit=limit,
-            )
-            rows = _records(got[0] if isinstance(got, tuple) else got)
-        except TypeError:
-            try:
-                rows = _records(loader(instrument_id, alias, start_ns, end_ns, limit))
-            except Exception as exc:  # noqa: BLE001
-                raise unavailable("bars_unavailable", str(exc)) from exc
+            page = loader(instrument_id, alias, start_ns, end_ns, limit)
+            rows = _records(page.get("bars")) if isinstance(page, dict) else _records(page)
         except Exception as exc:  # noqa: BLE001
             raise unavailable("bars_unavailable", str(exc)) from exc
     out = []
@@ -268,10 +267,10 @@ def bars(instrument_id: str, alias: str, start: str | None, end: str | None, lim
         )
     return {
         "instrument_id": instrument_id,
-        "bar_type": rows[0].get("bar_type") if rows else _bar_alias(alias),
-        "data_version": rows[0].get("data_version") if rows else run_data_version(),
+        "bar_type": page.get("bar_type") if page else (rows[0].get("bar_type") if rows else _bar_alias(alias)),
+        "data_version": page.get("data_version") if page else (rows[0].get("data_version") if rows else run_data_version()),
         "bars": out,
-        "has_more": len(rows) > limit,
+        "has_more": bool(page.get("has_more")) if isinstance(page, dict) else False,
     }
 
 
@@ -296,9 +295,8 @@ def indicator_preview(body: dict[str, Any]) -> dict[str, Any]:
     alias = body.get("bar_type", "1m")
     start_ns, end_ns = _parse_date(body.get("from")), _parse_date(body.get("to"), end=True)
     ensure_bars(instrument_id, alias, start_ns, end_ns)
-    rows = _records(readmodel.load_bars(instrument_id, alias, start_ns, end_ns, 100_000))
-    if isinstance(rows, tuple):
-        rows = rows[0]
+    page = readmodel.load_bars(instrument_id, alias, start_ns, end_ns, 100_000)
+    rows = _records(page.get("bars")) if isinstance(page, dict) else _records(page)
     instances = []
     for raw in body.get("indicators", []):
         inst = IndicatorInstance.model_validate(raw)
@@ -307,13 +305,19 @@ def indicator_preview(body: dict[str, Any]) -> dict[str, Any]:
     if not instances:
         raise bad_request("no_indicators", "at least one indicator is required")
     series = compute_series(rows, instances)
+    from backend.indicators.compute import build_indicators
+
+    warmup = build_indicators(instances).warmup()
     return {
         "instrument_id": instrument_id,
         "bar_type": alias,
         "data_version": run_data_version(),
         "bars": len(rows),
         "series": series,
+        "warmup": warmup,
         "ts_events": [_iso(r.get("ts_event_ns") or _ns(r.get("ts_event"))) for r in rows],
+        "ts_event": [_iso(r.get("ts_event_ns") or _ns(r.get("ts_event"))) for r in rows],
+        "timestamps": [_iso(r.get("ts_event_ns") or _ns(r.get("ts_event"))) for r in rows],
     }
 
 
@@ -324,11 +328,11 @@ def quality(instrument_id: str, start: str | None, end: str | None) -> dict[str,
     from backend.data import quality as q
 
     inst = get_instrument(instrument_id)
-    fn = getattr(q, "quality_for_instrument", None) or getattr(q, "quality", None) or getattr(q, "instrument_quality", None)
+    fn = getattr(q, "quality", None)
     if fn is None:
         return {"instrument_id": instrument_id, "not_available": "quality module not available"}
     try:
-        out = fn(instrument_id=instrument_id, start=_parse_date(start), end=_parse_date(end, end=True))
+        out = fn(instrument_id, _parse_date(start), _parse_date(end, end=True))
     except TypeError:
         out = fn(instrument_id)
     return out if isinstance(out, dict) else {"instrument_id": instrument_id, "quality": out}
@@ -344,7 +348,7 @@ def lifecycle(instrument_id: str) -> dict[str, Any]:
     row = getter(inst.get("match_key"))
     if row is None:
         return {"match_key": inst.get("match_key"), "phase": "unknown", "reason": "no verified lifecycle row"}
-    return row if isinstance(row, dict) else {k: getattr(row, k) for k in dir(row) if not k.startswith("_")}
+    return row.as_dict() if hasattr(row, "as_dict") else dict(row)
 
 
 def settlement_for(instrument_id: str) -> dict[str, Any] | None:
@@ -359,7 +363,7 @@ def settlement_for(instrument_id: str) -> dict[str, Any] | None:
         return None
     if isinstance(row, dict):
         return row
-    return {k: getattr(row, k) for k in dir(row) if not k.startswith("_")}
+    return row.as_dict() if hasattr(row, "as_dict") else {k: getattr(row, k) for k in dir(row) if not k.startswith("_")}
 
 
 def preflight(body: dict[str, Any]) -> dict[str, Any]:
@@ -373,8 +377,11 @@ def preflight(body: dict[str, Any]) -> dict[str, Any]:
     rows = bars(instrument_id, body.get("bar_type", "1m"), body.get("from"), body.get("to"), 5000)["bars"]
     from backend.data.books import book_coverage
 
-    coverage = book_coverage(instrument_id)
-    effective = resolve_profile(cfg, has_book_coverage=bool(coverage.get("has_coverage")), coverage_window=coverage.get("window"))
+    from backend.data.instruments import get_instrument
+
+    row = get_instrument(instrument_id)
+    coverage = book_coverage(instrument_id, row.get("match_key") if row else None)
+    effective = resolve_profile(cfg, has_book_coverage=bool(coverage.get("has_coverage")), coverage_window=None)
     ref = None
     for r in rows:
         if r.get("close") is not None:

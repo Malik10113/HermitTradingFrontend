@@ -248,14 +248,30 @@ def validate_params(indicator_id: str, params: dict[str, Any] | None) -> dict[st
 
 
 def spec_to_json(spec: IndicatorSpec) -> dict[str, Any]:
+    params = [
+            {
+                "key": p.key,
+                "name": p.key,
+                "label": p.label,
+                "type": p.type,
+                "default": p.default,
+                "min": p.min,
+                "max": p.max,
+                "step": p.step,
+                "choices": list(p.choices) if p.choices else None,
+            }
+            for p in spec.params
+        ]
     return {
         "id": spec.id,
         "label": spec.label,
         "pane": spec.pane,
         "inputs": list(spec.inputs),
+        "parameters": params,
         "params": [
             {
                 "key": p.key,
+                "name": p.key,
                 "label": p.label,
                 "type": p.type,
                 "default": p.default,

@@ -1,0 +1,201 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+  --surface: #f6f8fa;
+  --surface-raised: #ffffff;
+  --surface-sunken: #eceff3;
+  --surface-rgb: 246 248 250;
+  --surface-raised-rgb: 255 255 255;
+  --surface-sunken-rgb: 236 239 243;
+  --ink: #12181f;
+  --ink-muted: #52606d;
+  --ink-faint: #77828f;
+  --ink-rgb: 18 24 31;
+  --ink-muted-rgb: 82 96 109;
+  --ink-faint-rgb: 119 130 143;
+  --line: #d6dde5;
+  --line-strong: #b9c4d0;
+  --line-rgb: 214 221 229;
+  --line-strong-rgb: 185 196 208;
+  --accent: #0072b2;
+  --accent-ink: #ffffff;
+  --accent-rgb: 0 114 178;
+  --accent-ink-rgb: 255 255 255;
+  --positive: #007a59;
+  --negative: #b34a00;
+  --warn: #8a5a00;
+  --positive-rgb: 0 122 89;
+  --negative-rgb: 179 74 0;
+  --warn-rgb: 138 90 0;
+  --focus: #0072b2;
+  --grid: #e3e8ee;
+}
+
+.dark {
+  color-scheme: dark;
+  --surface: #0b0f14;
+  --surface-raised: #121820;
+  --surface-sunken: #070a0e;
+  --surface-rgb: 11 15 20;
+  --surface-raised-rgb: 18 24 32;
+  --surface-sunken-rgb: 7 10 14;
+  --ink: #e6edf3;
+  --ink-muted: #9aa7b4;
+  --ink-faint: #6f7d8b;
+  --ink-rgb: 230 237 243;
+  --ink-muted-rgb: 154 167 180;
+  --ink-faint-rgb: 111 125 139;
+  --line: #212b36;
+  --line-strong: #33404f;
+  --line-rgb: 33 43 54;
+  --line-strong-rgb: 51 64 79;
+  --accent: #56b4e9;
+  --accent-ink: #06121c;
+  --accent-rgb: 86 180 233;
+  --accent-ink-rgb: 6 18 28;
+  --positive: #2fbf94;
+  --negative: #f07a3c;
+  --warn: #e69f00;
+  --positive-rgb: 47 191 148;
+  --negative-rgb: 240 122 60;
+  --warn-rgb: 230 159 0;
+  --focus: #56b4e9;
+  --grid: #1b232d;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  @apply bg-surface text-ink font-sans text-[13px] antialiased;
+}
+
+* {
+  scrollbar-color: var(--line-strong) transparent;
+}
+
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+::selection {
+  background: color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+@layer components {
+  .numeric {
+    @apply font-mono tabular-nums;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .panel {
+    @apply rounded-md border border-line bg-surface-raised;
+  }
+
+  .panel-title {
+    @apply flex items-center justify-between gap-2 border-b border-line px-3 py-2
+      text-[11px] font-semibold uppercase tracking-[0.08em] text-ink-muted;
+  }
+
+  .label {
+    @apply block text-[10px] font-semibold uppercase tracking-[0.08em] text-ink-faint;
+  }
+
+  .input {
+    @apply w-full rounded border border-line bg-surface-sunken px-2 py-1.5 text-[13px]
+      text-ink placeholder:text-ink-faint focus:border-accent focus:outline-none;
+  }
+
+  .input-numeric {
+    @apply input numeric;
+  }
+
+  .btn {
+    @apply inline-flex items-center justify-center gap-1.5 rounded border border-line
+      bg-surface-raised px-2.5 py-1.5 text-[12px] font-medium text-ink
+      transition-colors hover:border-line-strong hover:bg-surface-sunken
+      disabled:cursor-not-allowed disabled:opacity-45;
+  }
+
+  .btn-primary {
+    @apply btn border-accent bg-accent text-accent-ink hover:border-accent
+      hover:brightness-110;
+  }
+
+  .btn-danger {
+    @apply btn border-negative/60 text-negative hover:border-negative;
+  }
+
+  .btn-ghost {
+    @apply inline-flex items-center justify-center gap-1 rounded px-1.5 py-1 text-[12px]
+      text-ink-muted hover:bg-surface-sunken hover:text-ink disabled:opacity-40;
+  }
+
+  .badge {
+    @apply inline-flex items-center gap-1 rounded border border-line bg-surface-sunken
+      px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.06em]
+      text-ink-muted;
+  }
+
+  .badge-accent {
+    @apply badge border-accent/50 text-accent;
+  }
+
+  .badge-warn {
+    @apply badge border-warn/60 text-warn;
+  }
+
+  .badge-danger {
+    @apply badge border-negative/60 text-negative;
+  }
+
+  .badge-positive {
+    @apply badge border-positive/60 text-positive;
+  }
+
+  .chip {
+    @apply inline-flex items-center gap-1.5 rounded-full border border-line
+      bg-surface-raised py-1 pl-2 pr-1 text-[11px] text-ink;
+  }
+
+  .tab {
+    @apply whitespace-nowrap border-b-2 border-transparent px-2.5 py-2 text-[12px]
+      text-ink-muted hover:text-ink;
+  }
+
+  .tab-active {
+    @apply border-accent text-ink;
+  }
+
+  .table-head {
+    @apply text-left text-[10px] font-semibold uppercase tracking-[0.08em]
+      text-ink-faint;
+  }
+
+  .link {
+    @apply text-accent underline decoration-accent/40 underline-offset-2
+      hover:decoration-accent;
+  }
+
+  .skeleton {
+    @apply animate-pulse rounded bg-surface-sunken;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

@@ -61,12 +61,12 @@ def _complement_id(primary_id: str) -> str:
 def _ensure_derived() -> None:
     from backend.config import LIFECYCLE_PATH, SETTLEMENT_PATH
     from backend.data.lifecycle import build_match_lifecycle
-    from backend.data.settlement import build_settlement_index
+    from backend.data.settlement import build_settlement
 
     if not LIFECYCLE_PATH.exists():
         build_match_lifecycle()
     if not SETTLEMENT_PATH.exists():
-        build_settlement_index()
+        build_settlement()
 
 
 def prepare_run(config: RunConfig) -> dict[str, Any]:
@@ -86,22 +86,22 @@ def prepare_run(config: RunConfig) -> dict[str, Any]:
     end_ns = _date_ns(config.evaluation.date_range.end, end=True)
 
     for iid in (primary_id, complement_id):
-        try:
-            build_bars(instrument_id=iid, alias=alias)
-        except TypeError:
-            build_bars(iid, alias)
-        rows = load_bars(iid, alias, start_ns, end_ns, 1)
-        rows = rows[0] if isinstance(rows, tuple) else rows
+        build_bars(iid, alias)
+        page = load_bars(iid, alias, start_ns, end_ns, 1)
+        rows = page.get("bars") if isinstance(page, dict) else page
         if not rows:
             raise ValueError(
                 f"no {alias} bars for {iid} in {config.evaluation.date_range.start}..{config.evaluation.date_range.end}"
             )
 
     coverage = book_coverage(primary_id, primary.get("match_key"))
+    window = coverage.get("window") or {}
     execution = resolve_profile(
         config.execution,
         has_book_coverage=bool(coverage.get("has_coverage")),
-        coverage_window=None,
+        coverage_window=(window.get("start_ns"), window.get("end_ns"))
+        if window.get("start_ns") and window.get("end_ns")
+        else None,
     )
     dv = run_data_version()
     cv = code_version()
@@ -173,6 +173,8 @@ def execute_run(config_dict: dict[str, Any], prepared: dict[str, Any] | None = N
     complement_row = dict(prepared["complement"])
     primary_row.setdefault("outcome", "YES")
     complement_row.setdefault("outcome", "NO")
+    primary_row.setdefault("raw_symbol", primary_row.get("token_symbol") or primary_row.get("instrument_id"))
+    complement_row.setdefault("raw_symbol", complement_row.get("token_symbol") or complement_row.get("instrument_id"))
     if str(primary_row.get("instrument_id", "")).endswith("-NO.POLYMARKET"):
         primary_row["outcome"] = "NO"
     if str(complement_row.get("instrument_id", "")).endswith("-YES.POLYMARKET"):
@@ -185,7 +187,7 @@ def execute_run(config_dict: dict[str, Any], prepared: dict[str, Any] | None = N
 
     def load(iid: str) -> list[dict[str, Any]]:
         got = load_bars(iid, alias, start_ns, end_ns, 200_000)
-        rows = got[0] if isinstance(got, tuple) else got
+        rows = got.get("bars") if isinstance(got, dict) else got
         return [_bar_dict(r) for r in rows]
 
     bars_primary = load(primary.id.value)
@@ -193,19 +195,28 @@ def execute_run(config_dict: dict[str, Any], prepared: dict[str, Any] | None = N
     if not bars_primary:
         raise ValueError("no bars for primary instrument")
     coverage = prepared.get("book_coverage") or {}
+    window = coverage.get("window") or {}
     execution = resolve_profile(
         config.execution,
         has_book_coverage=bool(coverage.get("has_coverage")),
-        coverage_window=None,
+        coverage_window=(window.get("start_ns"), window.get("end_ns"))
+        if window.get("start_ns") and window.get("end_ns")
+        else None,
     )
 
-    from backend.data.books import latest_snapshot
+    from backend.data.books import CompactBookProvider
 
-    class SnapshotProvider:
-        def get_snapshot(self, condition_id: str, ts_ns: int):
-            return latest_snapshot(condition_id, ts_ns)
-
-    fill_model = ProfiledFillModel(execution, snapshot_provider=SnapshotProvider(), condition_id=primary_row["condition_id"])
+    book_provider = None
+    if execution.book_walk and coverage.get("has_coverage"):
+        try:
+            book_provider = CompactBookProvider(primary.id.value)
+        except Exception:  # noqa: BLE001
+            book_provider = None
+    fill_model = ProfiledFillModel(
+        execution,
+        snapshot_provider=book_provider,
+        condition_id=primary_row["condition_id"],
+    )
     fee_model = ProfiledFeeModel(execution.fee_bps)
 
     def build_bars(rows: list[dict[str, Any]], instrument) -> tuple[list[Bar], list[QuoteTick]]:
@@ -250,7 +261,20 @@ def execute_run(config_dict: dict[str, Any], prepared: dict[str, Any] | None = N
 
     lc_row = lifecycle_for(primary_row.get("match_key"))
 
+    settlement_row = get_settlement(primary_row["condition_id"])
+    # The brief defines expiry as the market's end_date. Prefer it for the
+    # settlement timestamp; markets.updated_at is a metadata timestamp, not a
+    # verified resolution time, and would inflate holding periods.
+    settled_ts = primary_row.get("end_date_utc") or primary_row.get("end_date")
+    settlement_ts_source = "market_end_date"
+    if settled_ts is None and settlement_row is not None:
+        settled_ts = getattr(settlement_row, "settled_ts_utc", None)
+        settlement_ts_source = "markets_updated_at"
+
     def lifecycle_at(ts_ns: int) -> dict[str, Any]:
+        from backend.data.lifecycle import time_since_kickoff_minutes, time_to_kickoff_minutes, time_to_settlement_minutes
+        from backend.data.timeutil import from_ns
+
         if lc_row is None:
             return {
                 "phase": "unknown",
@@ -259,7 +283,14 @@ def execute_run(config_dict: dict[str, Any], prepared: dict[str, Any] | None = N
                 "time_to_settlement_minutes": None,
                 "market_status": None,
             }
-        return phase_at(lc_row, ts_ns)
+        when = from_ns(ts_ns)
+        return {
+            "phase": phase_at(lc_row, when, settled_ts),
+            "time_to_kickoff_minutes": time_to_kickoff_minutes(lc_row, when),
+            "time_since_kickoff_minutes": time_since_kickoff_minutes(lc_row, when),
+            "time_to_settlement_minutes": time_to_settlement_minutes(lc_row, when, settled_ts),
+            "market_status": None,
+        }
 
     if alias == "1m":
         full_bar_type = f"{primary.id.value}-1-MINUTE-LAST-EXTERNAL"
@@ -276,6 +307,11 @@ def execute_run(config_dict: dict[str, Any], prepared: dict[str, Any] | None = N
             complement=complement,
             signal_sink=signals,
             fill_sink=fill_sink,
+            fill_metadata=lambda: {
+                "execution_source": fill_model.last_fill_source,
+                "fallback_reason": fill_model.last_fallback_reason,
+                "impact_bps": fill_model.last_impact_bps,
+            },
             lifecycle_lookup=lifecycle_at,
         )
     )
@@ -300,12 +336,17 @@ def execute_run(config_dict: dict[str, Any], prepared: dict[str, Any] | None = N
         pass
     eng.add_instrument(primary)
     eng.add_instrument(complement)
-    eng.add_data(quotes_p)
-    eng.add_data(quotes_c)
+    # Bars first, then the open quotes: at a shared timestamp the signal bar
+    # closes before the next open quote is replayed, which is the configured
+    # next-bar-open fill convention.
     eng.add_data(bars_p)
     eng.add_data(bars_c)
+    eng.add_data(quotes_p)
+    eng.add_data(quotes_c)
     eng.add_strategy(strategy)
     eng.run()
+    if book_provider is not None:
+        book_provider.close()
 
     fill_source = (
         "book"
@@ -327,7 +368,9 @@ def execute_run(config_dict: dict[str, Any], prepared: dict[str, Any] | None = N
                 price=float(raw["price"]),
                 fee_usd=float(raw["fee_usd"]),
                 reference_price=raw.get("reference_price"),
-                execution_source=fill_source,
+                execution_source=str(raw.get("execution_source") or fill_source),
+                fallback_reason=raw.get("fallback_reason"),
+                impact_bps=raw.get("impact_bps"),
                 phase=lc.get("phase", "unknown"),
             )
         )
@@ -348,12 +391,9 @@ def execute_run(config_dict: dict[str, Any], prepared: dict[str, Any] | None = N
                 phase=lc.get("phase", "unknown"),
             )
         )
-    settlement_row = get_settlement(primary_row["condition_id"])
     settlements: dict[str, SettlementRecord] = {}
     if settlement_row is not None:
-        settled_ns = _ns(getattr(settlement_row, "settled_ts_utc", None) if not isinstance(settlement_row, dict) else settlement_row.get("settled_ts_utc"))
-        if settled_ns is None:
-            settled_ns = _ns(primary_row.get("end_date_utc") or primary_row.get("end_date"))
+        settled_ns = _ns(settled_ts)
         settlements[primary_row["condition_id"]] = SettlementRecord(
             condition_id=primary_row["condition_id"],
             yes_settlement=float(
@@ -367,7 +407,7 @@ def execute_run(config_dict: dict[str, Any], prepared: dict[str, Any] | None = N
                 else settlement_row.get("no_settlement")
             ),
             settled_ts_ns=settled_ns,
-            source="polymarket_markets",
+            source=settlement_ts_source,
         )
 
     evaluation_days = (date.fromisoformat(config.evaluation.date_range.end) - date.fromisoformat(config.evaluation.date_range.start)).days
@@ -441,7 +481,8 @@ def execute_run(config_dict: dict[str, Any], prepared: dict[str, Any] | None = N
     log = "\n".join(
         [
             f"run config: {json.dumps(config.canonical(), sort_keys=True)}",
-            f"bars: primary={len(bars_primary)} complement={len(bars_complement)}",
+            f"bars: primary={len(bars_primary)} complement={len(bars_complement)} bar_type={full_bar_type}",
+            f"strategy: {json.dumps(strategy.diagnostics(), default=str)}",
             f"fills: {len(fills)} rejects: {rejects}",
             f"trades: {len(result['trades'])}",
             f"elapsed_s: {manifest['elapsed_s']}",

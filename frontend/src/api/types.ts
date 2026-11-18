@@ -551,6 +551,9 @@ export interface RunSummary {
   config?: BacktestConfig | null;
   metrics?: Metrics | null;
   summary?: Metrics | null;
+  /** "in_sample" when an unrevealed holdout keeps out-of-sample metrics hidden. */
+  metrics_scope?: "in_sample" | "all" | string | null;
+  oos_hidden?: boolean | null;
   manifest?: Record<string, unknown> | null;
   diagnostics?: Diagnostics | null;
   costs?: CostBreakdown | null;

@@ -84,11 +84,12 @@ const run: RunDetail = {
   config: null,
 };
 
-function renderDrawer() {
+function renderDrawer(overrides: Partial<RunDetail> = {}) {
+  const value = { ...run, ...overrides };
   return render(
     <ResultsDrawer
-      runId={run.run_id}
-      run={run}
+      runId={value.run_id}
+      run={value}
       loading={false}
       error={null}
       refresh={vi.fn()}
@@ -127,5 +128,36 @@ describe("results drawer", () => {
   it("reports missing holdout state instead of inventing a clean ledger", () => {
     renderDrawer();
     expect(screen.getByText(/Holdout state not available/)).toBeInTheDocument();
+  });
+
+  it("labels an unrevealed holdout's metrics as in-sample only", () => {
+    renderDrawer({ metrics_scope: "in_sample", oos_hidden: true });
+    expect(screen.getByText(/in-sample only/i)).toBeInTheDocument();
+    expect(screen.getByText(/Out-of-sample results stay hidden/i)).toBeInTheDocument();
+  });
+
+  it("shows the cost breakdown including fees, slippage and fallback rate", async () => {
+    renderDrawer();
+    await userEvent.click(screen.getByRole("tab", { name: /^Costs/ }));
+    expect(screen.getByLabelText("Cost breakdown")).toBeInTheDocument();
+    expect(screen.getByText("Fees")).toBeInTheDocument();
+    expect(screen.getByText("Spread")).toBeInTheDocument();
+    expect(screen.getByText("Impact")).toBeInTheDocument();
+    expect(screen.getByText("Fallback rate")).toBeInTheDocument();
+    expect(screen.getByText("50.0%")).toBeInTheDocument();
+    expect(screen.getAllByText(/Requested Book, effective Conservative/i).length).toBeGreaterThan(0);
+  });
+
+  it("shows the phase breakdown and an explicit unknown phase row", async () => {
+    renderDrawer();
+    await userEvent.click(screen.getByRole("tab", { name: /^Phases/ }));
+    expect(screen.getByText("pre_match")).toBeInTheDocument();
+    expect(screen.getByText(/observed ESPN kickoff/i)).toBeInTheDocument();
+  });
+
+  it("opens the compare panel and asks for 2–3 runs", async () => {
+    renderDrawer();
+    await userEvent.click(screen.getByRole("tab", { name: /^Compare/ }));
+    expect(screen.getByText(/Compare two or three runs/i)).toBeInTheDocument();
   });
 });

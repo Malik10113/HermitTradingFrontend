@@ -540,6 +540,8 @@ export function normaliseRun(raw: unknown): RunDetail {
     fallback_rate: num(source.fallback_rate),
     execution,
     metrics,
+    metrics_scope: str(source.metrics_scope) ?? null,
+    oos_hidden: bool(source.oos_hidden),
     diagnostics,
     costs: normaliseCosts(source.costs),
     phases: normalisePhases(phasesSource),

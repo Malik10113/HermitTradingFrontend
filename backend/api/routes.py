@@ -388,6 +388,12 @@ def delete_preset(preset_id: str) -> None:
 
 
 def _prepare(req: RunRequest) -> dict[str, Any]:
+    """Expand quick authoring and validate everything before a job exists.
+
+    Every rejection here is a 422 with a stable code and the offending field,
+    never a 500: a bad parameter name, an unknown indicator or a range with no
+    bars is a request error, not a server fault.
+    """
     from backend.engine.runner import prepare_run
 
     strategy = req.strategy
@@ -396,22 +402,49 @@ def _prepare(req: RunRequest) -> dict[str, Any]:
     ):
         from backend.strategies.builtins import build as build_builtin
 
-        rules = build_builtin(
-            strategy.builtin_id,
-            strategy.instrument_id,
-            strategy.bar_type,
-            strategy.builtin_params,
-        )
+        try:
+            rules = build_builtin(
+                strategy.builtin_id,
+                strategy.instrument_id,
+                strategy.bar_type,
+                strategy.builtin_params,
+            )
+        except (ValueError, KeyError, TypeError) as exc:
+            raise bad_request(
+                "bad_builtin_params",
+                f"built-in {strategy.builtin_id!r} rejected: {exc}",
+                {"path": "strategy.builtin_params", "builtin_id": strategy.builtin_id},
+            ) from exc
         if strategy.direction:
             rules["direction"] = strategy.direction
-        strategy = StrategySection.model_validate(rules)
+        try:
+            strategy = StrategySection.model_validate(rules)
+        except Exception as exc:  # noqa: BLE001 - the catalogue itself is wrong
+            raise bad_request(
+                "bad_builtin_params",
+                f"built-in {strategy.builtin_id!r} produced an invalid rule set: {exc}",
+                {"path": "strategy.builtin_params", "builtin_id": strategy.builtin_id},
+            ) from exc
     config = RunConfig(
         strategy=strategy,
         execution=req.execution,
         risk=req.risk,
         evaluation=req.evaluation,
     )
-    return prepare_run(config)
+    try:
+        return prepare_run(config)
+    except ApiError:
+        raise
+    except ValueError as exc:
+        raise bad_request(
+            "run_rejected",
+            str(exc),
+            {
+                "path": "strategy",
+                "instrument_id": config.strategy.instrument_id,
+                "bar_type": config.strategy.bar_type,
+            },
+        ) from exc
 
 
 @router.post("/backtests", status_code=202)

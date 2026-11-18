@@ -323,6 +323,9 @@ def calculate_cost_estimate(
 
     fee_bps = float(execution.fee_bps)
     if execution.cost_source == "dynamic":
+        # The book walk is not known before execution. Reporting a total here
+        # would read as "zero cost"; report the fee component only and mark the
+        # slippage/impact as unavailable.
         return {
             "requested": execution.requested,
             "effective": execution.effective,
@@ -334,8 +337,10 @@ def calculate_cost_estimate(
             "slip_price_points": None,
             "buy_price": None,
             "sell_price": None,
-            "total_cost_bps": fee_bps,
+            "total_cost_bps": None,
+            "fee_only_bps": fee_bps,
             "book_walk_required": True,
+            "note": "Book walk required; fee reported, slippage and impact are not known before execution.",
         }
 
     tick = float(tick_size)

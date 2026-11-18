@@ -292,21 +292,38 @@ def indicator_registry() -> dict[str, Any]:
 def indicator_preview(body: dict[str, Any]) -> dict[str, Any]:
     from backend.data import readmodel
     from backend.indicators.compute import compute_series
-    from backend.rules.schema import IndicatorInstance
     from backend.indicators.registry import validate_params
+    from backend.rules.schema import IndicatorInstance
 
     instrument_id = body.get("instrument_id")
     if not instrument_id:
         raise bad_request("missing_instrument", "instrument_id is required")
     alias = body.get("bar_type", "1m")
+    # Resolve the instrument first so an unknown id is a 404, never a 500 from
+    # the bar builder's FileNotFoundError.
+    get_instrument(instrument_id)
     start_ns, end_ns = _parse_date(body.get("from")), _parse_date(body.get("to"), end=True)
-    ensure_bars(instrument_id, alias, start_ns, end_ns)
-    page = readmodel.load_bars(instrument_id, alias, start_ns, end_ns, 100_000)
+    try:
+        ensure_bars(instrument_id, alias, start_ns, end_ns)
+        page = readmodel.load_bars(instrument_id, alias, start_ns, end_ns, 100_000)
+    except ApiError:
+        raise
+    except (FileNotFoundError, ValueError) as exc:
+        raise bad_request(
+            "bars_unavailable", str(exc), {"instrument_id": instrument_id, "bar_type": alias}
+        ) from exc
     rows = _records(page.get("bars")) if isinstance(page, dict) else _records(page)
     instances = []
-    for raw in body.get("indicators", []):
-        inst = IndicatorInstance.model_validate(raw)
-        validate_params(inst.type, inst.params)
+    for index, raw in enumerate(body.get("indicators", [])):
+        try:
+            inst = IndicatorInstance.model_validate(raw)
+            validate_params(inst.type, inst.params)
+        except Exception as exc:  # noqa: BLE001 - both carry a field path
+            raise bad_request(
+                "bad_indicator",
+                str(exc),
+                {"path": f"indicators.{index}", "indicator": raw if isinstance(raw, dict) else None},
+            ) from exc
         instances.append({"instance_id": inst.instance_id, "type": inst.type, "params": inst.params})
     if not instances:
         raise bad_request("no_indicators", "at least one indicator is required")

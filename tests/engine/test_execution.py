@@ -211,8 +211,11 @@ def test_cost_estimate_is_additive_and_honest():
     assert dynamic["slippage_bps"] is None
     assert dynamic["buy_price"] is None
     assert dynamic["book_walk_required"] is True
-    # Fees are still known; no price impact is invented for the walk.
-    assert dynamic["total_cost_bps"] == 0.0
+    # Fees are still known; no price impact is invented for the walk, and the
+    # total is None rather than 0 so the UI cannot read it as "zero cost".
+    assert dynamic["fee_only_bps"] == 0.0
+    assert dynamic["total_cost_bps"] is None
+    assert dynamic["note"]
 
 
 def test_cost_estimate_rejects_bad_inputs():

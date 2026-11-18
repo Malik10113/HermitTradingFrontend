@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -44,6 +45,34 @@ def create_app() -> FastAPI:
         return JSONResponse(
             status_code=exc.status_code,
             content={"code": "http_error", "message": str(detail), "details": None},
+        )
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_exception_handler(request: Request, exc: RequestValidationError):
+        """Keep the stable error shape for FastAPI body/query validation.
+
+        FastAPI's default ``{"detail": [...]}`` is not the documented
+        ``{code, message, details}`` contract and leaves the UI without a field
+        path to show.
+        """
+        issues = []
+        for error in exc.errors():
+            loc = ".".join(str(part) for part in error.get("loc", ()) if part != "body")
+            issues.append(
+                {
+                    "path": loc or "body",
+                    "message": str(error.get("msg", "invalid value")),
+                    "type": str(error.get("type", "value_error")),
+                }
+            )
+        first = issues[0] if issues else {"path": "body", "message": "invalid request"}
+        return JSONResponse(
+            status_code=422,
+            content={
+                "code": "validation_error",
+                "message": f"{first['path']}: {first['message']}",
+                "details": issues,
+            },
         )
 
     @app.exception_handler(Exception)

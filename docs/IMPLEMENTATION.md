@@ -72,6 +72,18 @@ match_key, actual_kickoff_utc, actual_end_utc, source, precision
 are omitted. `backend/data/lifecycle.py` computes phases from that file only;
 a missing row yields `phase = unknown` and no nominal duration.
 
+The default run is offline. `python scripts/build_match_lifecycle.py --backfill`
+adds missing fixtures by reading `results/polymarket_events.parquet` as the
+match spine, fetching the ESPN scoreboard for each league/date
+(`eng.1`, `esp.1`, `ger.1`, `fra.1` for `epl`, `lal`, `bun`, `fl1`) and then the
+event summary. Raw responses are cached gzipped under
+`var/raw/espn/scoreboard/{league}_{YYYY-MM-DD}.json.gz` and
+`var/raw/espn/summary/{league}_{event_id}.json.gz`, so a rerun resumes without
+repeating successful requests. Options: `--from`, `--to`, `--leagues`,
+`--limit`, `--delay` (default 0.25 s), `--refresh`. A cached observation and an
+existing artifact row always win over a backfilled one; no wallclock is
+invented, and unmatched or incomplete fixtures are reported but not written.
+
 ### Bars
 
 Canonical fields: `instrument_id, bar_type, ts_event, ts_init, open, high,

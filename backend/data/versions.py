@@ -183,13 +183,37 @@ def settlement_version() -> str:
     return cached_version("settlement", datasets, SETTLEMENT_BUILDER_VERSION)
 
 
-def lifecycle_version(summary_files: Iterable[Path] = ()) -> str:
-    """Version of the lifecycle inputs: fixture map plus the cached summaries.
+def lifecycle_version(
+    summary_files: Iterable[Path] = (),
+    *,
+    extra_inputs: Iterable[Path] = (),
+    extra_tokens: Iterable[str] = (),
+) -> str:
+    """Version of the lifecycle inputs: fixture map plus cached summaries.
 
     Callers pass the exact summary files they read so the version changes when a
-    cached ESPN payload changes.  ``load_lifecycle`` does not recompute this; the
-    builder stores it on the artifact.
+    cached ESPN payload changes.  ``extra_inputs`` covers the backfill spine and
+    ``extra_tokens`` carries a stable content token for rows preserved from a
+    prior artifact.  ``load_lifecycle`` does not recompute this; the builder
+    stores it on the artifact.
     """
     datasets: list[tuple[Path, str | None]] = [(config.FIXTURE_MAP, None)]
     datasets.extend((Path(path), None) for path in sorted(summary_files))
-    return cached_version("lifecycle", datasets, LIFECYCLE_BUILDER_VERSION)
+    datasets.extend((Path(path), None) for path in sorted(extra_inputs))
+    tokens = list(extra_tokens)
+    if not tokens:
+        return cached_version("lifecycle", datasets, LIFECYCLE_BUILDER_VERSION)
+
+    import hashlib
+
+    h = hashlib.sha256()
+    h.update(LIFECYCLE_BUILDER_VERSION.encode())
+    for path, ts_col in datasets:
+        if not path.exists():
+            h.update(f"missing:{path}".encode())
+            continue
+        fp = fingerprint(path, ts_col)
+        h.update(json.dumps(fp.as_list(), separators=(",", ":")).encode())
+    for token in tokens:
+        h.update(token.encode())
+    return "sha256:" + h.hexdigest()

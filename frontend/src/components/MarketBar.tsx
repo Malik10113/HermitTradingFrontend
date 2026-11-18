@@ -75,7 +75,7 @@ export function MarketBar({
       <div className="flex flex-wrap items-center gap-2 px-3 py-2">
         <button
           type="button"
-          className="btn min-w-[260px] justify-between text-left"
+          className="btn min-w-[260px] justify-between text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
           onClick={onOpenPalette}
           aria-haspopup="dialog"
           aria-label="Search instruments (Ctrl+K)"
@@ -96,7 +96,7 @@ export function MarketBar({
         <label className="flex items-center gap-1.5">
           <span className="label">League</span>
           <select
-            className="input w-auto py-1"
+            className="input w-auto py-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
             value={league}
             onChange={(event) => onLeague(event.target.value)}
             aria-label="Filter instruments by league"
@@ -113,7 +113,7 @@ export function MarketBar({
         <label className="flex min-w-[220px] flex-1 items-center gap-1.5">
           <span className="label">Instrument</span>
           <select
-            className="input py-1"
+            className="input py-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
             value={selectedId}
             onChange={(event) => onSelect(event.target.value)}
             aria-label="Selected instrument"
@@ -165,17 +165,22 @@ export function MarketBar({
         {selected ? (
           <span
             className={
-              selected.settlement_known
+              selected.settlement_known === true && selected.settlement_value != null
                 ? selected.settlement_value === 1
                   ? "badge-positive"
                   : "badge"
                 : "badge-warn"
             }
+            data-testid="settlement-badge"
             title="Settlement comes from the mapped results table, never from a price"
           >
-            {selected.settlement_known && selected.settlement_value != null
+            {selected.settlement_known === true && selected.settlement_value != null
               ? `settles ${selected.settlement_value}`
-              : "settlement not available"}
+              : selected.settlement_known === false
+                ? "settlement unknown"
+                : selected.settlement_known === true
+                  ? "settlement value not available"
+                  : "settlement not available"}
           </span>
         ) : null}
       </div>

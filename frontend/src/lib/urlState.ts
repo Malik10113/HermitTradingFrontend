@@ -6,6 +6,8 @@ export type PhaseFilter = "all" | "pre_match" | "in_play" | "post_match";
 
 export interface WorkspaceState {
   instrument: string;
+  /** League filter in the market bar; remembered with the other view state. */
+  league: string;
   barType: BarAlias;
   from: string;
   to: string;
@@ -25,6 +27,7 @@ export interface ParsedWorkspace {
 
 export const DEFAULT_WORKSPACE_STATE: WorkspaceState = {
   instrument: "",
+  league: "",
   barType: "1m",
   from: "",
   to: "",
@@ -131,6 +134,9 @@ export function parseWorkspaceSearch(search: string): ParsedWorkspace {
   const instrument = params.get("instrument")?.trim() ?? "";
   if (instrument) state.instrument = instrument.slice(0, 200);
 
+  const league = params.get("league")?.trim() ?? "";
+  if (league) state.league = league.slice(0, 120);
+
   const bar = params.get("bar");
   if (bar) {
     if (isBarAlias(bar)) state.barType = bar;
@@ -202,6 +208,7 @@ export function parseWorkspaceSearch(search: string): ParsedWorkspace {
 export function serializeWorkspaceState(state: WorkspaceState): URLSearchParams {
   const params = new URLSearchParams();
   if (state.instrument) params.set("instrument", state.instrument);
+  if (state.league) params.set("league", state.league);
   if (state.barType !== DEFAULT_WORKSPACE_STATE.barType) params.set("bar", state.barType);
   if (state.from) params.set("from", state.from);
   if (state.to) params.set("to", state.to);

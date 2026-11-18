@@ -67,7 +67,6 @@ export function WorkspacePage() {
   const [state, setState] = useState<WorkspaceState>(initial.current.state);
   const [urlIssues, setUrlIssues] = useState<string[]>(initial.current.issues);
   const [hydrated, setHydrated] = useState(false);
-  const [league, setLeague] = useState("");
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [railOpen, setRailOpen] = useState(true);
   const [drawerOpen, setDrawerOpen] = useState(!!state.runId);
@@ -428,8 +427,8 @@ export function WorkspacePage() {
         selected={selected}
         selectedId={state.instrument}
         onSelect={selectInstrument}
-        league={league}
-        onLeague={setLeague}
+        league={state.league}
+        onLeague={(next) => patch({ league: next })}
         onOpenPalette={() => setPaletteOpen(true)}
         quality={qualityResource.data}
         qualityLoading={qualityResource.loading}

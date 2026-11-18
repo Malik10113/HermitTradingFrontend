@@ -217,6 +217,9 @@ def _run_payload(run: dict[str, Any], include_summary: bool = True, detail: bool
         payload["summary"] = summary
         payload["manifest"] = manifest
         payload["metrics"] = summary
+        # The definitions travel with the numbers: gross is after spread, before
+        # fees; net subtracts the separate fee line. A client must not infer it.
+        payload["metric_semantics"] = services.METRIC_SEMANTICS
         payload["phase_breakdown"] = (manifest or {}).get("phase_breakdown") if manifest else None
         payload["warnings"] = (manifest or {}).get("warnings") if manifest else None
         payload["quality"] = (manifest or {}).get("quality") if manifest else None
@@ -267,12 +270,49 @@ def health() -> dict[str, Any]:
 def meta() -> dict[str, Any]:
     base = services.meta()
     base["datasets"] = [
-        {"name": "polymarket_tape", "kind": "raw", "path": "polymarket/{football,epl}/*_moneyline_tape.parquet"},
-        {"name": "polymarket_markets", "kind": "raw", "path": "results/polymarket_markets.parquet"},
-        {"name": "espn_match_lifecycle", "kind": "derived", "path": "var/lifecycle/match_lifecycle.parquet"},
-        {"name": "settlement", "kind": "derived", "path": "var/settlement/settlement.parquet"},
+        {
+            "name": "polymarket_epl_tape",
+            "kind": "raw",
+            "path": "polymarket/epl/epl_moneyline_tape.parquet",
+        },
+        {
+            "name": "polymarket_football_tape",
+            "kind": "raw",
+            "path": "polymarket/football/football_moneyline_tape.parquet",
+        },
+        {
+            "name": "polymarket_sii_markets",
+            "kind": "raw",
+            "path": "polymarket/sii/markets.parquet",
+        },
+        {
+            "name": "polymarket_results_markets",
+            "kind": "raw",
+            "path": "results/polymarket_markets.parquet",
+        },
+        {
+            "name": "polymarket_events",
+            "kind": "raw",
+            "path": "results/polymarket_events.parquet",
+        },
+        {
+            "name": "espn_match_lifecycle",
+            "kind": "derived",
+            "path": "var/lifecycle/match_lifecycle.parquet",
+        },
+        {
+            "name": "settlement",
+            "kind": "derived",
+            "path": "var/settlement/settlement.parquet",
+        },
     ]
-    base["book_profile"] = "2026 only; falls back to conservative when coverage is absent"
+    # Coverage is reported per instrument by the preflight; no global window is
+    # claimed here because it cannot be computed without scanning every book.
+    base["book_profile"] = {
+        "default_effective": "conservative",
+        "coverage_source": "POST /api/execution/preflight",
+        "global_coverage_window": None,
+    }
     return base
 
 
@@ -283,10 +323,23 @@ def meta() -> dict[str, Any]:
 def instruments(
     q: str | None = None,
     league: str | None = None,
+    venue: str | None = None,
+    event_date: str | None = Query(default=None, alias="date"),
+    start: str | None = Query(default=None, alias="from"),
+    end: str | None = Query(default=None, alias="to"),
     limit: int = Query(default=50, ge=1, le=5000),
     offset: int = Query(default=0, ge=0),
 ) -> dict[str, Any]:
-    return services.list_instruments(q, league, limit, offset)
+    return services.list_instruments(
+        q,
+        league,
+        limit,
+        offset,
+        venue=venue,
+        event_date=event_date,
+        start=start,
+        end=end,
+    )
 
 
 @router.get("/instruments/{instrument_id}")
@@ -307,9 +360,39 @@ def instrument_quality(
 
 
 @router.get("/search")
-def search(q: str = Query(min_length=1), limit: int = Query(default=25, ge=1, le=100)) -> dict[str, Any]:
-    out = services.list_instruments(q, None, limit, 0)
-    return {"query": q, "items": out["items"], "instruments": out["items"], "total": out["total"]}
+def search(
+    q: str = Query(min_length=1),
+    league: str | None = None,
+    venue: str | None = None,
+    event_date: str | None = Query(default=None, alias="date"),
+    start: str | None = Query(default=None, alias="from"),
+    end: str | None = Query(default=None, alias="to"),
+    limit: int = Query(default=25, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+) -> dict[str, Any]:
+    """Server-side search with the same filters as ``/api/instruments``.
+
+    ``total`` is the true match count so a palette can say "25 of 340" without
+    mistaking the page for the whole inventory.
+    """
+    out = services.list_instruments(
+        q,
+        league,
+        limit,
+        offset,
+        venue=venue,
+        event_date=event_date,
+        start=start,
+        end=end,
+    )
+    return {
+        "query": q,
+        "items": out["items"],
+        "instruments": out["items"],
+        "total": out["total"],
+        "limit": limit,
+        "offset": offset,
+    }
 
 
 # ----------------------------------------------------------------------- bars
@@ -478,10 +561,34 @@ def create_backtest(req: RunRequest) -> dict[str, Any]:
 
 
 @router.get("/backtests")
-def list_backtests(limit: int = Query(default=100, ge=1, le=500), offset: int = Query(default=0, ge=0)) -> dict[str, Any]:
-    runs = state.list_runs(limit=limit, offset=offset)
+def list_backtests(
+    status: str | None = None,
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+) -> dict[str, Any]:
+    """Run history with an optional server-side status filter.
+
+    ``orphaned`` follows the display rule: a complete run whose data version is
+    no longer current. ``total`` counts every matching run, not the page.
+    """
+    if status is not None and status not in state.RUN_STATUSES:
+        raise bad_request(
+            "bad_status",
+            f"status {status!r} is not a run status",
+            {"field": "status", "value": status, "allowed": list(state.RUN_STATUSES)},
+        )
+    current = run_data_version()
+    runs = state.list_runs(limit=limit, offset=offset, status=status, data_version=current)
+    total = state.count_runs(status=status, data_version=current)
     items = [_run_payload(r, include_summary=True, detail=False) for r in runs]
-    return {"items": items, "runs": items, "total": len(runs)}
+    return {
+        "items": items,
+        "runs": items,
+        "total": total,
+        "status": status,
+        "limit": limit,
+        "offset": offset,
+    }
 
 
 @router.get("/backtests/{run_id}")

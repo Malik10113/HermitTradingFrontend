@@ -187,12 +187,64 @@ def get_run(run_id: str) -> dict[str, Any] | None:
         return _row(conn.execute("SELECT * FROM runs WHERE run_id=?", (run_id,)).fetchone())
 
 
-def list_runs(limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
+RUN_STATUSES: tuple[str, ...] = (
+    "queued",
+    "running",
+    "complete",
+    "failed",
+    "cancelled",
+    "orphaned",
+)
+
+
+def _status_filter(
+    status: str | None, data_version: str | None
+) -> tuple[str, tuple[Any, ...]]:
+    """SQL predicate for a run-status filter.
+
+    A stored ``complete`` run whose data version is not the current one is
+    displayed as ``orphaned``. The filter follows the same rule, so
+    ``status=complete`` excludes it and ``status=orphaned`` includes it.
+    """
+    if not status:
+        return "", ()
+    current = data_version or ""
+    if status == "complete":
+        return (
+            "WHERE status='complete' AND (data_version IS NULL OR data_version=?)",
+            (current,),
+        )
+    if status == "orphaned":
+        return (
+            "WHERE (status='orphaned' OR "
+            "(status='complete' AND data_version IS NOT NULL AND data_version<>?))",
+            (current,),
+        )
+    return "WHERE status=?", (status,)
+
+
+def list_runs(
+    limit: int = 100,
+    offset: int = 0,
+    *,
+    status: str | None = None,
+    data_version: str | None = None,
+) -> list[dict[str, Any]]:
+    where, params = _status_filter(status, data_version)
     with _conn() as conn:
         rows = conn.execute(
-            "SELECT * FROM runs ORDER BY created_at DESC LIMIT ? OFFSET ?", (limit, offset)
+            f"SELECT * FROM runs {where} ORDER BY created_at DESC LIMIT ? OFFSET ?",
+            (*params, limit, offset),
         ).fetchall()
     return [r for row in rows if (r := _row(row)) is not None]
+
+
+def count_runs(*, status: str | None = None, data_version: str | None = None) -> int:
+    """True number of runs matching the filter, independent of paging."""
+    where, params = _status_filter(status, data_version)
+    with _conn() as conn:
+        row = conn.execute(f"SELECT COUNT(*) FROM runs {where}", params).fetchone()
+    return int(row[0]) if row else 0
 
 
 def delete_run(run_id: str) -> bool:

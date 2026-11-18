@@ -7,6 +7,7 @@ normalises polars/pandas/list return types into JSON-ready dicts.
 from __future__ import annotations
 
 import json
+import re
 from datetime import date, datetime, timezone
 from typing import Any
 
@@ -76,6 +77,136 @@ def _parse_date(value: str | None, end: bool = False) -> int | None:
     return ns + (86_400_000_000_000 - 1 if end else 0)
 
 
+DATE_PATTERN = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+# v1 reads Polymarket only. Kalshi and Betfair are v2 (AGENTS.md section 4),
+# so an unknown venue is rejected rather than silently treated as "all".
+V1_VENUES: tuple[str, ...] = ("polymarket",)
+
+# The P&L basis is encoded next to the numbers so a client never has to infer
+# whether gross includes fees. Values are definitions, not new measurements.
+METRIC_SEMANTICS: dict[str, str] = {
+    "gross_pnl_usd": (
+        "Sum of (executed exit price - executed entry price) * quantity. "
+        "Slippage and spread are embedded in the fill prices; fees are excluded."
+    ),
+    "net_pnl_usd": (
+        "Gross P&L less fees_usd. Slippage and spread remain embedded in the "
+        "fill prices; they are not subtracted twice."
+    ),
+    "gross_return_pct": "gross_pnl_usd / starting capital * 100.",
+    "net_return_pct": "net_pnl_usd / starting capital * 100.",
+    "fees_usd": (
+        "Venue fees charged as a separate cash line. Included in net P&L and "
+        "excluded from gross P&L."
+    ),
+    "slippage_usd": (
+        "Executed price minus the reference price, in USD. Already embedded in "
+        "gross and net fill prices; reported separately, never added again."
+    ),
+    "cost_bps_of_notional": (
+        "(fees_usd + slippage_usd) / entry notional * 10,000. A cost measure, "
+        "not a return."
+    ),
+    "settlement_pnl_usd": "Net P&L of positions held to settlement.",
+    "trading_pnl_usd": "Net P&L of positions closed before settlement.",
+}
+
+
+def _filter_date(value: str | None, name: str) -> date | None:
+    """Strict ``YYYY-MM-DD`` validation for an instrument-filter date."""
+    if value is None or value == "":
+        return None
+    if not DATE_PATTERN.fullmatch(value):
+        raise bad_request(
+            "bad_date",
+            f"{name} must be an ISO-8601 date (YYYY-MM-DD)",
+            {"field": name, "value": value},
+        )
+    try:
+        return date.fromisoformat(value)
+    except ValueError as exc:
+        raise bad_request(
+            "bad_date",
+            f"{name} is not a valid calendar date",
+            {"field": name, "value": value},
+        ) from exc
+
+
+def _venue(value: str | None) -> str | None:
+    if value is None or value.strip() == "":
+        return None
+    venue = value.strip().lower()
+    if venue not in V1_VENUES:
+        raise bad_request(
+            "bad_venue",
+            f"venue {value!r} is not available in v1",
+            {"field": "venue", "value": value, "supported": list(V1_VENUES)},
+        )
+    return venue
+
+
+def _instrument_filters(
+    venue: str | None,
+    event_date: str | None,
+    start: str | None,
+    end: str | None,
+) -> dict[str, Any]:
+    """Validate the shared instrument/search filters once.
+
+    ``date`` is an exact event date; ``from``/``to`` are an inclusive range over
+    ``event_date``. Mixing an exact date with a range is ambiguous and rejected.
+    """
+    filters = {
+        "venue": _venue(venue),
+        "event_date": _filter_date(event_date, "date"),
+        "date_from": _filter_date(start, "from"),
+        "date_to": _filter_date(end, "to"),
+    }
+    if filters["event_date"] is not None and (
+        filters["date_from"] is not None or filters["date_to"] is not None
+    ):
+        raise bad_request(
+            "ambiguous_date_filter",
+            "use either date or from/to, not both",
+            {"fields": ["date", "from", "to"]},
+        )
+    if (
+        filters["date_from"] is not None
+        and filters["date_to"] is not None
+        and filters["date_from"] > filters["date_to"]
+    ):
+        raise bad_request(
+            "bad_date_range",
+            "from must be on or before to",
+            {"from": start, "to": end},
+        )
+    return filters
+
+
+def instrument_catalog() -> dict[str, Any] | None:
+    """Coverage computed from the stored instrument index, or ``None``.
+
+    This deliberately reports only what the index contains. It does not claim a
+    bar count or a book-snapshot window, which are not derivable here.
+    """
+    from backend.data import instruments
+
+    try:
+        rows = instruments.load_index(refresh=False)
+    except Exception:  # noqa: BLE001 - a missing index is "not available"
+        return None
+    firsts = [row.get("first_ts_utc") for row in rows if row.get("first_ts_utc") is not None]
+    lasts = [row.get("last_ts_utc") for row in rows if row.get("last_ts_utc") is not None]
+    return {
+        "instruments": len(rows),
+        "source": "var/instruments/instruments.parquet",
+        "coverage_from": _iso(min(firsts)) if firsts else None,
+        "coverage_to": _iso(max(lasts)) if lasts else None,
+        "coverage_basis": "first/last fill timestamp in the stored instrument index",
+    }
+
+
 def meta() -> dict[str, Any]:
     lifecycle_version = None
     try:
@@ -89,6 +220,7 @@ def meta() -> dict[str, Any]:
         "nautilus_version": nautilus_version(),
         "data_version": run_data_version(),
         "lifecycle_version": lifecycle_version,
+        "catalog": instrument_catalog(),
     }
 
 
@@ -113,31 +245,58 @@ def _index_rows() -> list[dict[str, Any]]:
     return rows
 
 
-def list_instruments(q: str | None, league: str | None, limit: int, offset: int) -> dict[str, Any]:
+def list_instruments(
+    q: str | None,
+    league: str | None,
+    limit: int,
+    offset: int,
+    *,
+    venue: str | None = None,
+    event_date: str | None = None,
+    start: str | None = None,
+    end: str | None = None,
+) -> dict[str, Any]:
+    """Filter the instrument inventory and report the true match count.
+
+    The page is limited; ``total`` is the number of rows matching the filters,
+    never the page length, so the UI cannot mistake a page for the inventory.
+    """
     from backend.data import instruments
 
+    filters = _instrument_filters(venue, event_date, start, end)
     search = getattr(instruments, "search", None)
-    if search is not None:
-        try:
-            out = search(q=q, league=league, limit=limit, offset=offset)
-            if isinstance(out, dict):
-                items = [serialize_instrument(r) for r in out.get("items", [])]
-                return {"items": items, "instruments": items, "total": int(out.get("total", len(items)))}
-            items = [serialize_instrument(r) for r in _records(out)]
-            total = len(items)
-            try:
-                # The page is limited; report the true match count so the UI
-                # never claims a truncated inventory is complete.
-                total = len(search(q=q, league=league, limit=None, offset=0))
-            except TypeError:
-                pass
-            return {"items": items, "instruments": items, "total": total}
-        except TypeError:
-            pass
+    count = getattr(instruments, "count", None)
+    if search is not None and count is not None:
+        out = search(
+            q=q,
+            league=league,
+            limit=limit,
+            offset=offset,
+            **filters,
+        )
+        total = count(q=q, league=league, **filters)
+        items = [serialize_instrument(r) for r in _records(out)]
+        return {"items": items, "instruments": items, "total": int(total)}
     rows = _index_rows()
     needle = (q or "").strip().lower()
     if league:
         rows = [r for r in rows if str(r.get("league", "")).lower() == league.lower()]
+    if filters["venue"]:
+        rows = [r for r in rows if instruments.row_venue(r) == filters["venue"]]
+    if any(filters[key] is not None for key in ("event_date", "date_from", "date_to")):
+        kept = []
+        for row in rows:
+            observed = instruments._event_date_value(row.get("event_date"))  # noqa: SLF001
+            if observed is None:
+                continue
+            if filters["event_date"] is not None and observed != filters["event_date"]:
+                continue
+            if filters["date_from"] is not None and observed < filters["date_from"]:
+                continue
+            if filters["date_to"] is not None and observed > filters["date_to"]:
+                continue
+            kept.append(row)
+        rows = kept
     if needle:
         rows = [
             r
@@ -150,8 +309,11 @@ def list_instruments(q: str | None, league: str | None, limit: int, offset: int)
 
 
 def serialize_instrument(row: dict[str, Any]) -> dict[str, Any]:
+    from backend.data.instruments import row_venue
+
     return {
         "instrument_id": row.get("instrument_id"),
+        "venue": row_venue(row),
         "condition_id": row.get("condition_id"),
         "market_id": row.get("market_id"),
         "market_slug": row.get("market_slug") or row.get("slug"),

@@ -16,6 +16,33 @@ measured. Keep entries short enough to scan; link the commit or PR.
 
 ---
 
+## 2026-11-18  Run provenance: per-fill sources, entry context, position windows
+
+- **Changed:** `GET /api/backtests/{id}` trade rows now keep the artifact
+  direction (`direction`/`intent`) beside the entry order `side`, carry the
+  actual entry/exit `execution_source` and `fallback_reason`, derive per-leg
+  `slippage_usd` from reference vs fill prices when known, and attach
+  `entry_context` from the nearest signal at or before entry for the same
+  instrument and entry action. Run detail also exposes `positions` windows
+  (closed/settled) and `open_positions` (unsettled only, no invented exit).
+  Zero-trade runs return empty lists. The trade inspector shows entry and exit
+  provenance, slippage or "not available", and the condition/indicator snapshot;
+  the chart shades only these API windows. Signal artifacts persist the
+  indicator snapshot so the inspector has a source for it.
+- **Why:** Audit found trade rows reported the entry side as the only side and
+  omitted fill-level provenance and entry context because those lived in the
+  engine rather than the trade artifact (trail learning
+  `l-b0ed23a6`). Acceptance criteria 5, 11 and 13 require traceable numbers,
+  per-trade fallback reporting and the actual side/token.
+- **Measured:** `uv run pytest tests/api tests/engine -q` and
+  `cd frontend && npm test -- --run && npm run build` pass. New API tests cover
+  nearest-signal matching, direction preservation, open/settled windows and
+  empty artifacts; engine tests cover per-leg slippage and settlement
+  provenance.
+- **Notes:** Older artifacts without per-leg fields or an indicator snapshot
+  show null/not available rather than a reconstructed value; `slippage_usd` is
+  null when no reference price was stored.
+
 ## 2026-11-18  Signals: persistent plan store so workers share plans
 
 - **Changed:** The signal cache gained a disk tier under `var/cache/signals/`.

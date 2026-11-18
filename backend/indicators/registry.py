@@ -55,11 +55,11 @@ def _warmup_rsi(params: dict[str, Any]) -> int:
 
 
 def _warmup_macd(params: dict[str, Any]) -> int:
-    return int(params["slow"]) + int(params["signal"]) - 1
+    return int(params["slow"]) + int(params["signal"]) - 2
 
 
 def _warmup_stochastic(params: dict[str, Any]) -> int:
-    return int(params["period_k"]) + int(params["slowing"]) + int(params["period_d"]) - 2
+    return int(params["period_k"]) + int(params["slowing"]) + int(params["period_d"]) - 3
 
 
 _SPECS: tuple[IndicatorSpec, ...] = (

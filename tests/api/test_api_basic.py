@@ -190,3 +190,27 @@ def test_experiment_status_distinguishes_cancelled_from_failed():
     assert _experiment_status(["complete", "cancelled"]) == "cancelled"
     assert _experiment_status(["complete", "failed"]) == "failed"
     assert _experiment_status(["failed", "cancelled"]) == "failed"
+
+
+def test_preflight_rejects_invalid_profile_parameters(monkeypatch):
+    from backend.api.errors import ApiError
+    from backend.data import books, instruments
+
+    monkeypatch.setattr(
+        services,
+        "bars",
+        lambda *args, **kwargs: {"bars": [{"close": 0.5}]},
+    )
+    monkeypatch.setattr(instruments, "get_instrument", lambda *args, **kwargs: {"match_key": "x"})
+    monkeypatch.setattr(books, "book_coverage", lambda *args, **kwargs: {"has_coverage": False})
+
+    with pytest.raises(ApiError) as caught:
+        services.preflight(
+            {
+                "instrument_id": "x-YES.POLYMARKET",
+                "execution": {"profile": "frictionless", "slippage_bps": 10},
+            }
+        )
+    assert caught.value.status_code == 422
+    detail = caught.value.detail
+    assert detail["code"] == "invalid_execution"

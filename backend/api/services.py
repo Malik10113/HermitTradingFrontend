@@ -431,12 +431,28 @@ def preflight(body: dict[str, Any]) -> dict[str, Any]:
     if window.get("end_ns") is not None:
         coverage["to"] = _iso(window["end_ns"])
     coverage["snapshots"] = window.get("snapshots")
-    effective = resolve_profile(cfg, has_book_coverage=bool(coverage.get("has_coverage")), coverage_window=None)
+    try:
+        effective = resolve_profile(
+            cfg, has_book_coverage=bool(coverage.get("has_coverage")), coverage_window=None
+        )
+    except ValueError as exc:
+        raise bad_request(
+            "invalid_execution",
+            str(exc),
+            {"path": "execution", "profile": getattr(cfg, "profile", None)},
+        ) from exc
     ref = None
     for r in rows:
         if r.get("close") is not None:
             ref = float(r["close"])
-    estimate = calculate_cost_estimate(ref, effective, 1.0) if ref is not None else None
+    estimate = None
+    if ref is not None and 0.0 < ref < 1.0:
+        try:
+            estimate = calculate_cost_estimate(ref, effective, 1.0)
+        except ValueError as exc:
+            raise bad_request(
+                "bad_cost_estimate", str(exc), {"path": "execution", "reference_price": ref}
+            ) from exc
     if estimate is not None:
         if estimate.get("slippage_bps") is not None:
             estimate["per_side_bps"] = round(float(estimate.get("fee_bps") or 0) + float(estimate["slippage_bps"]), 4)

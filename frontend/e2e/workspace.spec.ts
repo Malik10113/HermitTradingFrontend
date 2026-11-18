@@ -98,6 +98,7 @@ test.describe("research workspace", () => {
     const drawer = page.getByLabel("Backtest results");
     await expect(drawer.getByText("Net P&L · historical simulation")).toBeVisible();
     await expect(drawer.locator('[aria-label^="Equity curve in USD"]')).toBeVisible();
+    await expect(drawer.getByText("Drawdown (%)")).toBeVisible();
     await expect(drawer.locator('[data-testid="fallback-badge"]')).toHaveCount(0);
 
     await drawer.getByRole("tab", { name: /Trades/ }).click();

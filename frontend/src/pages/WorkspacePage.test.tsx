@@ -210,6 +210,8 @@ describe("workspace wiring", () => {
     });
     expect(screen.getAllByText(/ema/i).length).toBeGreaterThan(0);
     expect(screen.getByRole("button", { name: /remove ema20/i })).toBeInTheDocument();
+    // The composite Nautilus bar type is shown as returned by the API.
+    expect(screen.getAllByText(/5-MINUTE-LAST-INTERNAL/).length).toBeGreaterThan(0);
     await waitFor(() => {
       expect(screen.getAllByText(/preview/i).length).toBeGreaterThan(0);
     });

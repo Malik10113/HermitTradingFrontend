@@ -1,10 +1,14 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { api } from "../api/client";
 import type { Instrument } from "../api/types";
 import { instrumentLabel, tokenOf } from "../api/normalise";
 import { useApiResource, useDebouncedValue } from "../hooks/useApi";
 import { fmtDate, fmtDuration, fmtInteger, fmtPct, fmtUsd } from "../lib/format";
+import {
+  sortInstruments,
+  type InstrumentSortDirection,
+} from "../lib/instrumentSort";
 import { workspaceSearchString, DEFAULT_WORKSPACE_STATE } from "../lib/urlState";
 import {
   EmptyState,
@@ -27,6 +31,7 @@ export function DataPage() {
   const debouncedQuery = useDebouncedValue(query, 250);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [knownLeagues, setKnownLeagues] = useState<string[]>([]);
+  const [sortDirection, setSortDirection] = useState<InstrumentSortDirection | null>(null);
 
   const instrumentsResource = useApiResource(
     (signal) =>
@@ -47,6 +52,20 @@ export function DataPage() {
 
   const instruments = instrumentsResource.data?.instruments ?? [];
   const total = instrumentsResource.data?.total ?? instruments.length;
+
+  // Sorting is client-side over the rows this page already holds; the server
+  // query, its order and the page limit are untouched.
+  const rows = useMemo(
+    () => sortInstruments(instruments, sortDirection),
+    [instruments, sortDirection],
+  );
+
+  const cycleSortDirection = () => {
+    setSortDirection((current) => (current === null ? "asc" : current === "asc" ? "desc" : "asc"));
+  };
+
+  const sortAria: "ascending" | "descending" | "none" =
+    sortDirection === "asc" ? "ascending" : sortDirection === "desc" ? "descending" : "none";
 
   // Accumulate league names so selecting one does not erase the alternatives
   // from the dropdown. The current league is always present.
@@ -192,6 +211,14 @@ export function DataPage() {
             >
               {fmtInteger(instruments.length)} of {fmtInteger(total)}
             </span>
+            {sortDirection ? (
+              <span
+                className="normal-case tracking-normal text-[10px] text-ink-faint"
+                title="Ordering covers only the rows loaded on this page, not the full inventory"
+              >
+                sorted within loaded rows
+              </span>
+            ) : null}
           </div>
           {instrumentsResource.loading ? (
             <LoadingState rows={6} label="Loading instruments" />
@@ -214,7 +241,18 @@ export function DataPage() {
                   <tr className="border-b border-line">
                     <th scope="col" className="table-head px-2 py-1">Instrument</th>
                     <th scope="col" className="table-head px-2 py-1">Venue</th>
-                    <th scope="col" className="table-head px-2 py-1">League</th>
+                    <th scope="col" className="table-head px-2 py-1" aria-sort={sortAria}>
+                      <button
+                        type="button"
+                        className="inline-flex items-center gap-1 text-inherit hover:text-ink"
+                        onClick={cycleSortDirection}
+                        title="Sort the loaded rows by league; null leagues stay last"
+                      >
+                        League
+                        {sortDirection === "asc" ? <span aria-hidden="true">▲</span> : null}
+                        {sortDirection === "desc" ? <span aria-hidden="true">▼</span> : null}
+                      </button>
+                    </th>
                     <th scope="col" className="table-head px-2 py-1">Event date</th>
                     <th scope="col" className="table-head px-2 py-1">Token</th>
                     <th scope="col" className="table-head px-2 py-1">Coverage</th>
@@ -225,7 +263,7 @@ export function DataPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {instruments.map((instrument) => {
+                  {rows.map((instrument) => {
                     const selection = tokenOf(instrument);
                     return (
                       <tr

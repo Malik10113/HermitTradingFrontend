@@ -11,6 +11,9 @@ not cover.  Responses are cached gzipped under ``var/raw/espn``; a second run
 reuses them and makes no requests.  A cached observation is never overwritten
 by a backfilled one.
 
+``--resolve-index`` additionally takes fixtures from the generated instrument
+index, so a match the results spine never mapped can still be resolved.
+
 Rows missing either observed wallclock are omitted, which downstream reads as
 ``phase = unknown``.  A nominal match duration is never substituted.
 """
@@ -96,6 +99,14 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="ignore cached responses and re-fetch; never required",
     )
+    parser.add_argument(
+        "--resolve-index",
+        action="store_true",
+        help=(
+            "also resolve fixtures from the instrument index that the results "
+            "spine never mapped (requires --backfill)"
+        ),
+    )
     parser.add_argument("--out", type=Path, default=None, help="override output path")
     args = parser.parse_args(argv)
 
@@ -106,11 +117,12 @@ def main(argv: list[str] | None = None) -> int:
         or args.to_date
         or args.leagues
         or args.refresh
+        or args.resolve_index
         or args.concurrency != DEFAULT_CONCURRENCY
     ):
         parser.error(
-            "--from/--to/--leagues/--refresh/--concurrency require --backfill; "
-            "the default path is offline"
+            "--from/--to/--leagues/--refresh/--resolve-index/--concurrency require "
+            "--backfill; the default path is offline"
         )
     if args.limit is not None and args.limit < 0:
         parser.error("--limit must be >= 0")
@@ -130,6 +142,7 @@ def main(argv: list[str] | None = None) -> int:
         delay_s=args.delay,
         concurrency=args.concurrency,
         refresh=args.refresh,
+        resolve_index=args.resolve_index,
         stage=args.stage,
     )
     print(f"path={result['path']}")

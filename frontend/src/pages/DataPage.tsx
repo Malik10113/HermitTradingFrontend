@@ -21,6 +21,19 @@ import {
   SourceNote,
 } from "../components/ui";
 
+/** Page lengths the server will accept for one inventory request. */
+const PAGE_SIZES = [100, 250, 500, 1000, 2000, 5000] as const;
+type PageSize = (typeof PAGE_SIZES)[number];
+const DEFAULT_PAGE_SIZE: PageSize = 500;
+
+/** A `limit` search param is honoured only when it is one of the offered sizes. */
+function readPageSize(raw: string | null): PageSize {
+  const parsed = Number(raw);
+  return (PAGE_SIZES as readonly number[]).includes(parsed)
+    ? (parsed as PageSize)
+    : DEFAULT_PAGE_SIZE;
+}
+
 const SORT_LABELS: Record<InstrumentSortKey, string> = {
   instrument: "Instrument",
   venue: "Venue",
@@ -75,6 +88,7 @@ export function DataPage() {
   const from = searchParams.get("from") ?? "";
   const to = searchParams.get("to") ?? "";
   const exactDate = searchParams.get("date") ?? "";
+  const pageSize = readPageSize(searchParams.get("limit"));
 
   const [query, setQuery] = useState(searchParams.get("q") ?? "");
   const debouncedQuery = useDebouncedValue(query, 250);
@@ -92,11 +106,11 @@ export function DataPage() {
           date: exactDate || undefined,
           from: from || undefined,
           to: to || undefined,
-          limit: 500,
+          limit: pageSize,
         },
         signal,
       ),
-    [debouncedQuery, league, venue, exactDate, from, to],
+    [debouncedQuery, league, venue, exactDate, from, to, pageSize],
   );
 
   const instruments = instrumentsResource.data?.instruments ?? [];
@@ -140,6 +154,8 @@ export function DataPage() {
   const clearFilters = () => {
     const next = new URLSearchParams();
     if (query) next.set("q", query);
+    // The page size is a view control, not a filter: clearing filters keeps it.
+    if (pageSize !== DEFAULT_PAGE_SIZE) next.set("limit", String(pageSize));
     setSearchParams(next, { replace: true });
   };
 
@@ -172,6 +188,22 @@ export function DataPage() {
               placeholder="instrument, team, league…"
               aria-label="Filter data table"
             />
+          </label>
+          <label>
+            <span className="label">Markets loaded</span>
+            <select
+              className="input mt-1 w-auto"
+              value={String(pageSize)}
+              onChange={(event) => patchFilters({ limit: event.target.value })}
+              aria-label="Markets loaded"
+              title="How many matching markets one inventory request returns; sorting covers only those rows"
+            >
+              {PAGE_SIZES.map((size) => (
+                <option key={size} value={String(size)}>
+                  {size}
+                </option>
+              ))}
+            </select>
           </label>
           <label>
             <span className="label">Venue</span>

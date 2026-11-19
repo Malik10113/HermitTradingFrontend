@@ -21,16 +21,28 @@ const instruments = [
 ];
 
 function stubInstruments() {
-  vi.stubGlobal(
-    "fetch",
-    vi.fn(async (input: RequestInfo | URL) => {
-      const url = String(input);
-      if (url.includes("/api/instruments")) {
-        return jsonResponse({ instruments, total: instruments.length });
-      }
-      throw new Error(`Unexpected request in test: ${url}`);
-    }),
-  );
+  const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.includes("/api/instruments")) {
+      return jsonResponse({ instruments, total: instruments.length });
+    }
+    throw new Error(`Unexpected request in test: ${url}`);
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  return fetchMock;
+}
+
+type FetchMock = ReturnType<typeof stubInstruments>;
+
+function instrumentUrls(fetchMock: FetchMock): string[] {
+  return fetchMock.mock.calls
+    .map((call) => String(call[0]))
+    .filter((url) => url.includes("/api/instruments"));
+}
+
+function lastInstrumentUrl(fetchMock: FetchMock): string {
+  const urls = instrumentUrls(fetchMock);
+  return urls[urls.length - 1] ?? "";
 }
 
 function column(index: number): string[] {
@@ -39,10 +51,17 @@ function column(index: number): string[] {
   );
 }
 
-async function renderPage() {
-  stubInstruments();
-  render(createElement(MemoryRouter, null, createElement(DataPage)));
+async function renderPage(initialEntries: string[] = ["/"]) {
+  const fetchMock = stubInstruments();
+  render(
+    createElement(
+      MemoryRouter,
+      { initialEntries },
+      createElement(DataPage),
+    ),
+  );
   await waitFor(() => expect(column(2)).toHaveLength(instruments.length));
+  return fetchMock;
 }
 
 describe("DataPage column sorting", () => {
@@ -94,5 +113,49 @@ describe("DataPage column sorting", () => {
     );
     // Fills render through fmtInteger, so compare the numeric order not the text.
     expect(column(6)).toEqual(["10", "5", "1"]);
+  });
+});
+
+describe("DataPage page size", () => {
+  it("requests the default page size of 500", async () => {
+    const fetchMock = await renderPage();
+
+    expect(lastInstrumentUrl(fetchMock)).toContain("limit=500");
+    expect(screen.getByLabelText("Markets loaded")).toHaveValue("500");
+  });
+
+  it("re-queries with the chosen size without clearing filters or the sort", async () => {
+    const fetchMock = await renderPage(["/?league=NBA"]);
+    const user = userEvent.setup();
+
+    await user.click(screen.getByRole("button", { name: /^league/i }));
+    await waitFor(() =>
+      expect(screen.getByRole("columnheader", { name: /league/i })).toHaveAttribute(
+        "aria-sort",
+        "descending",
+      ),
+    );
+
+    const select = screen.getByLabelText("Markets loaded");
+    await user.selectOptions(select, "1000");
+
+    await waitFor(() => expect(lastInstrumentUrl(fetchMock)).toContain("limit=1000"));
+    expect(select).toHaveValue("1000");
+    // The other URL filters and the client-side sort survive the new request.
+    expect(lastInstrumentUrl(fetchMock)).toContain("league=NBA");
+    expect(column(2)).toEqual(["NBA", "epl", "not available"]);
+    expect(screen.getByRole("columnheader", { name: /league/i })).toHaveAttribute(
+      "aria-sort",
+      "descending",
+    );
+    expect(screen.getByText("sorted within loaded rows")).toBeInTheDocument();
+  });
+
+  it("falls back to 500 when the URL carries an unsupported limit", async () => {
+    const fetchMock = await renderPage(["/?limit=42"]);
+
+    expect(lastInstrumentUrl(fetchMock)).toContain("limit=500");
+    expect(lastInstrumentUrl(fetchMock)).not.toContain("limit=42");
+    expect(screen.getByLabelText("Markets loaded")).toHaveValue("500");
   });
 });

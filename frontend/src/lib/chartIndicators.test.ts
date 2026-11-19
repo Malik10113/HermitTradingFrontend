@@ -18,6 +18,18 @@ const specs: IndicatorSpec[] = [
     outputs: [{ key: "value" }],
     warmup: 1,
   },
+  {
+    id: "macd",
+    label: "MACD",
+    pane: "separate",
+    parameters: [],
+    outputs: [
+      { key: "value", label: "MACD" },
+      { key: "signal", label: "Signal" },
+      { key: "histogram" },
+    ],
+    warmup: 3,
+  },
 ];
 
 const preview: IndicatorPreviewResponse = {
@@ -71,5 +83,30 @@ describe("chart indicator series", () => {
     });
     expect(series).toEqual([]);
     expect(mismatch).toContain("no series returned for vwap");
+  });
+
+  it("uses the spec output label and falls back to the raw key", () => {
+    const { series } = buildChartIndicators({
+      bars,
+      instances: [{ instance_id: "macd", type: "macd", params: {}, visible: true }],
+      preview: {
+        ...preview,
+        series: {
+          macd: {
+            value: [0.01, 0.02, 0.03],
+            signal: [0.005, 0.006, 0.007],
+            histogram: [0.001, 0.002, 0.003],
+          },
+        },
+      },
+      specs,
+    });
+    expect(series).toHaveLength(1);
+    expect(series[0].lines.map((line) => line.key)).toEqual(["value", "signal", "histogram"]);
+    expect(series[0].lines.map((line) => line.label)).toEqual([
+      "MACD",
+      "Signal",
+      "histogram",
+    ]);
   });
 });

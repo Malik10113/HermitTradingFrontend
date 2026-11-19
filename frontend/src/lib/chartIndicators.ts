@@ -39,11 +39,18 @@ export function buildChartIndicators({
       }
       return;
     }
+    const labelsByKey = new Map(
+      (spec?.outputs ?? []).map((output) =>
+        typeof output === "string"
+          ? ([output, output] as const)
+          : ([output.key, output.label ?? output.key] as const),
+      ),
+    );
     const lines = Object.entries(outputSeries)
       .map(([key, values]) => {
         const aligned = alignIndicatorSeries(bars, values, timestamps);
         if (aligned.mismatch && !mismatch) mismatch = aligned.mismatch;
-        return { key, label: key, points: aligned.points };
+        return { key, label: labelsByKey.get(key) ?? key, points: aligned.points };
       })
       .filter((line) => line.points.length > 0);
     if (lines.length === 0) return;

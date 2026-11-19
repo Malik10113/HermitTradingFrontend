@@ -157,7 +157,7 @@ Registered: **9 datasets** (8 raw, 1 derived), **2.7 GB** on disk at registratio
   ```bash
   restore from the sibling repo; never modified
   ```
-- **Notes:** One row per observed in-play event (match_key, event_type, wallclock_utc, team, event_text, sequence); 7,678 rows across 1,006 matches, 2026-01-01..2026-10-21. The chart reads goal types only (goal, goal---*, own-goal, penalty---scored); cards, VAR decisions and missed/saved penalties are never returned. Read-only; this repo never rebuilds or edits it.
+- **Notes:** One row per observed in-play event (match_key, event_type, wallclock_utc, team, event_text, sequence); 7,678 rows across 1,006 matches, 2026-01-01..2026-10-18 (last observed wallclock 2026-10-18T20:49Z). The chart reads goal types only (goal, goal---*, own-goal, penalty---scored); cards, VAR decisions and missed/saved penalties are never returned. Read-only; this repo never rebuilds or edits it.
 
 ---
 

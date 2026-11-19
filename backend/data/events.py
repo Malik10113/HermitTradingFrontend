@@ -6,8 +6,11 @@ Two read-only sources, both observed rather than derived:
 * the cached ESPN summary ``keyEvents`` for the halftime wallclock.
 
 Cards, VAR decisions and missed/saved penalties are not goals and are never
-returned.  A missing fixture, summary or wallclock yields no row: this module
-never invents a nominal halftime or a team name.
+returned.  Both sources are required: when no explicit path is supplied the
+registered dataset is looked up and an absent one raises ``MissingDatasetError``
+naming the register entry, so "not restored" never reads as "no goals".  A
+present match with no observed event yields no row: this module never invents a
+nominal halftime or a team name.
 """
 
 from __future__ import annotations
@@ -19,6 +22,7 @@ from typing import Any, Iterable
 import duckdb
 
 from backend import config
+from backend.data import sources
 from backend.data.lifecycle import _read_summary, extract_event_wallclock
 from backend.data.timeutil import as_utc, isoformat_z
 
@@ -42,7 +46,10 @@ def is_goal_type(event_type: object) -> bool:
 
 
 def _events_path(path: Path | None) -> Path:
-    return Path(path) if path is not None else Path(config.MATCH_EVENTS)
+    """Explicit path as given; otherwise the registered source, or a loud error."""
+    if path is not None:
+        return Path(path)
+    return sources.require_file("espn_match_events")
 
 
 def _goal_rows(match_key: str, path: Path | None = None) -> list[tuple[datetime, dict[str, Any]]]:
@@ -94,7 +101,10 @@ def goals(match_key: str, path: Path | None = None) -> list[dict[str, Any]]:
 
 def _fixture(match_key: str, fixture_map: Path | None) -> tuple[str, str] | None:
     """``(league, espn_event_id)`` for a match, or ``None``."""
-    source = Path(fixture_map) if fixture_map is not None else Path(config.FIXTURE_MAP)
+    if fixture_map is not None:
+        source = Path(fixture_map)
+    else:
+        source = sources.require_file("espn_fixture_map")
     if not match_key or not source.is_file():
         return None
     con = duckdb.connect()

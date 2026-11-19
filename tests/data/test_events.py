@@ -169,6 +169,28 @@ def test_goals_for_unknown_match_and_missing_file(tmp_path):
     assert events.goals("no-such-match", _write_events(tmp_path / "events.parquet")) == []
 
 
+def test_goals_requires_the_registered_events_source(tmp_path, monkeypatch):
+    from backend import config
+    from backend.data import sources
+
+    monkeypatch.setattr(config, "MATCH_EVENTS", tmp_path / "absent/match_events.parquet")
+    with pytest.raises(sources.MissingDatasetError) as excinfo:
+        events.goals(MATCH)
+    assert excinfo.value.dataset == "espn_match_events"
+    assert "espn_match_events" in str(excinfo.value)
+
+
+def test_halftime_requires_the_registered_fixture_map(tmp_path, monkeypatch):
+    from backend import config
+    from backend.data import sources
+
+    monkeypatch.setattr(config, "FIXTURE_MAP", tmp_path / "absent/fixture_map.parquet")
+    with pytest.raises(sources.MissingDatasetError) as excinfo:
+        events.halftime(MATCH)
+    assert excinfo.value.dataset == "espn_fixture_map"
+    assert "espn_fixture_map" in str(excinfo.value)
+
+
 def test_halftime_from_the_2026_cache(tmp_path, events_path):
     summary_dir = tmp_path / "data/events/espn/summary"
     _write_summary(

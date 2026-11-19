@@ -24,7 +24,7 @@ import {
 } from "../lib/chartMarkers";
 import { INDICATOR_PALETTE } from "../lib/palette";
 import { useTheme } from "../state/theme";
-import { fmtDuration, fmtProbability, fmtTimestamp, fmtUsd } from "../lib/format";
+import { fmtProbability, fmtTimestamp, fmtUsd, fmtVersion } from "../lib/format";
 import { EmptyState } from "./ui";
 
 export interface ChartIndicatorLine {
@@ -57,6 +57,10 @@ interface PriceChartProps {
   showGoals?: boolean;
   stale?: boolean;
   height?: number;
+  /** Data version shown in the footer; absent renders "not available". */
+  dataVersion?: string | null;
+  /** Bumped by Reset view; re-fits the existing chart instead of rebuilding. */
+  resetKey?: number;
   onSelectTrade?: (tradeId: string) => void;
 }
 
@@ -123,6 +127,8 @@ export function PriceChart({
   showGoals = true,
   stale = false,
   height = 460,
+  dataVersion = null,
+  resetKey = 0,
   onSelectTrade,
 }: PriceChartProps) {
   const { theme } = useTheme();
@@ -566,6 +572,17 @@ export function PriceChart({
     candleRef.current?.setMarkers(visibleMarkers);
   }, [visibleMarkers, chartGeneration]);
 
+  // Reset view bumps `resetKey`; re-fit the existing chart rather than tearing
+  // it down. The initial key is remembered so mounting never counts as a reset
+  // (chart creation already fits once), and separate panes follow the main
+  // visible time range on their own.
+  const handledResetKey = useRef(resetKey);
+  useEffect(() => {
+    if (handledResetKey.current === resetKey) return;
+    handledResetKey.current = resetKey;
+    chartRef.current?.timeScale().fitContent();
+  }, [resetKey]);
+
   if (candle.data.length === 0) {
     return (
       <EmptyState
@@ -758,51 +775,45 @@ export function PriceChart({
         </div>
       ) : null}
 
-      {lifecyclePhaseAvailable(lifecycle) ? (
-        <div className="flex flex-wrap items-center gap-2 border-t border-line px-3 py-1 text-[10px] text-ink-faint">
+      <div
+        className="flex flex-wrap items-center gap-2 border-t border-line px-3 py-1 text-[10px] text-ink-faint"
+        data-testid="price-chart-footer"
+      >
+        <span className="numeric" title="Data version of the loaded bars">
+          data {fmtVersion(dataVersion)}
+        </span>
+        {lifecyclePhaseAvailable(lifecycle) ? (
+          <>
+            <span className="flex items-center gap-2">
+              {(
+                [
+                  ["pre_match", CHART_COLORS.preMatch],
+                  ["in_play", CHART_COLORS.inPlay],
+                  ["post_match", CHART_COLORS.postMatch],
+                  ["settled", CHART_COLORS.settled],
+                ] as const
+              ).map(([phase, color]) => (
+                <span key={phase} className="inline-flex items-center gap-1">
+                  <span
+                    aria-hidden="true"
+                    className="inline-block h-2 w-3 rounded-sm border border-line"
+                    style={{ background: color }}
+                  />
+                  {PHASE_LABELS[phase]}
+                </span>
+              ))}
+            </span>
+            <span className="ml-auto">
+              {phaseFilter === "all" ? "all phases shaded" : `${PHASE_LABELS[phaseFilter]} shaded`}
+            </span>
+          </>
+        ) : (
           <span>
-            Kickoff {fmtTimestamp(lifecycle?.actual_kickoff_utc)} · end{" "}
-            {fmtTimestamp(lifecycle?.actual_end_utc)}
+            Phase unknown — no verified lifecycle row. No phase shading and no nominal duration is
+            substituted.
           </span>
-          <span>
-            observed duration{" "}
-            {fmtDuration(
-              lifecycle?.actual_kickoff_utc && lifecycle?.actual_end_utc
-                ? (Date.parse(lifecycle.actual_end_utc) -
-                    Date.parse(lifecycle.actual_kickoff_utc)) /
-                    1000
-                : null,
-            )}
-          </span>
-          <span className="flex items-center gap-2">
-            {(
-              [
-                ["pre_match", CHART_COLORS.preMatch],
-                ["in_play", CHART_COLORS.inPlay],
-                ["post_match", CHART_COLORS.postMatch],
-                ["settled", CHART_COLORS.settled],
-              ] as const
-            ).map(([phase, color]) => (
-              <span key={phase} className="inline-flex items-center gap-1">
-                <span
-                  aria-hidden="true"
-                  className="inline-block h-2 w-3 rounded-sm border border-line"
-                  style={{ background: color }}
-                />
-                {PHASE_LABELS[phase]}
-              </span>
-            ))}
-          </span>
-          <span className="ml-auto">
-            {phaseFilter === "all" ? "all phases shaded" : `${PHASE_LABELS[phaseFilter]} shaded`}
-          </span>
-        </div>
-      ) : (
-        <div className="border-t border-line px-3 py-1 text-[10px] text-ink-faint">
-          Phase unknown — no verified lifecycle row. No phase shading and no nominal duration is
-          substituted.
-        </div>
-      )}
+        )}
+      </div>
     </div>
   );
 }

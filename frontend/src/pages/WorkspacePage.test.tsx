@@ -5,6 +5,7 @@ import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { WorkspacePage } from "./WorkspacePage";
 import { MetaProvider } from "../state/meta";
 import { ThemeProvider } from "../state/theme";
+import { getStorage } from "../lib/storage";
 
 // The chart canvas is not the subject of this test; stub the charting surface
 // so the workspace shell, data wiring and rail are exercised in jsdom.
@@ -43,14 +44,29 @@ vi.mock("lightweight-charts", () => {
 // of rendering candles so the wiring can be asserted directly.
 const chartProps = vi.hoisted(() => ({
   showGoals: null as boolean | null,
+  dataVersion: null as string | null | undefined,
+  resetKey: null as number | null,
   renders: 0,
 }));
 
 vi.mock("../components/PriceChart", () => ({
-  PriceChart: (props: { showGoals?: boolean }) => {
+  PriceChart: (props: {
+    showGoals?: boolean;
+    dataVersion?: string | null;
+    resetKey?: number;
+  }) => {
     chartProps.showGoals = props.showGoals ?? true;
+    chartProps.dataVersion = props.dataVersion;
+    chartProps.resetKey = props.resetKey ?? null;
     chartProps.renders += 1;
-    return <div data-testid="price-chart" data-show-goals={String(props.showGoals ?? true)} />;
+    return (
+      <div
+        data-testid="price-chart"
+        data-show-goals={String(props.showGoals ?? true)}
+        data-data-version={String(props.dataVersion ?? "")}
+        data-reset-key={String(props.resetKey ?? 0)}
+      />
+    );
   },
 }));
 
@@ -308,5 +324,56 @@ describe("workspace wiring", () => {
     await waitFor(() => {
       expect(screen.getByTestId("search").textContent).toContain("goals=0");
     });
+  });
+
+  it("shows lifecycle facts and loaded-bar totals in the chart header, and resets the zoom", async () => {
+    chartProps.dataVersion = null;
+    chartProps.resetKey = null;
+    stubApi(defaultLifecycle);
+    // Reset restores remembered defaults; seed them so the chart stays mounted
+    // (with the same instrument) while the zoom key changes.
+    getStorage().setItem(
+      "htf.workspace.defaults",
+      JSON.stringify({
+        instrument: instrumentId,
+        barType: "5m",
+        from: "2024-10-01",
+        to: "2024-12-01",
+      }),
+    );
+
+    const user = userEvent.setup();
+    render(
+      <MemoryRouter initialEntries={[`/?instrument=${encodeURIComponent(instrumentId)}&bar=5m`]}>
+        <ThemeProvider>
+          <MetaProvider>
+            <Routes>
+              <Route path="/" element={<WorkspacePage />} />
+            </Routes>
+          </MetaProvider>
+        </ThemeProvider>
+      </MemoryRouter>,
+    );
+
+    await screen.findByTestId("price-chart");
+    await waitFor(() => {
+      expect(chartProps.dataVersion).toBe("sha256:abc123def4567890");
+    });
+    expect(chartProps.resetKey).toBe(0);
+
+    // Facts move from the chart footer into the panel header.
+    expect(screen.getByText(/Kickoff 2024-10-19 14:00:00 UTC/)).toBeInTheDocument();
+    expect(screen.getByText(/End 2024-10-19 16:00:00 UTC/)).toBeInTheDocument();
+    expect(screen.getByText(/Duration 2h 0m/)).toBeInTheDocument();
+    // Totals sum the two loaded bars: 4 + 3 fills and $120 + $90 notional.
+    expect(screen.getByText(/Fills 7/)).toBeInTheDocument();
+    expect(screen.getByText(/Volume \$210\.00/)).toBeInTheDocument();
+    expect(screen.getAllByTitle(/sum over the loaded bars/)).toHaveLength(2);
+
+    await user.click(screen.getByRole("button", { name: /reset view/i }));
+    await waitFor(() => {
+      expect(chartProps.resetKey).toBe(1);
+    });
+    expect(screen.getByTestId("price-chart")).toHaveAttribute("data-reset-key", "1");
   });
 });

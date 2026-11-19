@@ -11,6 +11,7 @@ const chartState = vi.hoisted(() => ({
   volumeTimes: [] as number[],
   lineSeriesOptions: [] as Array<Record<string, unknown>>,
   createChartCount: 0,
+  fitContentCalls: 0,
   crosshairHandlers: [] as Array<(param: { time?: unknown }) => void>,
   mainVisibleRange: null as { from: number; to: number } | null,
   setVisibleRangeCalls: [] as Array<{ index: number; range: { from: number; to: number } }>,
@@ -35,7 +36,9 @@ vi.mock("lightweight-charts", () => {
   };
   const makeChart = (index: number) => {
     const timeScale = {
-      fitContent: () => {},
+      fitContent: () => {
+        chartState.fitContentCalls += 1;
+      },
       width: () => 600,
       getVisibleRange: () => chartState.mainVisibleRange,
       setVisibleRange: (range: { from: number; to: number }) => {
@@ -214,6 +217,7 @@ describe("price chart markers", () => {
     chartState.volumeTimes = [];
     chartState.lineSeriesOptions = [];
     chartState.createChartCount = 0;
+    chartState.fitContentCalls = 0;
     chartState.crosshairHandlers = [];
     chartState.mainVisibleRange = {
       from: seconds(bars[0].ts_event),
@@ -492,5 +496,41 @@ describe("price chart markers", () => {
       seriesColorByTitle.get("Bollinger · Lower"),
     );
     expect(legendColor("legend-line-sma-value")).toBe(seriesColorByTitle.get("SMA"));
+  });
+
+  it("shows the data version in the footer and keeps lifecycle wallclocks out of it", () => {
+    render(
+      <ThemeProvider>
+        <PriceChart
+          bars={bars}
+          lifecycle={lifecycleWithEvents}
+          dataVersion="sha256:abc123def4567890"
+        />
+      </ThemeProvider>,
+    );
+    const footer = screen.getByTestId("price-chart-footer");
+    expect(footer.textContent).toContain("data sha256:abc12…");
+    expect(footer.textContent).toContain("in-play");
+    expect(footer.textContent).not.toMatch(/Kickoff/);
+    expect(footer.textContent).not.toMatch(/observed duration/);
+  });
+
+  it("re-fits the existing chart when resetKey changes without rebuilding it", () => {
+    const view = render(
+      <ThemeProvider>
+        <PriceChart bars={bars} lifecycle={null} resetKey={0} />
+      </ThemeProvider>,
+    );
+    expect(chartState.createChartCount).toBe(1);
+    const fittedOnMount = chartState.fitContentCalls;
+
+    view.rerender(
+      <ThemeProvider>
+        <PriceChart bars={bars} lifecycle={null} resetKey={1} />
+      </ThemeProvider>,
+    );
+
+    expect(chartState.createChartCount).toBe(1);
+    expect(chartState.fitContentCalls).toBe(fittedOnMount + 1);
   });
 });

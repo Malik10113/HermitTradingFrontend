@@ -22,7 +22,7 @@ import {
 import { BAR_ALIASES, BAR_DURATION_MS, CHART_RANGES, barTypeLabel } from "../lib/barTypes";
 import { buildChartIndicators } from "../lib/chartIndicators";
 import { addDaysIso, isoDateOnly, maxIso } from "../lib/date";
-import { fmtInteger, fmtTimestamp, fmtVersion } from "../lib/format";
+import { fmtDuration, fmtInteger, fmtTimestamp, fmtUsd } from "../lib/format";
 import { useMeta } from "../state/meta";
 import { CommandPalette } from "../components/CommandPalette";
 import { IndicatorChips } from "../components/IndicatorChips";
@@ -74,6 +74,9 @@ export function WorkspacePage() {
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<unknown | null>(null);
   const [copied, setCopied] = useState(false);
+  // Reset view re-fits the chart in place; the chart owns its zoom, so a bump
+  // of this key is the only signal it needs.
+  const [resetKey, setResetKey] = useState(0);
   const appliedRunRange = useRef<string | null>(null);
   const skipPersistState = useRef<WorkspaceState | null>(initial.current.state);
 
@@ -383,6 +386,7 @@ export function WorkspacePage() {
     const remembered = loadRememberedDefaults();
     setState({ ...remembered, runId: "", compare: [] });
     setUrlIssues([]);
+    setResetKey((key) => key + 1);
   };
 
   const copyLink = () => {
@@ -420,9 +424,20 @@ export function WorkspacePage() {
   const fillCount = bars.every((bar) => typeof bar.trade_count === "number")
     ? bars.reduce((sum, bar) => sum + (bar.trade_count as number), 0)
     : null;
+  // A total is only shown when every loaded bar contributed a value; a partial
+  // sum would read as a complete one.
+  const totalVolume = bars.every((bar) => typeof bar.volume_usd === "number")
+    ? bars.reduce((sum, bar) => sum + (bar.volume_usd as number), 0)
+    : null;
   const fullBarType = barsResource.data?.bar_type ?? barTypeLabel(state.barType);
   const barDuration = BAR_DURATION_MS[state.barType];
   const phaseAvailable = !!(lifecycle?.actual_kickoff_utc && lifecycle?.actual_end_utc);
+  // Duration comes only from both observed wallclocks; no nominal length is
+  // ever substituted for a missing lifecycle row.
+  const observedSeconds =
+    lifecycle?.actual_kickoff_utc && lifecycle?.actual_end_utc
+      ? (Date.parse(lifecycle.actual_end_utc) - Date.parse(lifecycle.actual_kickoff_utc)) / 1000
+      : null;
   const hasLifecycleEvents = (lifecycle?.events ?? []).some(
     (event) => event.type === "halftime" || event.type === "goal",
   );
@@ -602,8 +617,24 @@ export function WorkspacePage() {
                   <span className="badge" title={fullBarType}>
                     {fullBarType.length > 40 ? `${fullBarType.slice(0, 40)}…` : fullBarType}
                   </span>
-                  <span className="numeric text-[10px] text-ink-faint">
-                    data {fmtVersion(dataVersion)}
+                  {phaseAvailable ? (
+                    <>
+                      <span className="numeric text-[10px] text-ink-muted" title="Observed kickoff wallclock">
+                        Kickoff {fmtTimestamp(lifecycle?.actual_kickoff_utc)}
+                      </span>
+                      <span className="numeric text-[10px] text-ink-muted" title="Observed end of regular time">
+                        End {fmtTimestamp(lifecycle?.actual_end_utc)}
+                      </span>
+                      <span className="numeric text-[10px] text-ink-muted" title="Observed kickoff-to-end duration">
+                        Duration {fmtDuration(observedSeconds)}
+                      </span>
+                    </>
+                  ) : null}
+                  <span className="numeric text-[10px] text-ink-muted" title="sum over the loaded bars">
+                    Fills {fmtInteger(fillCount)}
+                  </span>
+                  <span className="numeric text-[10px] text-ink-muted" title="sum over the loaded bars">
+                    Volume {fmtUsd(totalVolume)}
                   </span>
                   {stale ? <span className="badge-warn">stale source flag</span> : null}
                   {!phaseAvailable ? (
@@ -663,6 +694,8 @@ export function WorkspacePage() {
                   phaseFilter={state.phase}
                   showGoals={state.showGoals}
                   stale={stale}
+                  dataVersion={dataVersion}
+                  resetKey={resetKey}
                   onSelectTrade={(tradeId) => {
                     setFocusTradeId(tradeId);
                     setDrawerOpen(true);

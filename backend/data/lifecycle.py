@@ -200,8 +200,6 @@ def build_match_lifecycle(
     events_path: Path | None = None,
     scoreboard_dir: Path | None = None,
     backfill_summary_dir: Path | None = None,
-    resolve_index: bool = False,
-    index_path: Path | None = None,
     fetcher: Any | None = None,
     sleep: Any | None = None,
     today: date | None = None,
@@ -213,8 +211,6 @@ def build_match_lifecycle(
     through the ESPN scoreboard, cached under ``var/raw/espn``, and added.  A
     cached observation always wins over a backfilled one for the same
     ``match_key``, and a row already present in the artifact is preserved.
-    With ``resolve_index=True`` the generated instrument index is also used as
-    a fixture source, covering matches the results spine never mapped.
     """
     fixture_path = Path(fixture_map) if fixture_map is not None else sources.require_file("espn_fixture_map")
     cache_dir = Path(summary_dir) if summary_dir is not None else sources.require_dir("espn_summary_dir")
@@ -286,9 +282,6 @@ def build_match_lifecycle(
             scoreboard_dir=scoreboard_dir,
             summary_dir=backfill_summary_dir,
             source_summary_dir=cache_dir,
-            index_path=(Path(index_path) if index_path is not None else Path(config.INDEX_PATH))
-            if resolve_index
-            else None,
             skip_match_keys=set(offline_by_key) | set(existing_by_key),
             from_date=start,
             to_date=end,

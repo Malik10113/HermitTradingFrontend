@@ -60,17 +60,6 @@ FIXTURE_MAP_SCHEMA = pa.schema(
     ]
 )
 
-INDEX_SCHEMA = pa.schema(
-    [
-        pa.field("instrument_id", pa.string()),
-        pa.field("league", pa.string()),
-        pa.field("match_key", pa.string()),
-        pa.field("event_date", pa.date32()),
-        pa.field("home_name", pa.string()),
-        pa.field("away_name", pa.string()),
-    ]
-)
-
 
 @dataclass
 class Env:
@@ -82,7 +71,6 @@ class Env:
     lifecycle: Path
     scoreboard: Path
     backfill_summary: Path
-    index: Path
 
 
 def _write_events(path: Path, rows: list[dict[str, Any]]) -> None:
@@ -93,28 +81,6 @@ def _write_events(path: Path, rows: list[dict[str, Any]]) -> None:
 def _write_fixture_map(path: Path, rows: list[dict[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     pq.write_table(pa.Table.from_pylist(rows, schema=FIXTURE_MAP_SCHEMA), path)
-
-
-def _write_index(path: Path, rows: list[dict[str, Any]]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    pq.write_table(pa.Table.from_pylist(rows, schema=INDEX_SCHEMA), path)
-
-
-def _index_row(
-    match_key: str,
-    league: str,
-    event_date: date,
-    home_name: str,
-    away_name: str,
-) -> dict[str, Any]:
-    return {
-        "instrument_id": f"{match_key}-home",
-        "league": league,
-        "match_key": match_key,
-        "event_date": event_date,
-        "home_name": home_name,
-        "away_name": away_name,
-    }
 
 
 def _write_summary(directory: Path, name: str, payload: dict[str, Any]) -> Path:
@@ -158,7 +124,6 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Env:
     lifecycle_path = var / "lifecycle/match_lifecycle.parquet"
     scoreboard = var / "raw/espn/scoreboard"
     backfill_summary = var / "raw/espn/summary"
-    index = var / "instruments/instruments.parquet"
 
     source_summary.mkdir(parents=True, exist_ok=True)
     _write_events(events, [])
@@ -189,7 +154,6 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Env:
         lifecycle=lifecycle_path,
         scoreboard=scoreboard,
         backfill_summary=backfill_summary,
-        index=index,
     )
 
 
@@ -689,173 +653,6 @@ def test_leagues_filter_selects_only_requested_league(env: Env) -> None:
     assert result.report.fixtures == 1
     assert len(result.rows) == 1
     assert all("eng.1" in call for call in fetcher.calls)
-
-
-def test_index_only_fixture_is_resolved_and_counted(env: Env) -> None:
-    _write_index(
-        env.index,
-        [
-            _index_row(
-                "epl-xxx-yyy-2025-12-30",
-                "epl",
-                date(2025, 12, 30),
-                "Burnley",
-                "Newcastle United",
-            )
-        ],
-    )
-    scoreboards = {
-        ("eng.1", "20251230"): _scoreboard(
-            "2025-12-30T19:30Z",
-            ("9001", "Burnley", "Newcastle United", "BUR", "NEW"),
-        )
-    }
-    summaries = {
-        ("eng.1", "9001"): _summary("2025-12-30T19:30:00Z", "2025-12-30T21:20:00Z")
-    }
-
-    without_index = _run(
-        env, FakeEspn(scoreboards=scoreboards, summaries=summaries)
-    )
-
-    assert without_index.report.extra_fixtures == 0
-    assert without_index.report.fixtures == 0
-    assert without_index.report.requests == 0
-    assert without_index.rows == []
-
-    fetcher = FakeEspn(scoreboards=scoreboards, summaries=summaries)
-    resolved = _run(env, fetcher, index_path=env.index)
-
-    assert resolved.report.extra_fixtures == 1
-    assert resolved.report.fixtures == 1
-    assert resolved.report.matched == 1
-    assert resolved.report.rows_written == 1
-    assert [row["match_key"] for row in resolved.rows] == ["epl-xxx-yyy-2025-12-30"]
-    assert resolved.rows[0]["actual_kickoff_utc"] == utc("2025-12-30T19:30:00Z")
-    assert sum("/scoreboard?" in call for call in fetcher.calls) == 1
-
-
-def test_index_fixture_already_in_results_spine_is_not_duplicated(env: Env) -> None:
-    _write_events(
-        env.events,
-        [
-            _event_row(
-                "epl-aaa-bbb-2025-12-30", "epl", date(2025, 12, 30),
-                "burnley", "newcastle united", "bur", "new",
-            )
-        ],
-    )
-    _write_index(
-        env.index,
-        [
-            # Same match as the results spine: it must not be appended twice.
-            _index_row(
-                "epl-aaa-bbb-2025-12-30",
-                "epl",
-                date(2025, 12, 30),
-                "Burnley",
-                "Newcastle United",
-            ),
-            _index_row(
-                "epl-ccc-ddd-2025-12-30",
-                "epl",
-                date(2025, 12, 30),
-                "Arsenal",
-                "Aston Villa",
-            ),
-        ],
-    )
-    fetcher = FakeEspn(
-        scoreboards={
-            ("eng.1", "20251230"): _scoreboard(
-                "2025-12-30T19:30Z",
-                ("9001", "Burnley", "Newcastle United", "BUR", "NEW"),
-                ("9002", "Arsenal", "Aston Villa", "ARS", "AST"),
-            )
-        },
-        summaries={
-            ("eng.1", "9001"): _summary("2025-12-30T19:30:00Z", "2025-12-30T21:20:00Z"),
-            ("eng.1", "9002"): _summary("2025-12-30T20:00:00Z", "2025-12-30T21:50:00Z"),
-        },
-    )
-
-    result = _run(env, fetcher, index_path=env.index)
-
-    assert result.report.extra_fixtures == 1
-    assert result.report.fixtures == 2
-    assert result.report.matched == 2
-    assert sorted(row["match_key"] for row in result.rows) == [
-        "epl-aaa-bbb-2025-12-30",
-        "epl-ccc-ddd-2025-12-30",
-    ]
-
-
-def test_missing_requested_index_raises(env: Env) -> None:
-    assert not env.index.exists()
-
-    with pytest.raises(FileNotFoundError) as excinfo:
-        _run(env, FailingFetcher(), index_path=env.index)
-
-    assert str(env.index) in str(excinfo.value)
-
-
-def test_build_match_lifecycle_resolves_index_when_requested(env: Env) -> None:
-    _write_index(
-        env.index,
-        [
-            _index_row(
-                "epl-xxx-yyy-2025-12-30",
-                "epl",
-                date(2025, 12, 30),
-                "Burnley",
-                "Newcastle United",
-            )
-        ],
-    )
-    fetcher = FakeEspn(
-        scoreboards={
-            ("eng.1", "20251230"): _scoreboard(
-                "2025-12-30T19:30Z",
-                ("9001", "Burnley", "Newcastle United", "BUR", "NEW"),
-            )
-        },
-        summaries={
-            ("eng.1", "9001"): _summary(
-                "2025-12-30T19:30:00Z", "2025-12-30T21:20:00Z"
-            )
-        },
-    )
-
-    result = lifecycle.build_match_lifecycle(
-        backfill=True,
-        resolve_index=True,
-        fetcher=fetcher,
-        delay_s=0.0,
-        sleep=lambda _seconds: None,
-        today=date(2026, 11, 19),
-    )
-
-    assert result["rows"] == 1
-    assert result["backfill_report"]["extra_fixtures"] == 1
-    assert result["backfill_report"]["rows_written"] == 1
-    assert lifecycle.load_lifecycle()["epl-xxx-yyy-2025-12-30"].actual_end_utc == utc(
-        "2025-12-30T21:20:00Z"
-    )
-
-
-def test_cli_resolve_index_requires_backfill(
-    env: Env, capsys: pytest.CaptureFixture[str]
-) -> None:
-    path = Path(config.ROOT) / "scripts" / "build_match_lifecycle.py"
-    spec = importlib.util.spec_from_file_location("htf_build_match_lifecycle_idx", path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-
-    with pytest.raises(SystemExit):
-        module.main(["--resolve-index"])
-
-    assert "--resolve-index" in capsys.readouterr().err
 
 
 class FakeClock:

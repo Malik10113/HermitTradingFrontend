@@ -141,7 +141,6 @@ class LifecycleBackfillReport:
     skipped: int = 0
     rows_written: int = 0
     fixtures: int = 0
-    extra_fixtures: int = 0
     preserved_existing: int = 0
     concurrency: int = DEFAULT_CONCURRENCY
     coalesced: int = 0
@@ -164,7 +163,6 @@ class LifecycleBackfillReport:
             "skipped": self.skipped,
             "rows_written": self.rows_written,
             "fixtures": self.fixtures,
-            "extra_fixtures": self.extra_fixtures,
             "preserved_existing": self.preserved_existing,
             "concurrency": self.concurrency,
             "coalesced": self.coalesced,
@@ -350,58 +348,6 @@ def _event_fixtures(events_path: Path, leagues: Iterable[str]) -> list[Fixture]:
     return sorted(fixtures, key=lambda item: (item.event_date, item.league, item.match_key))
 
 
-def _index_fixtures(path: Path, leagues: Iterable[str]) -> list[Fixture]:
-    """Read the generated instrument index as an additional fixture source.
-
-    The index carries the same ``match_key`` identity as the tape, so it also
-    covers fixtures the results spine never mapped.  It records display names
-    only (no normalised names or venue codes), so aliases come from those.
-    Rows without a complete identity are skipped; nothing is inferred.
-    """
-    con = duckdb.connect()
-    try:
-        raw_rows = con.execute(
-            """
-            SELECT DISTINCT match_key, league, event_date, home_name, away_name
-            FROM read_parquet(?)
-            """,
-            [str(path)],
-        ).fetchall()
-    finally:
-        con.close()
-
-    wanted = {str(league).lower() for league in leagues}
-    fixtures: list[Fixture] = []
-    seen: set[str] = set()
-    for match_key, league, event_date, home_name, away_name in raw_rows:
-        if not match_key or not league or not home_name or not away_name:
-            continue
-        league = str(league).lower()
-        if league not in wanted:
-            continue
-        observed_date = _as_date(event_date)
-        if observed_date is None:
-            continue
-        match_key = str(match_key)
-        if match_key in seen:
-            continue
-        home_aliases = _fixture_aliases(home_name, None, None)
-        away_aliases = _fixture_aliases(away_name, None, None)
-        if not home_aliases or not away_aliases:
-            continue
-        seen.add(match_key)
-        fixtures.append(
-            Fixture(
-                match_key=match_key,
-                league=league,
-                event_date=observed_date,
-                home_aliases=home_aliases,
-                away_aliases=away_aliases,
-            )
-        )
-    return sorted(fixtures, key=lambda item: (item.event_date, item.league, item.match_key))
-
-
 def _parse_scoreboard(payload: Mapping[str, Any]) -> list[EspnEvent]:
     events: list[EspnEvent] = []
     seen: set[str] = set()
@@ -546,7 +492,6 @@ def run_backfill(
     scoreboard_dir: Path | None = None,
     summary_dir: Path | None = None,
     source_summary_dir: Path | None = None,
-    index_path: Path | None = None,
     skip_match_keys: Iterable[str] = (),
     from_date: date | None = None,
     to_date: date | None = None,
@@ -567,8 +512,6 @@ def run_backfill(
 
     ``skip_match_keys`` are fixtures already covered by an observed cached
     summary or by an existing lifecycle artifact; they are never re-fetched.
-    ``index_path`` adds the generated instrument index as a second fixture
-    source, so a match the results spine never mapped can still be resolved.
     ``concurrency`` parallelises summary fetches inside each date group; the
     rate limiter is shared, so the configured delay is global rather than per
     worker.  Rows and counters are aggregated in the main thread.
@@ -597,22 +540,6 @@ def run_backfill(
     )
 
     fixtures = _event_fixtures(events, selected)
-    if index_path is not None:
-        index_file = Path(index_path)
-        if not index_file.is_file():
-            raise FileNotFoundError(
-                f"instrument index not found: {index_file} "
-                "(requested as a lifecycle fixture source)"
-            )
-        known_keys = {item.match_key for item in fixtures}
-        extra = [
-            item
-            for item in _index_fixtures(index_file, selected)
-            if item.match_key not in known_keys
-        ]
-        report.extra_fixtures = len(extra)
-        fixtures = [*fixtures, *extra]
-        fixtures.sort(key=lambda item: (item.event_date, item.league, item.match_key))
     if from_date is not None:
         fixtures = [item for item in fixtures if item.event_date >= from_date]
     if to_date is not None:

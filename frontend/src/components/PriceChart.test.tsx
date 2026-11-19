@@ -12,6 +12,11 @@ const chartState = vi.hoisted(() => ({
   lineSeriesOptions: [] as Array<Record<string, unknown>>,
   createChartCount: 0,
   crosshairHandlers: [] as Array<(param: { time?: unknown }) => void>,
+  mainVisibleRange: null as { from: number; to: number } | null,
+  setVisibleRangeCalls: [] as Array<{ index: number; range: { from: number; to: number } }>,
+  visibleTimeRangeHandlers: [] as Array<
+    ((range: { from: number; to: number } | null) => void) | undefined
+  >,
 }));
 
 vi.mock("lightweight-charts", () => {
@@ -28,15 +33,30 @@ vi.mock("lightweight-charts", () => {
     };
     return series;
   };
-  const makeChart = () => {
+  const makeChart = (index: number) => {
     const timeScale = {
       fitContent: () => {},
       width: () => 600,
-      getVisibleRange: () => null,
+      getVisibleRange: () => chartState.mainVisibleRange,
+      setVisibleRange: (range: { from: number; to: number }) => {
+        chartState.setVisibleRangeCalls.push({ index, range });
+      },
       timeToCoordinate: () => null,
       subscribeVisibleLogicalRangeChange: () => {},
       unsubscribeVisibleLogicalRangeChange: () => {},
       setVisibleLogicalRange: () => {},
+      subscribeVisibleTimeRangeChange: (
+        handler: (range: { from: number; to: number } | null) => void,
+      ) => {
+        chartState.visibleTimeRangeHandlers.push(handler);
+      },
+      unsubscribeVisibleTimeRangeChange: (
+        handler: (range: { from: number; to: number } | null) => void,
+      ) => {
+        chartState.visibleTimeRangeHandlers = chartState.visibleTimeRangeHandlers.filter(
+          (candidate) => candidate !== handler,
+        );
+      },
     };
     return {
       addCandlestickSeries: () => makeSeries("candle"),
@@ -57,8 +77,9 @@ vi.mock("lightweight-charts", () => {
   };
   return {
     createChart: () => {
+      const index = chartState.createChartCount;
       chartState.createChartCount += 1;
-      return makeChart();
+      return makeChart(index);
     },
     ColorType: { Solid: "solid" },
     CrosshairMode: { Normal: 0 },
@@ -137,6 +158,26 @@ const rsi: ChartIndicatorSeries = {
 
 const macdSeparate: ChartIndicatorSeries = { ...macd, pane: "separate" };
 
+const bollinger: ChartIndicatorSeries = {
+  id: "bollinger",
+  label: "Bollinger",
+  color: "#56B4E9",
+  pane: "overlay",
+  lines: [
+    { key: "upper", label: "Upper", points: [{ time: seconds(bars[0].ts_event), value: 0.5 }] },
+    { key: "middle", label: "Middle", points: [{ time: seconds(bars[0].ts_event), value: 0.45 }] },
+    { key: "lower", label: "Lower", points: [{ time: seconds(bars[0].ts_event), value: 0.4 }] },
+  ],
+};
+
+const sma: ChartIndicatorSeries = {
+  id: "sma",
+  label: "SMA",
+  color: "#56B4E9",
+  pane: "overlay",
+  lines: [{ key: "value", label: "SMA", points: [{ time: seconds(bars[0].ts_event), value: 0.43 }] }],
+};
+
 function renderChart(lifecycle: LifecycleMeta | null) {
   return render(
     <ThemeProvider>
@@ -153,6 +194,12 @@ describe("price chart markers", () => {
     chartState.lineSeriesOptions = [];
     chartState.createChartCount = 0;
     chartState.crosshairHandlers = [];
+    chartState.mainVisibleRange = {
+      from: seconds(bars[0].ts_event),
+      to: seconds(bars[2].ts_event),
+    };
+    chartState.setVisibleRangeCalls = [];
+    chartState.visibleTimeRangeHandlers = [];
   });
 
   it("renders candles and volume from the supplied bars only", () => {
@@ -207,7 +254,9 @@ describe("price chart markers", () => {
 
     const handler = chartState.crosshairHandlers[0];
     expect(handler).toBeTypeOf("function");
+    const chartsBeforeHover = chartState.createChartCount;
     act(() => handler({ time: seconds(bars[1].ts_event) }));
+    expect(chartState.createChartCount).toBe(chartsBeforeHover);
 
     expect(legend.textContent).toContain("Bar 2024-10-19 10:05 UTC");
     expect(legend.textContent).toContain("O 0.410");
@@ -257,5 +306,57 @@ describe("price chart markers", () => {
       "MACD · Signal",
       "MACD · Histogram",
     ]);
+  });
+
+  it("gives every separate pane the main visible range and follows later main changes", () => {
+    render(
+      <ThemeProvider>
+        <PriceChart bars={bars} lifecycle={null} indicators={[rsi, macdSeparate]} />
+      </ThemeProvider>,
+    );
+    const initial = {
+      from: seconds(bars[0].ts_event),
+      to: seconds(bars[2].ts_event),
+    };
+    const paneCalls = chartState.setVisibleRangeCalls.filter((call) => call.index !== 0);
+    expect(paneCalls.map((call) => call.index)).toEqual([1, 2]);
+    for (const call of paneCalls) expect(call.range).toEqual(initial);
+    expect(chartState.visibleTimeRangeHandlers).toHaveLength(1);
+
+    const before = chartState.setVisibleRangeCalls.length;
+    const next = { from: seconds(bars[1].ts_event), to: seconds(bars[2].ts_event) };
+    act(() => chartState.visibleTimeRangeHandlers[0]?.(next));
+    const followCalls = chartState.setVisibleRangeCalls.slice(before);
+    expect(followCalls.map((call) => call.index)).toEqual([1, 2]);
+    for (const call of followCalls) expect(call.range).toEqual(next);
+  });
+
+  it("allocates unique line colours across indicators sharing an instance colour", () => {
+    render(
+      <ThemeProvider>
+        <PriceChart bars={bars} lifecycle={null} indicators={[bollinger, sma]} />
+      </ThemeProvider>,
+    );
+    const options = chartState.lineSeriesOptions;
+    expect(options).toHaveLength(4);
+    const colors = options.map((option) => option.color);
+    expect(new Set(colors).size).toBe(4);
+    expect(colors[0]).toBe("#56B4E9");
+
+    const seriesColorByTitle = new Map(
+      options.map((option) => [option.title, option.color]),
+    );
+    const legendColor = (testId: string) =>
+      screen.getByTestId(testId).querySelector("[data-color]")?.getAttribute("data-color");
+    expect(legendColor("legend-line-bollinger-upper")).toBe(
+      seriesColorByTitle.get("Bollinger · Upper"),
+    );
+    expect(legendColor("legend-line-bollinger-middle")).toBe(
+      seriesColorByTitle.get("Bollinger · Middle"),
+    );
+    expect(legendColor("legend-line-bollinger-lower")).toBe(
+      seriesColorByTitle.get("Bollinger · Lower"),
+    );
+    expect(legendColor("legend-line-sma-value")).toBe(seriesColorByTitle.get("SMA"));
   });
 });

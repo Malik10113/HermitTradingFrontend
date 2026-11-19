@@ -5,7 +5,6 @@ import {
   createChart,
   type IChartApi,
   type ISeriesApi,
-  type LogicalRange,
   type MouseEventParams,
   type SeriesMarker,
   type Time,
@@ -74,17 +73,33 @@ const PHASE_LABELS: Record<string, string> = {
 };
 
 /**
- * Each output of one indicator gets its own hue so a MACD's value, signal and
- * histogram are distinguishable. The first line keeps the instance colour;
- * later lines take palette entries that differ from it, stable by index.
+ * Allocate one colour per output line across every indicator in the chart.
+ * The first line prefers its instance colour; every other line takes the first
+ * palette entry not used anywhere yet, so two indicators that were handed the
+ * same instance colour cannot paint the same hue. When the palette is
+ * exhausted the entries cycle deterministically by allocation order.
  */
-export function outputLineColor(instanceColor: string, index: number): string {
-  if (index === 0) return instanceColor;
-  const candidates = INDICATOR_PALETTE.filter(
-    (color) => color.toLowerCase() !== instanceColor.toLowerCase(),
-  );
-  if (candidates.length === 0) return instanceColor;
-  return candidates[(index - 1) % candidates.length];
+export function allocateLineColors(
+  indicators: ChartIndicatorSeries[],
+): Map<string, string[]> {
+  const used = new Set<string>();
+  const allocated = new Map<string, string[]>();
+  let count = 0;
+  for (const indicator of indicators) {
+    const colors: string[] = [];
+    indicator.lines.forEach((_, index) => {
+      const color =
+        index === 0 && !used.has(indicator.color.toLowerCase())
+          ? indicator.color
+          : (INDICATOR_PALETTE.find((candidate) => !used.has(candidate.toLowerCase())) ??
+            INDICATOR_PALETTE[count % INDICATOR_PALETTE.length]);
+      used.add(color.toLowerCase());
+      colors.push(color);
+      count += 1;
+    });
+    allocated.set(indicator.id, colors);
+  }
+  return allocated;
 }
 
 /** `MACD · Signal`, or just `MACD` when the output label adds nothing. */
@@ -135,6 +150,7 @@ export function PriceChart({
   const separateIndicators = indicators.filter(
     (indicator) => indicator.pane === "separate" && indicator.lines.length > 0,
   );
+  const lineColors = useMemo(() => allocateLineColors(indicators), [indicators]);
 
   // Stable signatures avoid rebuilding the canvas when the parent re-renders
   // for an unrelated reason (a keystroke, a rail toggle, a poll tick).
@@ -281,10 +297,11 @@ export function PriceChart({
 
     for (const indicator of indicators) {
       if (indicator.pane !== "overlay") continue;
+      const colors = lineColors.get(indicator.id) ?? [];
       indicator.lines.forEach((line, index) => {
         if (line.points.length === 0) return;
         const lineSeries = chart.addLineSeries({
-          color: outputLineColor(indicator.color, index),
+          color: colors[index] ?? indicator.color,
           lineWidth: 1,
           priceLineVisible: false,
           lastValueVisible: false,
@@ -420,23 +437,11 @@ export function PriceChart({
     if (tracksCrosshair) chart.subscribeCrosshairMove(handleCrosshairMove);
 
     // Each separate-pane indicator gets its own mini chart with its own price
-    // scale and ResizeObserver, time-synced with the main chart both ways.
+    // scale and ResizeObserver. Panes cannot scroll or scale on their own, so
+    // alignment follows the main chart's visible *time* range: panes have
+    // different series lengths after warm-up, so a logical range would skew.
     const paneCharts: IChartApi[] = [];
     const paneObservers: ResizeObserver[] = [];
-    let syncingRange = false;
-    const mainRange = chart.timeScale();
-    const propagateRange = (source: IChartApi | null, range: LogicalRange | null) => {
-      if (!range || syncingRange) return;
-      syncingRange = true;
-      try {
-        if (source !== chart) mainRange.setVisibleLogicalRange(range);
-        for (const pane of paneCharts) {
-          if (pane !== source) pane.timeScale().setVisibleLogicalRange(range);
-        }
-      } finally {
-        syncingRange = false;
-      }
-    };
 
     for (const indicator of separateIndicators) {
       const paneContainer = separateContainers.current.get(indicator.id);
@@ -460,10 +465,11 @@ export function PriceChart({
         crosshair: { mode: CrosshairMode.Normal },
       });
       paneCharts.push(pane);
+      const colors = lineColors.get(indicator.id) ?? [];
       indicator.lines.forEach((line, index) => {
         if (line.points.length === 0) return;
         const series = pane.addLineSeries({
-          color: outputLineColor(indicator.color, index),
+          color: colors[index] ?? indicator.color,
           lineWidth: 1,
           priceLineVisible: false,
           lastValueVisible: false,
@@ -481,18 +487,34 @@ export function PriceChart({
       });
       paneResize.observe(paneContainer);
       paneObservers.push(paneResize);
-      pane.timeScale().subscribeVisibleLogicalRangeChange((range) =>
-        propagateRange(pane, range),
-      );
-      pane.timeScale().fitContent();
     }
+
+    // Apply the main chart's initial window to every pane, then keep them in
+    // step on every subsequent visible-time-range change. If the main range is
+    // not readable yet, fit once and read again rather than leaving panes to
+    // invent their own span.
+    const applyMainVisibleRange = (range: { from: Time; to: Time } | null) => {
+      if (!range) return;
+      for (const pane of paneCharts) pane.timeScale().setVisibleRange(range);
+    };
+    let subscribedToMainRange = false;
     if (paneCharts.length > 0) {
-      mainRange.subscribeVisibleLogicalRangeChange((range) => propagateRange(chart, range));
+      let initialRange = chart.timeScale().getVisibleRange();
+      if (!initialRange) {
+        chart.timeScale().fitContent();
+        initialRange = chart.timeScale().getVisibleRange();
+      }
+      applyMainVisibleRange(initialRange);
+      chart.timeScale().subscribeVisibleTimeRangeChange(applyMainVisibleRange);
+      subscribedToMainRange = true;
     }
 
     return () => {
       resizeObserver.disconnect();
       chart.timeScale().unsubscribeVisibleLogicalRangeChange(updateBands);
+      if (subscribedToMainRange) {
+        chart.timeScale().unsubscribeVisibleTimeRangeChange(applyMainVisibleRange);
+      }
       if (tracksCrosshair) chart.unsubscribeCrosshairMove(handleCrosshairMove);
       for (const observer of paneObservers) observer.disconnect();
       for (const pane of paneCharts) pane.remove();
@@ -570,20 +592,51 @@ export function PriceChart({
           </span>
         ) : null}
         {indicators.length > 0 ? (
-          <span className="ml-auto flex flex-wrap gap-2 text-[10px] text-ink-muted">
-            {indicators.map((indicator) => (
-              <span key={indicator.id} className="inline-flex items-center gap-1">
+          <span className="ml-auto flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-ink-muted">
+            {indicators.map((indicator) => {
+              const colors = lineColors.get(indicator.id) ?? [];
+              return (
                 <span
-                  aria-hidden="true"
-                  className="inline-block h-1.5 w-3 rounded-sm"
-                  style={{ background: indicator.color }}
-                />
-                {indicator.label}
-                {indicator.warmup != null ? (
-                  <span className="text-ink-faint">warm-up {indicator.warmup} bars</span>
-                ) : null}
-              </span>
-            ))}
+                  key={indicator.id}
+                  data-testid={`legend-group-${indicator.id}`}
+                  className="inline-flex flex-wrap items-center gap-x-2 gap-y-1"
+                >
+                  {indicator.lines.length === 0 ? (
+                    <span className="inline-flex items-center gap-1">
+                      <span
+                        aria-hidden="true"
+                        className="inline-block h-1.5 w-3 rounded-sm"
+                        style={{ background: indicator.color }}
+                        data-color={indicator.color}
+                      />
+                      {indicator.label}
+                    </span>
+                  ) : (
+                    indicator.lines.map((line, index) => {
+                      const color = colors[index] ?? indicator.color;
+                      return (
+                        <span
+                          key={line.key}
+                          data-testid={`legend-line-${indicator.id}-${line.key}`}
+                          className="inline-flex items-center gap-1"
+                        >
+                          <span
+                            aria-hidden="true"
+                            className="inline-block h-1.5 w-3 rounded-sm"
+                            style={{ background: color }}
+                            data-color={color}
+                          />
+                          {outputLineTitle(indicator.label, line.label)}
+                        </span>
+                      );
+                    })
+                  )}
+                  {indicator.warmup != null ? (
+                    <span className="text-ink-faint">warm-up {indicator.warmup} bars</span>
+                  ) : null}
+                </span>
+              );
+            })}
           </span>
         ) : null}
       </div>
@@ -623,43 +676,46 @@ export function PriceChart({
             <span>Separate panes — server-computed series</span>
             <span>one pane per indicator, own price scale</span>
           </div>
-          {separateIndicators.map((indicator) => (
-            <div key={indicator.id} className="border-t border-line first:border-t-0">
-              <div className="flex items-center justify-between gap-2 px-3 py-1 text-[10px] text-ink-muted">
-                <span className="inline-flex items-center gap-1.5">
-                  <span
-                    aria-hidden="true"
-                    className="inline-block h-1.5 w-3 rounded-sm"
-                    style={{ background: outputLineColor(indicator.color, 0) }}
-                  />
-                  <span className="text-ink">{indicator.label}</span>
-                  {indicator.warmup != null ? (
-                    <span className="text-ink-faint">warm-up {indicator.warmup} bars</span>
-                  ) : null}
-                </span>
-                <span className="flex flex-wrap gap-2">
-                  {indicator.lines.map((line, index) => (
-                    <span key={line.key} className="inline-flex items-center gap-1">
-                      <span
-                        aria-hidden="true"
-                        className="inline-block h-1.5 w-3 rounded-sm"
-                        style={{ background: outputLineColor(indicator.color, index) }}
-                      />
-                      {outputLineTitle(indicator.label, line.label)}
-                    </span>
-                  ))}
-                </span>
+          {separateIndicators.map((indicator) => {
+            const colors = lineColors.get(indicator.id) ?? [];
+            return (
+              <div key={indicator.id} className="border-t border-line first:border-t-0">
+                <div className="flex items-center justify-between gap-2 px-3 py-1 text-[10px] text-ink-muted">
+                  <span className="inline-flex items-center gap-1.5">
+                    <span
+                      aria-hidden="true"
+                      className="inline-block h-1.5 w-3 rounded-sm"
+                      style={{ background: colors[0] ?? indicator.color }}
+                    />
+                    <span className="text-ink">{indicator.label}</span>
+                    {indicator.warmup != null ? (
+                      <span className="text-ink-faint">warm-up {indicator.warmup} bars</span>
+                    ) : null}
+                  </span>
+                  <span className="flex flex-wrap gap-2">
+                    {indicator.lines.map((line, index) => (
+                      <span key={line.key} className="inline-flex items-center gap-1">
+                        <span
+                          aria-hidden="true"
+                          className="inline-block h-1.5 w-3 rounded-sm"
+                          style={{ background: colors[index] ?? indicator.color }}
+                        />
+                        {outputLineTitle(indicator.label, line.label)}
+                      </span>
+                    ))}
+                  </span>
+                </div>
+                <div
+                  ref={(element) => {
+                    if (element) separateContainers.current.set(indicator.id, element);
+                    else separateContainers.current.delete(indicator.id);
+                  }}
+                  data-testid={`separate-pane-${indicator.id}`}
+                  className="w-full"
+                />
               </div>
-              <div
-                ref={(element) => {
-                  if (element) separateContainers.current.set(indicator.id, element);
-                  else separateContainers.current.delete(indicator.id);
-                }}
-                data-testid={`separate-pane-${indicator.id}`}
-                className="w-full"
-              />
-            </div>
-          ))}
+            );
+          })}
         </div>
       ) : null}
 

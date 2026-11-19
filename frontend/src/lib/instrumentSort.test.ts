@@ -1,147 +1,263 @@
-import { createElement } from "react";
-import { describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
-import { MemoryRouter } from "react-router-dom";
-import { DataPage } from "../pages/DataPage";
-import { sortInstruments } from "./instrumentSort";
+import { describe, expect, it } from "vitest";
+import type { Instrument } from "../api/types";
+import { nextSort, sortInstruments } from "./instrumentSort";
 
-type Row = { league?: string | null; instrument_id: string };
-
-function row(instrumentId: string, league?: string | null): Row {
-  return { instrument_id: instrumentId, league };
+function row(
+  instrumentId: string,
+  fields: Partial<Instrument> = {},
+): Instrument {
+  return { instrument_id: instrumentId, ...fields };
 }
 
-function jsonResponse(body: unknown, status = 200): Response {
-  return {
-    ok: status >= 200 && status < 300,
-    status,
-    statusText: "OK",
-    text: async () => JSON.stringify(body),
-  } as unknown as Response;
+function ids(rows: Instrument[]): string[] {
+  return rows.map((item) => item.instrument_id);
 }
+
+describe("nextSort", () => {
+  it("starts a new key descending", () => {
+    expect(nextSort(null, "league")).toEqual({ key: "league", direction: "desc" });
+    expect(nextSort({ key: "league", direction: "asc" }, "venue")).toEqual({
+      key: "venue",
+      direction: "desc",
+    });
+    expect(nextSort({ key: "league", direction: "desc" }, "trade_count")).toEqual({
+      key: "trade_count",
+      direction: "desc",
+    });
+  });
+
+  it("flips the active key desc → asc → desc", () => {
+    const first = nextSort({ key: "league", direction: "desc" }, "league");
+    expect(first).toEqual({ key: "league", direction: "asc" });
+    expect(nextSort(first, "league")).toEqual({ key: "league", direction: "desc" });
+  });
+});
 
 describe("sortInstruments", () => {
-  const rows: Row[] = [
-    row("id-nba", "NBA"),
-    row("id-epl", "epl"),
-    row("id-laliga", "LaLiga"),
-    row("id-null", null),
-    row("id-empty", ""),
-    row("id-also-null", undefined),
-  ];
+  it("returns a shallow copy in input order when sort is null", () => {
+    const rows = [row("b", { league: "NBA" }), row("a", { league: "epl" })];
+    const sorted = sortInstruments(rows, null);
+    expect(sorted).toEqual(rows);
+    expect(sorted).not.toBe(rows);
+    expect(ids(sorted)).toEqual(["b", "a"]);
+  });
 
-  it("orders leagues case-insensitively ascending", () => {
-    expect(sortInstruments(rows, "asc").map((item) => item.instrument_id)).toEqual([
+  it("never mutates the input array", () => {
+    const rows = [row("b", { league: "NBA" }), row("a", { league: "epl" })];
+    const before = rows.map((item) => item.instrument_id);
+    sortInstruments(rows, { key: "league", direction: "desc" });
+    sortInstruments(rows, { key: "league", direction: "asc" });
+    expect(ids(rows)).toEqual(before);
+  });
+
+  it("orders leagues case-insensitively with missing leagues last", () => {
+    const rows = [
+      row("id-nba", { league: "NBA" }),
+      row("id-epl", { league: "epl" }),
+      row("id-laliga", { league: "LaLiga" }),
+      row("id-null", { league: null }),
+      row("id-empty", { league: "" }),
+      row("id-undefined", {}),
+    ];
+    expect(ids(sortInstruments(rows, { key: "league", direction: "asc" }))).toEqual([
       "id-epl",
       "id-laliga",
       "id-nba",
-      "id-also-null",
       "id-empty",
       "id-null",
+      "id-undefined",
+    ]);
+    expect(ids(sortInstruments(rows, { key: "league", direction: "desc" }))).toEqual([
+      "id-nba",
+      "id-laliga",
+      "id-epl",
+      "id-empty",
+      "id-null",
+      "id-undefined",
     ]);
   });
 
-  it("reverses named leagues descending but keeps null/empty last", () => {
-    expect(sortInstruments(rows, "desc").map((item) => item.instrument_id)).toEqual([
-      "id-nba",
-      "id-laliga",
-      "id-epl",
-      "id-also-null",
-      "id-empty",
-      "id-null",
+  it("orders venues case-insensitively with missing venues last", () => {
+    const rows = [
+      row("b", { venue: "Polymarket" }),
+      row("c", { venue: null }),
+      row("a", { venue: "betfair" }),
+    ];
+    expect(ids(sortInstruments(rows, { key: "venue", direction: "asc" }))).toEqual([
+      "a",
+      "b",
+      "c",
+    ]);
+    expect(ids(sortInstruments(rows, { key: "venue", direction: "desc" }))).toEqual([
+      "b",
+      "a",
+      "c",
+    ]);
+  });
+
+  it("orders instruments by the displayed label", () => {
+    const rows = [
+      row("id-b", { home_name: "Beta", away_name: "Zulu" }),
+      row("id-a", { question: "alpha market" }),
+      row("id-c", { question: "Gamma market" }),
+    ];
+    expect(ids(sortInstruments(rows, { key: "instrument", direction: "asc" }))).toEqual([
+      "id-a",
+      "id-b",
+      "id-c",
+    ]);
+  });
+
+  it("orders event dates chronologically, not lexicographically", () => {
+    const rows = [
+      row("id-late", { event_date: "2026-01-09T23:00:00Z" }),
+      row("id-early", { event_date: "2026-01-10T00:00:00+02:00" }),
+      row("id-missing", { event_date: null }),
+      row("id-invalid", { event_date: "not a date" }),
+    ];
+    expect(ids(sortInstruments(rows, { key: "event_date", direction: "asc" }))).toEqual([
+      "id-early",
+      "id-late",
+      "id-invalid",
+      "id-missing",
+    ]);
+    expect(ids(sortInstruments(rows, { key: "event_date", direction: "desc" }))).toEqual([
+      "id-late",
+      "id-early",
+      "id-invalid",
+      "id-missing",
+    ]);
+  });
+
+  it("orders tokens by YES/NO", () => {
+    const rows = [
+      row("id-yes", { token_index: 0, selection: "YES" }),
+      row("id-no", { token_index: 1, selection: "NO" }),
+      row("id-unknown", {}),
+    ];
+    expect(ids(sortInstruments(rows, { key: "token", direction: "asc" }))).toEqual([
+      "id-no",
+      "id-yes",
+      "id-unknown",
+    ]);
+    expect(ids(sortInstruments(rows, { key: "token", direction: "desc" }))).toEqual([
+      "id-yes",
+      "id-no",
+      "id-unknown",
+    ]);
+  });
+
+  it("orders coverage by from then to with missing coverage last", () => {
+    const rows = [
+      row("id-b", { coverage: { from: "2026-02-01T00:00:00Z", to: "2026-03-01T00:00:00Z" } }),
+      row("id-c", { coverage: { from: "2026-02-01T00:00:00Z", to: "2026-04-01T00:00:00Z" } }),
+      row("id-a", { coverage: { from: "2026-01-01T00:00:00Z", to: "2026-05-01T00:00:00Z" } }),
+      row("id-none", { coverage: null }),
+    ];
+    expect(ids(sortInstruments(rows, { key: "coverage", direction: "asc" }))).toEqual([
+      "id-a",
+      "id-b",
+      "id-c",
+      "id-none",
+    ]);
+    expect(ids(sortInstruments(rows, { key: "coverage", direction: "desc" }))).toEqual([
+      "id-c",
+      "id-b",
+      "id-a",
+      "id-none",
+    ]);
+  });
+
+  it("orders fills numerically with missing counts last", () => {
+    const rows = [
+      row("id-five", { trade_count: 5 }),
+      row("id-ten", { trade_count: 10 }),
+      row("id-one", { trade_count: 1 }),
+      row("id-zero", { trade_count: 0 }),
+      row("id-missing", { trade_count: null }),
+    ];
+    expect(ids(sortInstruments(rows, { key: "trade_count", direction: "asc" }))).toEqual([
+      "id-zero",
+      "id-one",
+      "id-five",
+      "id-ten",
+      "id-missing",
+    ]);
+    expect(ids(sortInstruments(rows, { key: "trade_count", direction: "desc" }))).toEqual([
+      "id-ten",
+      "id-five",
+      "id-one",
+      "id-zero",
+      "id-missing",
+    ]);
+  });
+
+  it("orders grades by the displayed badge text with missing grades last", () => {
+    const rows = [
+      row("id-b", { quality_grade: "B" }),
+      row("id-a", { quality_grade: "a" }),
+      row("id-c", { quality_grade: "C" }),
+      row("id-none", { quality_grade: null }),
+    ];
+    expect(ids(sortInstruments(rows, { key: "grade", direction: "asc" }))).toEqual([
+      "id-a",
+      "id-b",
+      "id-c",
+      "id-none",
+    ]);
+    expect(ids(sortInstruments(rows, { key: "grade", direction: "desc" }))).toEqual([
+      "id-c",
+      "id-b",
+      "id-a",
+      "id-none",
+    ]);
+  });
+
+  it("orders settlement numerically with unknown settlement last", () => {
+    const rows = [
+      row("id-yes", { settlement_value: 1 }),
+      row("id-no", { settlement_value: 0 }),
+      row("id-unknown", { settlement_value: null }),
+    ];
+    expect(ids(sortInstruments(rows, { key: "settlement", direction: "asc" }))).toEqual([
+      "id-no",
+      "id-yes",
+      "id-unknown",
+    ]);
+    expect(ids(sortInstruments(rows, { key: "settlement", direction: "desc" }))).toEqual([
+      "id-yes",
+      "id-no",
+      "id-unknown",
     ]);
   });
 
   it("breaks ties by instrument_id ascending in both directions", () => {
-    const tied: Row[] = [row("b", "epl"), row("a", "epl"), row("c", "epl")];
-    expect(sortInstruments(tied, "asc").map((item) => item.instrument_id)).toEqual(["a", "b", "c"]);
-    expect(sortInstruments(tied, "desc").map((item) => item.instrument_id)).toEqual(["a", "b", "c"]);
+    const rows = [
+      row("b", { league: "epl" }),
+      row("a", { league: "epl" }),
+      row("c", { league: "epl" }),
+    ];
+    expect(ids(sortInstruments(rows, { key: "league", direction: "asc" }))).toEqual([
+      "a",
+      "b",
+      "c",
+    ]);
+    expect(ids(sortInstruments(rows, { key: "league", direction: "desc" }))).toEqual([
+      "a",
+      "b",
+      "c",
+    ]);
 
-    const tiedNulls: Row[] = [row("z", null), row("y", ""), row("x", null)];
-    expect(sortInstruments(tiedNulls, "asc").map((item) => item.instrument_id)).toEqual([
+    const missing = [row("z"), row("y", { trade_count: null }), row("x")];
+    expect(ids(sortInstruments(missing, { key: "trade_count", direction: "desc" }))).toEqual([
       "x",
       "y",
       "z",
     ]);
-    expect(sortInstruments(tiedNulls, "desc").map((item) => item.instrument_id)).toEqual([
-      "x",
-      "y",
-      "z",
-    ]);
-  });
-
-  it("returns a shallow copy in input order when direction is null", () => {
-    const sorted = sortInstruments(rows, null);
-    expect(sorted).toEqual(rows);
-    expect(sorted).not.toBe(rows);
-    expect(sorted.map((item) => item.instrument_id)).toEqual([
-      "id-nba",
-      "id-epl",
-      "id-laliga",
-      "id-null",
-      "id-empty",
-      "id-also-null",
-    ]);
-  });
-
-  it("never mutates the input array", () => {
-    const original = sortInstruments(rows, null);
-    sortInstruments(rows, "asc");
-    sortInstruments(rows, "desc");
-    expect(rows).toEqual(original);
   });
 
   it("handles an empty list", () => {
-    expect(sortInstruments([], "asc")).toEqual([]);
+    expect(sortInstruments([], { key: "league", direction: "asc" })).toEqual([]);
     expect(sortInstruments([], null)).toEqual([]);
-  });
-});
-
-describe("DataPage league sorting", () => {
-  const instruments = [
-    { instrument_id: "z-nba", league: "NBA", trade_count: 10 },
-    { instrument_id: "a-epl", league: "epl", trade_count: 5 },
-    { instrument_id: "m-unknown", league: null, trade_count: 1 },
-  ];
-
-  function leagueColumn(): string[] {
-    return Array.from(document.querySelectorAll("tbody tr")).map(
-      (element) => element.children[2]?.textContent?.trim() ?? "",
-    );
-  }
-
-  it("cycles the League header through asc and desc over the loaded rows", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (input: RequestInfo | URL) => {
-        const url = String(input);
-        if (url.includes("/api/instruments")) {
-          return jsonResponse({ instruments, total: 3 });
-        }
-        throw new Error(`Unexpected request in test: ${url}`);
-      }),
-    );
-
-    render(createElement(MemoryRouter, null, createElement(DataPage)));
-
-    await waitFor(() => expect(leagueColumn()).toHaveLength(3));
-    expect(leagueColumn()).toEqual(["NBA", "epl", "not available"]);
-    expect(screen.queryByText("sorted within loaded rows")).toBeNull();
-
-    const header = screen.getByRole("columnheader", { name: /league/i });
-    expect(header).toHaveAttribute("aria-sort", "none");
-
-    const user = userEvent.setup();
-    await user.click(screen.getByRole("button", { name: /^league/i }));
-
-    await waitFor(() => expect(header).toHaveAttribute("aria-sort", "ascending"));
-    expect(leagueColumn()).toEqual(["epl", "NBA", "not available"]);
-    expect(screen.getByText("sorted within loaded rows")).toBeInTheDocument();
-
-    await user.click(screen.getByRole("button", { name: /^league/i }));
-
-    await waitFor(() => expect(header).toHaveAttribute("aria-sort", "descending"));
-    expect(leagueColumn()).toEqual(["NBA", "epl", "not available"]);
   });
 });

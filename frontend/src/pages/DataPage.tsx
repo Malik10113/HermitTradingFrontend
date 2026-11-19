@@ -6,8 +6,10 @@ import { instrumentLabel, tokenOf } from "../api/normalise";
 import { useApiResource, useDebouncedValue } from "../hooks/useApi";
 import { fmtDate, fmtDuration, fmtInteger, fmtPct, fmtUsd } from "../lib/format";
 import {
+  nextSort,
   sortInstruments,
-  type InstrumentSortDirection,
+  type InstrumentSort,
+  type InstrumentSortKey,
 } from "../lib/instrumentSort";
 import { workspaceSearchString, DEFAULT_WORKSPACE_STATE } from "../lib/urlState";
 import {
@@ -18,6 +20,53 @@ import {
   LoadingState,
   SourceNote,
 } from "../components/ui";
+
+const SORT_LABELS: Record<InstrumentSortKey, string> = {
+  instrument: "Instrument",
+  venue: "Venue",
+  league: "League",
+  event_date: "Event date",
+  token: "Token",
+  coverage: "Coverage",
+  trade_count: "Fills",
+  grade: "Grade",
+  settlement: "Settlement",
+};
+
+/**
+ * A column header that sorts the loaded rows. A new column starts descending;
+ * clicking the active column flips the direction.
+ */
+function SortableHeader({
+  sortKey,
+  sort,
+  onSort,
+  className = "",
+}: {
+  sortKey: InstrumentSortKey;
+  sort: InstrumentSort | null;
+  onSort: (key: InstrumentSortKey) => void;
+  className?: string;
+}) {
+  const label = SORT_LABELS[sortKey];
+  const direction = sort?.key === sortKey ? sort.direction : null;
+  const ariaSort =
+    direction === "asc" ? "ascending" : direction === "desc" ? "descending" : "none";
+  return (
+    <th scope="col" className={`table-head px-2 py-1 ${className}`} aria-sort={ariaSort}>
+      <button
+        type="button"
+        className="inline-flex items-center gap-1 text-inherit hover:text-ink"
+        onClick={() => onSort(sortKey)}
+        title={`Sort the loaded rows by ${label.toLowerCase()}; a missing value stays last`}
+      >
+        {label}
+        {direction === "asc" ? <span aria-hidden="true">▲</span> : null}
+        {direction === "desc" ? <span aria-hidden="true">▼</span> : null}
+      </button>
+    </th>
+  );
+}
 
 export function DataPage() {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -31,7 +80,7 @@ export function DataPage() {
   const debouncedQuery = useDebouncedValue(query, 250);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [knownLeagues, setKnownLeagues] = useState<string[]>([]);
-  const [sortDirection, setSortDirection] = useState<InstrumentSortDirection | null>(null);
+  const [sort, setSort] = useState<InstrumentSort | null>(null);
 
   const instrumentsResource = useApiResource(
     (signal) =>
@@ -55,17 +104,11 @@ export function DataPage() {
 
   // Sorting is client-side over the rows this page already holds; the server
   // query, its order and the page limit are untouched.
-  const rows = useMemo(
-    () => sortInstruments(instruments, sortDirection),
-    [instruments, sortDirection],
-  );
+  const rows = useMemo(() => sortInstruments(instruments, sort), [instruments, sort]);
 
-  const cycleSortDirection = () => {
-    setSortDirection((current) => (current === null ? "asc" : current === "asc" ? "desc" : "asc"));
+  const handleSort = (key: InstrumentSortKey) => {
+    setSort((current) => nextSort(current, key));
   };
-
-  const sortAria: "ascending" | "descending" | "none" =
-    sortDirection === "asc" ? "ascending" : sortDirection === "desc" ? "descending" : "none";
 
   // Accumulate league names so selecting one does not erase the alternatives
   // from the dropdown. The current league is always present.
@@ -211,10 +254,10 @@ export function DataPage() {
             >
               {fmtInteger(instruments.length)} of {fmtInteger(total)}
             </span>
-            {sortDirection ? (
+            {sort ? (
               <span
                 className="normal-case tracking-normal text-[10px] text-ink-faint"
-                title="Ordering covers only the rows loaded on this page, not the full inventory"
+                title={`Ordered by ${SORT_LABELS[sort.key]} ${sort.direction === "asc" ? "ascending" : "descending"} over only the rows loaded on this page, not the full inventory`}
               >
                 sorted within loaded rows
               </span>
@@ -239,26 +282,20 @@ export function DataPage() {
                 <caption className="sr-only">Registered instruments with coverage and settlement</caption>
                 <thead className="sticky top-0 bg-surface-raised">
                   <tr className="border-b border-line">
-                    <th scope="col" className="table-head px-2 py-1">Instrument</th>
-                    <th scope="col" className="table-head px-2 py-1">Venue</th>
-                    <th scope="col" className="table-head px-2 py-1" aria-sort={sortAria}>
-                      <button
-                        type="button"
-                        className="inline-flex items-center gap-1 text-inherit hover:text-ink"
-                        onClick={cycleSortDirection}
-                        title="Sort the loaded rows by league; null leagues stay last"
-                      >
-                        League
-                        {sortDirection === "asc" ? <span aria-hidden="true">▲</span> : null}
-                        {sortDirection === "desc" ? <span aria-hidden="true">▼</span> : null}
-                      </button>
-                    </th>
-                    <th scope="col" className="table-head px-2 py-1">Event date</th>
-                    <th scope="col" className="table-head px-2 py-1">Token</th>
-                    <th scope="col" className="table-head px-2 py-1">Coverage</th>
-                    <th scope="col" className="table-head px-2 py-1 text-right">Fills</th>
-                    <th scope="col" className="table-head px-2 py-1">Grade</th>
-                    <th scope="col" className="table-head px-2 py-1">Settlement</th>
+                    <SortableHeader sortKey="instrument" sort={sort} onSort={handleSort} />
+                    <SortableHeader sortKey="venue" sort={sort} onSort={handleSort} />
+                    <SortableHeader sortKey="league" sort={sort} onSort={handleSort} />
+                    <SortableHeader sortKey="event_date" sort={sort} onSort={handleSort} />
+                    <SortableHeader sortKey="token" sort={sort} onSort={handleSort} />
+                    <SortableHeader sortKey="coverage" sort={sort} onSort={handleSort} />
+                    <SortableHeader
+                      sortKey="trade_count"
+                      sort={sort}
+                      onSort={handleSort}
+                      className="text-right"
+                    />
+                    <SortableHeader sortKey="grade" sort={sort} onSort={handleSort} />
+                    <SortableHeader sortKey="settlement" sort={sort} onSort={handleSort} />
                     <th scope="col" className="table-head px-2 py-1" />
                   </tr>
                 </thead>

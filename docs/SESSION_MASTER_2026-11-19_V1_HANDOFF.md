@@ -9,7 +9,7 @@
 | Item | Value |
 |---|---|
 | Build checkout | `/root/HermitTradingFrontend` |
-| Production checkout | `/opt/hermit/prod` (detached at `98fb081`) |
+| Production checkout | `/opt/hermit/prod` (detached at `98fb081`; master is one docs-only commit ahead) |
 | Production state | `HTF_VAR=/opt/hermit/var` |
 | Build/dev state | `HTF_VAR=/opt/hermit/var-dev` |
 | Production service | `hermit-frontend.service` (enabled, active) |
@@ -21,8 +21,9 @@
 | Backend tests | full `uv run pytest -q` green |
 | Tailscale Serve | **not enabled**; admin console enable required (see §5) |
 
-Master is clean and pushed. `deploy/promote.sh` is the only supported way to
-move build → production.
+Master is clean and pushed (`6e38342`). Production is at `98fb081`; the delta is
+docs/handoff only. `deploy/promote.sh` is the only supported way to move
+build → production.
 
 ## 2. What is implemented
 

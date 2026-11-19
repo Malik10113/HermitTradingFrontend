@@ -303,6 +303,72 @@ describe("wire normalisation", () => {
     expect(strategies.saved[0].label).toBe("Saved");
   });
 
+  it("shows the match context and the winning leg before the token", () => {
+    const market = {
+      instrument_id: "epl-mci-ars-2026-05-19-mci-YES.POLYMARKET",
+      question: "Will Manchester City FC win on 2026-05-19?",
+      home_name: "Manchester City FC",
+      away_name: "Arsenal FC",
+      selection: "home",
+      token_index: 0,
+    };
+    expect(instrumentLabel(market)).toBe(
+      "Manchester City FC vs Arsenal FC — Manchester City FC wins · YES",
+    );
+    expect(instrumentLabel({ ...market, selection: "away", token_index: 0 })).toBe(
+      "Manchester City FC vs Arsenal FC — Arsenal FC wins · YES",
+    );
+    expect(
+      instrumentLabel({
+        instrument_id: "epl-mci-ars-2026-05-19-draw-NO.POLYMARKET",
+        question: "Will Manchester City FC vs Arsenal FC end in a draw on 2026-05-19?",
+        home_name: "Manchester City FC",
+        away_name: "Arsenal FC",
+        selection: "draw",
+        token_index: 1,
+      }),
+    ).toBe("Manchester City FC vs Arsenal FC — Draw · NO");
+  });
+
+  it("keeps the plain question when the match context cannot be built", () => {
+    expect(
+      instrumentLabel({
+        instrument_id: "market-x-YES.POLYMARKET",
+        question: "Will X win?",
+        selection: "home",
+        token_index: 0,
+      }),
+    ).toBe("Will X win? · YES");
+    expect(
+      instrumentLabel({
+        instrument_id: "market-x-YES.POLYMARKET",
+        home_name: "Alpha FC",
+        away_name: "Beta FC",
+        token_index: 0,
+      }),
+    ).toBe("Alpha FC vs Beta FC · YES");
+    expect(
+      instrumentLabel({
+        instrument_id: "market-x-YES.POLYMARKET",
+        question: "Will X win?",
+        away_name: "Beta FC",
+        selection: "home",
+        token_index: 0,
+      }),
+    ).toBe("Will X win? · YES");
+  });
+
+  it("omits the token suffix when the token is unknown", () => {
+    expect(
+      instrumentLabel({
+        instrument_id: "market-x",
+        home_name: "Alpha FC",
+        away_name: "Beta FC",
+        selection: "home",
+      }),
+    ).toBe("Alpha FC vs Beta FC — Alpha FC wins");
+  });
+
   it("normalises the presets items envelope", () => {
     const presets = normalisePresets({
       items: [

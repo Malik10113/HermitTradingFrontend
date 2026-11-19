@@ -67,9 +67,26 @@ export function tokenOf(instrument: Partial<Instrument> | null | undefined): "YE
   return null;
 }
 
+/**
+ * A Polymarket token names one leg of a match, not just the market question.
+ * Build the match context only from the fields the wire record already carries;
+ * when any part is missing the caller falls back to the question unchanged.
+ */
+function matchContextLabel(instrument: Partial<Instrument>): string | null {
+  const home = instrument.home_name;
+  const away = instrument.away_name;
+  if (!home || !away) return null;
+  const selection = instrument.selection;
+  if (selection === "home") return `${home} vs ${away} — ${home} wins`;
+  if (selection === "away") return `${home} vs ${away} — ${away} wins`;
+  if (selection === "draw") return `${home} vs ${away} — Draw`;
+  return null;
+}
+
 export function instrumentLabel(instrument: Partial<Instrument> | null | undefined): string {
   if (!instrument) return "No instrument";
   const base =
+    matchContextLabel(instrument) ??
     instrument.question ??
     (instrument.home_name && instrument.away_name
       ? `${instrument.home_name} vs ${instrument.away_name}`

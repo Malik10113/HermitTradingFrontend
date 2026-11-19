@@ -80,11 +80,11 @@ export function AppShell() {
         </div>
       </header>
 
-      <main id="main" className="flex min-h-0 flex-1 flex-col">
+      <main id="main" className="relative flex min-h-0 flex-1 flex-col overflow-y-auto">
         <Outlet />
       </main>
 
-      <footer className="mt-auto border-t border-line bg-surface-raised px-3 py-1.5">
+      <footer className="sticky bottom-0 z-20 mt-auto border-t border-line bg-surface-raised px-3 py-1.5">
         <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[10px] text-ink-faint">
           <span className="flex flex-wrap items-center gap-x-3 gap-y-1">
             <VersionChip label="data version" value={meta?.data_version} title={meta?.data_version ?? undefined} />

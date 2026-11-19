@@ -60,6 +60,14 @@ describe("application shell accessibility", () => {
     expect(screen.getByRole("main")).toHaveTextContent("Workspace body");
     expect(screen.getByText("Read-only acquired data", { exact: false })).toBeInTheDocument();
 
+    // The footer is the application's provenance landmark, pinned to the viewport
+    // bottom so it stays visible while a tab scrolls (mirrors the sticky header).
+    const footer = screen.getByRole("contentinfo");
+    expect(footer).toHaveTextContent(/Read-only acquired data/);
+    expect(footer).toHaveTextContent(/Meta as of/);
+    expect(footer.className).toContain("sticky");
+    expect(footer.className).toContain("bottom-0");
+
     const toggle = screen.getByRole("button", { name: /switch to (light|dark) theme/i });
     expect(toggle).toHaveAttribute("aria-pressed", "true");
     expect(document.documentElement.classList.contains("dark")).toBe(true);

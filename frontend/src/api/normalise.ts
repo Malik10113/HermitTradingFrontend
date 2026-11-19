@@ -76,10 +76,10 @@ function matchContextLabel(instrument: Partial<Instrument>): string | null {
   const home = instrument.home_name;
   const away = instrument.away_name;
   if (!home || !away) return null;
-  const selection = instrument.selection;
-  if (selection === "home") return `${home} vs ${away} — ${home} wins`;
-  if (selection === "away") return `${home} vs ${away} — ${away} wins`;
-  if (selection === "draw") return `${home} vs ${away} — Draw`;
+  const leg = instrument.outcome ?? instrument.selection;
+  if (leg === "home") return `${home} vs ${away} — ${home} wins`;
+  if (leg === "away") return `${home} vs ${away} — ${away} wins`;
+  if (leg === "draw") return `${home} vs ${away} — Draw`;
   return null;
 }
 
@@ -87,10 +87,10 @@ export function instrumentLabel(instrument: Partial<Instrument> | null | undefin
   if (!instrument) return "No instrument";
   const base =
     matchContextLabel(instrument) ??
-    instrument.question ??
     (instrument.home_name && instrument.away_name
       ? `${instrument.home_name} vs ${instrument.away_name}`
       : null) ??
+    instrument.question ??
     instrument.market_slug ??
     instrument.instrument_id ??
     "Instrument";
@@ -101,6 +101,7 @@ export function instrumentLabel(instrument: Partial<Instrument> | null | undefin
 export function normaliseInstrument(raw: unknown): Instrument {
   const source = record(raw);
   const token = tokenOf(source as Partial<Instrument>);
+  const leg = str(source.outcome) ?? str(source.selection);
   const settlement = record(source.settlement);
   const settlementValue =
     num(source.settlement_value) ??
@@ -113,6 +114,7 @@ export function normaliseInstrument(raw: unknown): Instrument {
   return {
     ...(source as unknown as Instrument),
     selection: token ?? (str(source.selection) as Instrument["selection"]),
+    outcome: leg,
     token_index: num(source.token_index),
     price_precision: precision,
     price_tick:

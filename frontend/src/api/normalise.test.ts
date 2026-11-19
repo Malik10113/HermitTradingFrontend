@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   instrumentLabel,
   normaliseCompare,
+  normaliseInstrument,
   normaliseInstrumentList,
   normaliseMetrics,
   normalisePositions,
@@ -328,6 +329,90 @@ describe("wire normalisation", () => {
         token_index: 1,
       }),
     ).toBe("Manchester City FC vs Arsenal FC — Draw · NO");
+  });
+
+  it("keeps the market leg through normalisation so the match context fires", () => {
+    const match = {
+      question: "Will Manchester City FC win on 2026-05-19?",
+      home_name: "Manchester City FC",
+      away_name: "Arsenal FC",
+    };
+    const home = normaliseInstrument({
+      ...match,
+      instrument_id: "epl-mci-ars-2026-05-19-mci-YES.POLYMARKET",
+      selection: "home",
+      token_index: 0,
+    });
+    expect(home.selection).toBe("YES");
+    expect(home.outcome).toBe("home");
+    expect(instrumentLabel(home)).toBe(
+      "Manchester City FC vs Arsenal FC — Manchester City FC wins · YES",
+    );
+
+    const away = normaliseInstrument({
+      ...match,
+      instrument_id: "epl-mci-ars-2026-05-19-ars-NO.POLYMARKET",
+      selection: "away",
+      token_index: 1,
+    });
+    expect(away.selection).toBe("NO");
+    expect(away.outcome).toBe("away");
+    expect(instrumentLabel(away)).toBe(
+      "Manchester City FC vs Arsenal FC — Arsenal FC wins · NO",
+    );
+
+    const draw = normaliseInstrument({
+      ...match,
+      instrument_id: "epl-mci-ars-2026-05-19-draw-NO.POLYMARKET",
+      selection: "draw",
+      token_index: 1,
+    });
+    expect(draw.outcome).toBe("draw");
+    expect(instrumentLabel(draw)).toBe("Manchester City FC vs Arsenal FC — Draw · NO");
+  });
+
+  it("derives the token from the instrument id without losing the away leg", () => {
+    const instrument = normaliseInstrument({
+      instrument_id: "epl-mci-ars-2026-05-19-ars-NO.POLYMARKET",
+      question: "Will Manchester City FC win on 2026-05-19?",
+      home_name: "Manchester City FC",
+      away_name: "Arsenal FC",
+      selection: "away",
+    });
+    expect(instrument.token_index).toBeNull();
+    expect(instrument.selection).toBe("NO");
+    expect(instrument.outcome).toBe("away");
+    expect(instrumentLabel(instrument)).toBe(
+      "Manchester City FC vs Arsenal FC — Arsenal FC wins · NO",
+    );
+  });
+
+  it("lets an explicit outcome field win over the raw selection", () => {
+    const instrument = normaliseInstrument({
+      instrument_id: "epl-mci-ars-2026-05-19-draw-YES.POLYMARKET",
+      question: "Will Manchester City FC vs Arsenal FC end in a draw on 2026-05-19?",
+      home_name: "Manchester City FC",
+      away_name: "Arsenal FC",
+      outcome: "draw",
+      selection: "home",
+      token_index: 0,
+    });
+    expect(instrument.outcome).toBe("draw");
+    expect(instrument.selection).toBe("YES");
+    expect(instrumentLabel(instrument)).toBe(
+      "Manchester City FC vs Arsenal FC — Draw · YES",
+    );
+  });
+
+  it("falls back to the question when a normalised match leg has no team names", () => {
+    const instrument = normaliseInstrument({
+      instrument_id: "market-x-YES.POLYMARKET",
+      question: "Will X win?",
+      selection: "home",
+      token_index: 0,
+    });
+    expect(instrument.outcome).toBe("home");
+    expect(instrumentLabel(instrument)).toBe("Will X win? · YES");
   });
 
   it("keeps the plain question when the match context cannot be built", () => {

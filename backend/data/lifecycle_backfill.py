@@ -19,14 +19,16 @@ import gzip
 import json
 import os
 import re
+import threading
 import time
 import unicodedata
 import urllib.error
 import urllib.request
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any, Callable, Iterable, Mapping
+from typing import Any, Callable, Iterable, Mapping, TypeVar
 
 import duckdb
 
@@ -51,6 +53,8 @@ DEFAULT_DELAY_S = 0.25
 DEFAULT_TIMEOUT_S = 20.0
 DEFAULT_MAX_RETRIES = 3
 DEFAULT_RETRY_BACKOFF_S = 0.5
+DEFAULT_CONCURRENCY = 1
+MAX_CONCURRENCY = 8
 RETRYABLE_STATUSES = frozenset({429, 500, 502, 503, 504})
 
 # Club-name decoration that carries no identity.  Both a leading and trailing
@@ -138,6 +142,8 @@ class LifecycleBackfillReport:
     rows_written: int = 0
     fixtures: int = 0
     preserved_existing: int = 0
+    concurrency: int = DEFAULT_CONCURRENCY
+    coalesced: int = 0
     errors: list[str] = field(default_factory=list)
     leagues: list[str] = field(default_factory=list)
     from_date: str | None = None
@@ -158,6 +164,8 @@ class LifecycleBackfillReport:
             "rows_written": self.rows_written,
             "fixtures": self.fixtures,
             "preserved_existing": self.preserved_existing,
+            "concurrency": self.concurrency,
+            "coalesced": self.coalesced,
             "errors": list(self.errors),
             "leagues": list(self.leagues),
             "from_date": self.from_date,
@@ -261,12 +269,26 @@ def _read_gzip_json(path: Path) -> dict[str, Any] | None:
     return payload if isinstance(payload, dict) else None
 
 
+_CACHE_WRITE_LOCK = threading.Lock()
+
+
 def _write_gzip_json(path: Path, payload: Mapping[str, Any]) -> Path:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f".{path.name}.tmp-{os.getpid()}")
-    with gzip.open(tmp, "wt", encoding="utf-8") as handle:
-        json.dump(payload, handle, sort_keys=True, separators=(",", ":"))
-    os.replace(tmp, path)
+    # Cache writes are small and local; one lock avoids two workers ever
+    # replacing the same path (and keeps the temp file unique by thread id).
+    # The gzip header mtime and filesystem mtime are pinned so the same payload
+    # always produces the same data-version fingerprint.
+    with _CACHE_WRITE_LOCK:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(f".{path.name}.tmp-{os.getpid()}-{threading.get_ident()}")
+        with open(tmp, "wb") as raw:
+            with gzip.GzipFile(fileobj=raw, mode="wb", mtime=0) as handle:
+                handle.write(
+                    json.dumps(payload, sort_keys=True, separators=(",", ":")).encode(
+                        "utf-8"
+                    )
+                )
+        os.utime(tmp, ns=(0, 0))
+        os.replace(tmp, path)
     return path
 
 
@@ -399,7 +421,7 @@ def _unique_event(fixture: Fixture, events: Iterable[EspnEvent]) -> EspnEvent | 
 
 
 class _Requester:
-    """A polite, rate-limited wrapper around a JSON fetcher."""
+    """A polite, thread-safe JSON requester with a global start-rate limit."""
 
     def __init__(
         self,
@@ -413,18 +435,55 @@ class _Requester:
         self.delay_s = max(0.0, float(delay_s))
         self.sleep = sleep
         self.clock = clock
-        self.last_request: float | None = None
+        self._lock = threading.Lock()
+        self._next_start = 0.0
+        self.request_count = 0
+        self.start_times: list[float] = []
 
     def get(self, url: str) -> dict[str, Any]:
-        if self.last_request is not None and self.delay_s > 0:
-            elapsed = self.clock() - self.last_request
-            remaining = self.delay_s - elapsed
-            if remaining > 0:
-                self.sleep(remaining)
-        try:
-            return self.fetcher(url)
-        finally:
-            self.last_request = self.clock()
+        # Reserve a start slot under the lock.  Holding the lock while sleeping
+        # makes the delay global rather than per worker; the network call itself
+        # runs outside the lock so concurrency is preserved.
+        with self._lock:
+            now = self.clock()
+            if self.delay_s > 0:
+                remaining = self._next_start - now
+                if remaining > 0:
+                    self.sleep(remaining)
+                    now = self.clock()
+            self.start_times.append(now)
+            self._next_start = now + self.delay_s
+            self.request_count += 1
+        return self.fetcher(url)
+
+
+_T = TypeVar("_T")
+
+
+class _Coalescer:
+    """In-run singleflight: one call per key, shared by duplicate workers."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._futures: dict[str, Future[_T]] = {}
+
+    def run(self, key: str, call: Callable[[], _T]) -> tuple[_T, bool]:
+        with self._lock:
+            future = self._futures.get(key)
+            owner = future is None
+            if owner:
+                future = Future()
+                self._futures[key] = future
+        assert future is not None
+        if owner:
+            try:
+                value = call()
+            except BaseException as exc:  # propagate to waiters, then re-raise
+                future.set_exception(exc)
+                raise
+            future.set_result(value)
+            return value, False
+        return future.result(), True
 
 
 def run_backfill(
@@ -439,6 +498,7 @@ def run_backfill(
     leagues: Iterable[str] | None = None,
     limit: int | None = None,
     delay_s: float = DEFAULT_DELAY_S,
+    concurrency: int = DEFAULT_CONCURRENCY,
     refresh: bool = False,
     fetcher: Callable[[str], dict[str, Any]] | None = None,
     sleep: Callable[[float], None] = time.sleep,
@@ -452,6 +512,9 @@ def run_backfill(
 
     ``skip_match_keys`` are fixtures already covered by an observed cached
     summary or by an existing lifecycle artifact; they are never re-fetched.
+    ``concurrency`` parallelises summary fetches inside each date group; the
+    rate limiter is shared, so the configured delay is global rather than per
+    worker.  Rows and counters are aggregated in the main thread.
     """
     events = Path(events_path) if events_path is not None else sources.require_file("polymarket_events")
     scoreboard_root = Path(scoreboard_dir) if scoreboard_dir is not None else _default_scoreboard_dir()
@@ -462,6 +525,10 @@ def run_backfill(
         raise ValueError("limit must be >= 0")
     if from_date is not None and to_date is not None and from_date > to_date:
         raise ValueError("from_date must be <= to_date")
+    if concurrency < 1 or concurrency > MAX_CONCURRENCY:
+        raise ValueError(
+            f"concurrency must be between 1 and {MAX_CONCURRENCY}, got {concurrency}"
+        )
 
     selected = _normalise_leagues(leagues)
     report = LifecycleBackfillReport(
@@ -469,6 +536,7 @@ def run_backfill(
         from_date=from_date.isoformat() if from_date else None,
         to_date=to_date.isoformat() if to_date else None,
         built_on=(today or date.today()).isoformat(),
+        concurrency=concurrency,
     )
 
     fixtures = _event_fixtures(events, selected)
@@ -498,6 +566,66 @@ def run_backfill(
             )
 
     requester = _Requester(default_fetcher, delay_s=delay_s, sleep=sleep, clock=clock)
+    coalescer = _Coalescer()
+    report_lock = threading.Lock()
+
+    def note_cache_hit() -> None:
+        with report_lock:
+            report.cache_hits += 1
+
+    def process_fixture(
+        fixture: Fixture,
+        event: EspnEvent,
+        league_code: str,
+        espn_league: str,
+    ) -> tuple[str, dict[str, Any] | None, Path | None, str | None]:
+        try:
+            (payload, summary_path), coalesced = coalescer.run(
+                f"summary:{espn_league}:{event.event_id}",
+                lambda: _load_summary(
+                    league_code,
+                    espn_league,
+                    event.event_id,
+                    source_root=source_root,
+                    cache_root=summary_root,
+                    refresh=refresh,
+                    requester=requester,
+                    report=report,
+                    report_lock=report_lock,
+                ),
+            )
+        except Exception as exc:  # noqa: BLE001 - one bad payload must not abort the run
+            return (
+                "failed",
+                None,
+                None,
+                f"summary {league_code} event {event.event_id}: {exc}",
+            )
+        if coalesced:
+            with report_lock:
+                report.coalesced += 1
+        if payload is None:
+            return (
+                "failed",
+                None,
+                summary_path,
+                f"summary {league_code} event {event.event_id}: fetch failed",
+            )
+        kickoff, end = extract_wallclocks(payload)
+        if kickoff is None or end is None:
+            return "incomplete", None, summary_path, None
+        return (
+            "row",
+            {
+                "match_key": fixture.match_key,
+                "actual_kickoff_utc": kickoff,
+                "actual_end_utc": end,
+                "source": "espn_keyevents",
+                "precision": "observed",
+            },
+            summary_path,
+            None,
+        )
 
     grouped: dict[tuple[str, date], list[Fixture]] = {}
     for fixture in candidates:
@@ -505,66 +633,72 @@ def run_backfill(
 
     rows: list[dict[str, Any]] = []
     input_files: list[Path] = []
-    for (league_code, event_date), group in sorted(grouped.items()):
-        report.dates_scanned += 1
-        espn_league = ESPN_LEAGUE_SLUGS[league_code]
-        scoreboard_path = scoreboard_root / f"{espn_league}_{event_date.isoformat()}.json.gz"
-        scoreboard = _read_gzip_json(scoreboard_path) if not refresh else None
-        if scoreboard is not None:
-            report.cache_hits += 1
-        else:
-            try:
-                scoreboard = requester.get(
-                    SCOREBOARD_URL.format(
-                        league=espn_league, dates=event_date.strftime("%Y%m%d")
+    errors: list[str] = []
+    executor = (
+        ThreadPoolExecutor(max_workers=concurrency, thread_name_prefix="lifecycle-backfill")
+        if concurrency > 1
+        else None
+    )
+    try:
+        for (league_code, event_date), group in sorted(grouped.items()):
+            report.dates_scanned += 1
+            espn_league = ESPN_LEAGUE_SLUGS[league_code]
+            scoreboard_path = scoreboard_root / f"{espn_league}_{event_date.isoformat()}.json.gz"
+            scoreboard = _read_gzip_json(scoreboard_path) if not refresh else None
+            if scoreboard is not None:
+                note_cache_hit()
+            else:
+                try:
+                    scoreboard = requester.get(
+                        SCOREBOARD_URL.format(
+                            league=espn_league, dates=event_date.strftime("%Y%m%d")
+                        )
                     )
-                )
-                report.requests += 1
-                _write_gzip_json(scoreboard_path, scoreboard)
-            except HttpError as exc:
-                report.errors.append(f"scoreboard {league_code} {event_date}: {exc}")
-                continue
-        input_files.append(scoreboard_path)
-        events_for_date = _parse_scoreboard(scoreboard)
+                    _write_gzip_json(scoreboard_path, scoreboard)
+                except HttpError as exc:
+                    errors.append(f"scoreboard {league_code} {event_date}: {exc}")
+                    continue
+            input_files.append(scoreboard_path)
+            events_for_date = _parse_scoreboard(scoreboard)
 
-        for fixture in group:
-            event = _unique_event(fixture, events_for_date)
-            if event is None:
-                report.unmatched += 1
-                continue
-            report.matched += 1
-            payload, summary_path = _load_summary(
-                league_code,
-                espn_league,
-                event.event_id,
-                source_root=source_root,
-                cache_root=summary_root,
-                refresh=refresh,
-                requester=requester,
-                report=report,
-            )
-            if payload is None:
-                report.errors.append(
-                    f"summary {league_code} event {event.event_id}: fetch failed"
-                )
-                continue
-            input_files.append(summary_path)
-            kickoff, end = extract_wallclocks(payload)
-            if kickoff is None or end is None:
-                report.incomplete += 1
-                continue
-            rows.append(
-                {
-                    "match_key": fixture.match_key,
-                    "actual_kickoff_utc": kickoff,
-                    "actual_end_utc": end,
-                    "source": "espn_keyevents",
-                    "precision": "observed",
-                }
-            )
-            report.rows_written += 1
+            matched: list[tuple[Fixture, EspnEvent]] = []
+            for fixture in group:
+                event = _unique_event(fixture, events_for_date)
+                if event is None:
+                    report.unmatched += 1
+                    continue
+                report.matched += 1
+                matched.append((fixture, event))
 
+            if executor is not None and len(matched) > 1:
+                futures = [
+                    executor.submit(process_fixture, fixture, event, league_code, espn_league)
+                    for fixture, event in matched
+                ]
+                outcomes = [future.result() for future in futures]
+            else:
+                outcomes = [
+                    process_fixture(fixture, event, league_code, espn_league)
+                    for fixture, event in matched
+                ]
+
+            for kind, row, summary_path, error in outcomes:
+                if summary_path is not None:
+                    input_files.append(summary_path)
+                if error is not None:
+                    errors.append(error)
+                if kind == "incomplete":
+                    report.incomplete += 1
+                elif kind == "row" and row is not None:
+                    rows.append(row)
+                    report.rows_written += 1
+    finally:
+        if executor is not None:
+            executor.shutdown(wait=True)
+
+    report.requests = requester.request_count
     rows.sort(key=lambda item: item["match_key"])
+    report.errors = sorted(errors)
     # Include every cache file for the selected leagues, not only the ones read
     # this run, so a no-op rerun computes the same lifecycle version.
     input_files.extend(
@@ -617,6 +751,7 @@ def _load_summary(
     refresh: bool,
     requester: _Requester,
     report: LifecycleBackfillReport,
+    report_lock: threading.Lock,
 ) -> tuple[dict[str, Any] | None, Path]:
     # The 2026 source cache uses Polymarket league codes; the backfill cache
     # uses ESPN competition slugs, matching the scoreboard cache.
@@ -626,7 +761,8 @@ def _load_summary(
         for path in (source_path, cache_path):
             payload = _read_gzip_json(path)
             if payload is not None:
-                report.cache_hits += 1
+                with report_lock:
+                    report.cache_hits += 1
                 return payload, path
     try:
         payload = requester.get(
@@ -634,6 +770,5 @@ def _load_summary(
         )
     except HttpError:
         return None, cache_path
-    report.requests += 1
     _write_gzip_json(cache_path, payload)
     return payload, cache_path

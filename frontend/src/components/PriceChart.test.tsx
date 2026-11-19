@@ -132,6 +132,27 @@ const trade: Trade = {
   fees_usd: 0.2,
 };
 
+const lifecycleWithEvents: LifecycleMeta = {
+  actual_kickoff_utc: "2024-10-19T10:00:00Z",
+  actual_end_utc: "2024-10-19T12:00:00Z",
+  events: [
+    {
+      ts: "2024-10-19T10:55:00Z",
+      type: "goal",
+      label: "GOAL",
+      team: "Bournemouth",
+      detail: "Goal! Bournemouth 1-0 Arsenal",
+    },
+    {
+      ts: "2024-10-19T11:05:00Z",
+      type: "halftime",
+      label: "HALF TIME",
+      team: null,
+      detail: null,
+    },
+  ],
+};
+
 const macd: ChartIndicatorSeries = {
   id: "macd",
   label: "MACD",
@@ -230,26 +251,7 @@ describe("price chart markers", () => {
   });
 
   it("labels halftime and goals, and hides only the goals when showGoals is false", () => {
-    const lifecycle: LifecycleMeta = {
-      actual_kickoff_utc: "2024-10-19T10:00:00Z",
-      actual_end_utc: "2024-10-19T12:00:00Z",
-      events: [
-        {
-          ts: "2024-10-19T10:55:00Z",
-          type: "goal",
-          label: "GOAL",
-          team: "Bournemouth",
-          detail: "Goal! Bournemouth 1-0 Arsenal",
-        },
-        {
-          ts: "2024-10-19T11:05:00Z",
-          type: "halftime",
-          label: "HALF TIME",
-          team: null,
-          detail: null,
-        },
-      ],
-    };
+    const lifecycle = lifecycleWithEvents;
     const view = render(
       <ThemeProvider>
         <PriceChart bars={bars} lifecycle={lifecycle} trades={[trade]} signals={[]} />
@@ -273,6 +275,50 @@ describe("price chart markers", () => {
     const texts = chartState.markers.map((marker) => marker.text);
     expect(texts).not.toContain("GOAL");
     expect(texts).toEqual(expect.arrayContaining(["HALF TIME", "KICKOFF", "END"]));
+  });
+
+  it("toggles goals on the existing chart without rebuilding or clearing the cursor", () => {
+    const view = render(
+      <ThemeProvider>
+        <PriceChart
+          bars={bars}
+          lifecycle={lifecycleWithEvents}
+          trades={[trade]}
+          signals={[]}
+        />
+      </ThemeProvider>,
+    );
+    expect(chartState.createChartCount).toBe(1);
+    const texts = () => chartState.markers.map((marker) => marker.text);
+    expect(texts()).toEqual(expect.arrayContaining(["GOAL", "HALF TIME", "KICKOFF", "END"]));
+
+    const handler = chartState.crosshairHandlers[0];
+    act(() => handler?.({ time: seconds(bars[1].ts_event) }));
+    expect(screen.getByTestId("price-chart-legend").textContent).toContain(
+      "Bar 2024-10-19 10:05 UTC",
+    );
+
+    view.rerender(
+      <ThemeProvider>
+        <PriceChart
+          bars={bars}
+          lifecycle={lifecycleWithEvents}
+          trades={[trade]}
+          signals={[]}
+          showGoals={false}
+        />
+      </ThemeProvider>,
+    );
+
+    // The goals toggle only re-applies markers: no new chart, no new cursor
+    // subscription, and the hovered bar stays in the legend.
+    expect(chartState.createChartCount).toBe(1);
+    expect(chartState.crosshairHandlers).toHaveLength(1);
+    expect(texts()).not.toContain("GOAL");
+    expect(texts()).toEqual(expect.arrayContaining(["HALF TIME", "KICKOFF", "END"]));
+    expect(screen.getByTestId("price-chart-legend").textContent).toContain(
+      "Bar 2024-10-19 10:05 UTC",
+    );
   });
 
   it("renders an empty position-window list without inventing shading or markers", () => {

@@ -138,6 +138,9 @@ export function PriceChart({
   // Cursor state lives outside the chart effect: hovering must never rebuild
   // the canvas, only re-render the legend strip.
   const [hovered, setHovered] = useState<Bar | null>(null);
+  // Bumped after every chart creation so marker application re-runs against the
+  // series that now exists; markers are never applied from the build effect.
+  const [chartGeneration, setChartGeneration] = useState(0);
 
   const candle = useMemo(() => barsToCandleData(bars), [bars]);
   const volume = useMemo(() => barsToVolumeData(bars), [bars]);
@@ -184,15 +187,6 @@ export function PriceChart({
     [indicators],
   );
 
-  const markerSignature = useMemo(
-    () =>
-      trades
-        .map((trade) => `${trade.trade_id}:${trade.entry_ts}:${trade.exit_ts ?? ""}:${trade.token}`)
-        .join("|") +
-      `::${signals.map((signal) => `${signal.ts}:${signal.kind}`).join("|")}`,
-    [trades, signals],
-  );
-
   const lifecycleSignature = useMemo(
     () =>
       lifecycle
@@ -203,9 +197,46 @@ export function PriceChart({
     [lifecycle],
   );
 
-  // Goals can be hidden without touching the candles or panes: the marker list
-  // is rebuilt and re-applied, and the effect keeps the cursor state.
-  const goalsSignature = showGoals ? "goals:on" : "goals:off";
+  // Markers are data, not chart structure: a new trade list or a goals toggle
+  // re-applies them on the existing candle series instead of rebuilding.
+  const markers = useMemo(
+    () =>
+      runChartMarkers({
+        trades,
+        signals,
+        lifecycle,
+        events: lifecycle?.events ?? null,
+        showGoals,
+      }).filter((marker) => Number.isFinite(marker.time)),
+    [trades, signals, lifecycle, showGoals],
+  );
+  // The click handler reads this ref, so hit-testing always sees the current
+  // list even though the subscription is installed only when the chart is built.
+  const markersRef = useRef(markers);
+  markersRef.current = markers;
+
+  const candleFirstTime = candle.data[0]?.time ?? null;
+  const candleLastTime = candle.data[candle.data.length - 1]?.time ?? null;
+  const visibleMarkers = useMemo<SeriesMarker<Time>[]>(() => {
+    if (candleFirstTime === null || candleLastTime === null) return [];
+    const tickets = markers.filter(
+      (marker) => marker.time >= candleFirstTime && marker.time <= candleLastTime,
+    );
+    // Dense runs keep the arrows but drop labels; settlement stays explicit.
+    const compactMarkers = tickets.length > 24;
+    return tickets.map((marker) => ({
+      time: marker.time as UTCTimestamp,
+      position: marker.position,
+      color: marker.color,
+      shape: marker.shape,
+      size: compactMarkers ? 0.6 : 1,
+      text:
+        compactMarkers && marker.kind !== "settlement" && !marker.id.startsWith("lifecycle:")
+          ? ""
+          : marker.text,
+      id: marker.id,
+    })) as SeriesMarker<Time>[];
+  }, [markers, candleFirstTime, candleLastTime]);
 
   const positionSignature = useMemo(
     () =>
@@ -331,38 +362,8 @@ export function PriceChart({
 
     // Trades and signals are independent artifacts: merging (not choosing
     // between them) keeps fill evidence visible once a trade list exists.
-    const markerList = runChartMarkers({
-      trades,
-      signals,
-      lifecycle,
-      events: lifecycle?.events ?? null,
-      showGoals,
-    }).filter((marker) => Number.isFinite(marker.time));
-
-    const tickets = markerList.filter(
-      (marker) =>
-        Number.isFinite(marker.time) &&
-        marker.time >= candle.data[0].time &&
-        marker.time <= candle.data[candle.data.length - 1].time,
-    );
-    // Dense runs keep the arrows but drop labels; settlement stays explicit.
-    const compactMarkers = tickets.length > 24;
-    candleSeries.setMarkers(
-      tickets.map((marker) => ({
-        time: marker.time as UTCTimestamp,
-        position: marker.position,
-        color: marker.color,
-        shape: marker.shape,
-        size: compactMarkers ? 0.6 : 1,
-        text:
-          compactMarkers &&
-          marker.kind !== "settlement" &&
-          !marker.id.startsWith("lifecycle:")
-            ? ""
-            : marker.text,
-        id: marker.id,
-      })) as SeriesMarker<Time>[],
-    );
+    // Markers are applied by the marker effect below, so a goals toggle or a
+    // new trade list never rebuilds this chart.
 
     chart.timeScale().fitContent();
 
@@ -427,7 +428,7 @@ export function PriceChart({
     chart.subscribeClick((param) => {
       if (!param.time || !onSelectTradeRef.current) return;
       const seconds = Number(param.time);
-      const hit = markerList.find(
+      const hit = markersRef.current.find(
         (marker) => marker.tradeId && Math.abs(marker.time - seconds) <= 1,
       );
       if (hit?.tradeId) onSelectTradeRef.current(hit.tradeId);
@@ -525,6 +526,10 @@ export function PriceChart({
       subscribedToMainRange = true;
     }
 
+    // The candle series now exists; let the marker effect paint the current
+    // marker list onto it (including after a rebuild).
+    setChartGeneration((generation) => generation + 1);
+
     return () => {
       resizeObserver.disconnect();
       chart.timeScale().unsubscribeVisibleLogicalRangeChange(updateBands);
@@ -541,19 +546,25 @@ export function PriceChart({
       setHovered(null);
     };
     // Chart is rebuilt when the data signature changes; the range is re-fitted,
-    // which keeps a research view reproducible rather than sticky.
+    // which keeps a research view reproducible rather than sticky. Trades,
+    // signals and the goals toggle are absent on purpose: they only change the
+    // marker list, which the marker effect below applies in place.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     dataSignature,
     indicatorSignature,
-    markerSignature,
     lifecycleSignature,
-    goalsSignature,
     positionSignature,
     theme,
     height,
     phaseFilter,
   ]);
+
+  // Marker updates ride on the existing candle series: toggling goals must not
+  // recreate the chart, re-fit the range or clear the cursor.
+  useEffect(() => {
+    candleRef.current?.setMarkers(visibleMarkers);
+  }, [visibleMarkers, chartGeneration]);
 
   if (candle.data.length === 0) {
     return (

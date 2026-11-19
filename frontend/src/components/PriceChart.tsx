@@ -40,6 +40,8 @@ export interface ChartIndicatorSeries {
   pane: "overlay" | "separate";
   lines: ChartIndicatorLine[];
   warmup?: number | null;
+  /** Preview state for a separate pane; an empty pane shows it instead of a blank chart. */
+  status?: "loading" | "empty" | "ready";
 }
 
 interface PriceChartProps {
@@ -147,9 +149,9 @@ export function PriceChart({
   }, [bars]);
   const barByTimeRef = useRef(barByTime);
   barByTimeRef.current = barByTime;
-  const separateIndicators = indicators.filter(
-    (indicator) => indicator.pane === "separate" && indicator.lines.length > 0,
-  );
+  // A selected separate-pane indicator owns its pane whether or not values have
+  // arrived; only its lines are conditional.
+  const separateIndicators = indicators.filter((indicator) => indicator.pane === "separate");
   const lineColors = useMemo(() => allocateLineColors(indicators), [indicators]);
 
   // Stable signatures avoid rebuilding the canvas when the parent re-renders
@@ -444,6 +446,7 @@ export function PriceChart({
     const paneObservers: ResizeObserver[] = [];
 
     for (const indicator of separateIndicators) {
+      if (indicator.lines.length === 0) continue;
       const paneContainer = separateContainers.current.get(indicator.id);
       if (!paneContainer) continue;
       const pane = createChart(paneContainer, {
@@ -705,14 +708,25 @@ export function PriceChart({
                     ))}
                   </span>
                 </div>
-                <div
-                  ref={(element) => {
-                    if (element) separateContainers.current.set(indicator.id, element);
-                    else separateContainers.current.delete(indicator.id);
-                  }}
-                  data-testid={`separate-pane-${indicator.id}`}
-                  className="w-full"
-                />
+                {indicator.lines.length === 0 ? (
+                  <div
+                    data-testid={`separate-pane-message-${indicator.id}`}
+                    className="px-3 py-2 text-[10px] text-ink-faint"
+                  >
+                    {indicator.status === "loading"
+                      ? "Awaiting server values"
+                      : "No values in this range"}
+                  </div>
+                ) : (
+                  <div
+                    ref={(element) => {
+                      if (element) separateContainers.current.set(indicator.id, element);
+                      else separateContainers.current.delete(indicator.id);
+                    }}
+                    data-testid={`separate-pane-${indicator.id}`}
+                    className="w-full"
+                  />
+                )}
               </div>
             );
           })}

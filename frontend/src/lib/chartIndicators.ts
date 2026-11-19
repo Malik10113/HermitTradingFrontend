@@ -23,19 +23,32 @@ export function buildChartIndicators({
   preview: IndicatorPreviewResponse | null;
   specs: IndicatorSpec[];
 }): { series: ChartIndicatorSeries[]; mismatch: string | null } {
-  if (!preview) return { series: [], mismatch: null };
   const specsById = new Map(specs.map((spec) => [spec.id, spec]));
-  const timestamps = preview.timestamps ?? preview.ts_event ?? null;
+  const timestamps = preview ? (preview.timestamps ?? preview.ts_event ?? null) : null;
   let mismatch: string | null = null;
   const series: ChartIndicatorSeries[] = [];
 
   instances.forEach((instance, index) => {
     if (instance.visible === false) return;
     const spec = specsById.get(instance.type);
-    const outputSeries = preview.series?.[instance.instance_id];
-    if (!outputSeries) {
-      if (!mismatch) {
+    const pane = spec?.pane === "separate" ? "separate" : "overlay";
+    const base = {
+      id: instance.instance_id,
+      label: spec?.label ?? instance.type,
+      color: instance.color ?? INDICATOR_PALETTE[index % INDICATOR_PALETTE.length],
+      pane,
+      warmup: preview?.warmup?.[instance.instance_id] ?? spec?.warmup ?? null,
+    } as const;
+    const outputSeries = preview?.series?.[instance.instance_id];
+    if (!preview || !outputSeries) {
+      // A separate pane is owned by the selection, not by the preview: without
+      // values it stays visible and says so. An empty overlay would only add a
+      // legend entry for nothing, so it is still omitted.
+      if (preview && !mismatch) {
         mismatch = `no series returned for ${instance.instance_id}`;
+      }
+      if (pane === "separate") {
+        series.push({ ...base, lines: [], status: preview ? "empty" : "loading" });
       }
       return;
     }
@@ -53,15 +66,13 @@ export function buildChartIndicators({
         return { key, label: labelsByKey.get(key) ?? key, points: aligned.points };
       })
       .filter((line) => line.points.length > 0);
-    if (lines.length === 0) return;
-    series.push({
-      id: instance.instance_id,
-      label: spec?.label ?? instance.type,
-      color: instance.color ?? INDICATOR_PALETTE[index % INDICATOR_PALETTE.length],
-      pane: spec?.pane === "separate" ? "separate" : "overlay",
-      lines,
-      warmup: preview.warmup?.[instance.instance_id] ?? spec?.warmup ?? null,
-    });
+    if (lines.length === 0) {
+      if (pane === "separate") {
+        series.push({ ...base, lines: [], status: "empty" });
+      }
+      return;
+    }
+    series.push({ ...base, lines, status: "ready" });
   });
 
   return { series, mismatch };

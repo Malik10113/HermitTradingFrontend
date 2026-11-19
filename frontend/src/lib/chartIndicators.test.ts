@@ -85,6 +85,57 @@ describe("chart indicator series", () => {
     expect(mismatch).toContain("no series returned for vwap");
   });
 
+  it("keeps a visible separate pane while its preview is still loading", () => {
+    const { series, mismatch } = buildChartIndicators({
+      bars,
+      instances: [{ instance_id: "rsi", type: "rsi", params: {}, visible: true }],
+      preview: null,
+      specs,
+    });
+    expect(mismatch).toBeNull();
+    expect(series).toHaveLength(1);
+    expect(series[0].id).toBe("rsi");
+    expect(series[0].pane).toBe("separate");
+    expect(series[0].lines).toEqual([]);
+    expect(series[0].status).toBe("loading");
+  });
+
+  it("keeps a separate pane the preview did not return and reports the mismatch", () => {
+    const { series, mismatch } = buildChartIndicators({
+      bars,
+      instances: [{ instance_id: "rsi", type: "rsi", params: {}, visible: true }],
+      preview: { ...preview, series: {} },
+      specs,
+    });
+    expect(mismatch).toContain("no series returned for rsi");
+    expect(series).toHaveLength(1);
+    expect(series[0].lines).toEqual([]);
+    expect(series[0].status).toBe("empty");
+  });
+
+  it("marks a separate pane whose values are all null as empty", () => {
+    const { series } = buildChartIndicators({
+      bars,
+      instances: [{ instance_id: "rsi", type: "rsi", params: {}, visible: true }],
+      preview: { ...preview, series: { rsi: { value: [null, null, null] } } },
+      specs,
+    });
+    expect(series).toHaveLength(1);
+    expect(series[0].lines).toEqual([]);
+    expect(series[0].status).toBe("empty");
+  });
+
+  it("still omits an overlay instance that the preview did not return", () => {
+    const { series, mismatch } = buildChartIndicators({
+      bars,
+      instances: [{ instance_id: "ema2", type: "ema", params: {}, visible: true }],
+      preview: { ...preview, series: {} },
+      specs,
+    });
+    expect(series).toEqual([]);
+    expect(mismatch).toContain("no series returned for ema2");
+  });
+
   it("uses the spec output label and falls back to the raw key", () => {
     const { series } = buildChartIndicators({
       bars,

@@ -308,6 +308,48 @@ describe("price chart markers", () => {
     ]);
   });
 
+  it("renders a separate pane with no overlay indicator selected", () => {
+    render(
+      <ThemeProvider>
+        <PriceChart bars={bars} lifecycle={null} indicators={[rsi]} />
+      </ThemeProvider>,
+    );
+    expect(chartState.createChartCount).toBe(2);
+    expect(screen.getByTestId("separate-pane-rsi")).toBeInTheDocument();
+    expect(screen.getByText(/server-computed series/i)).toBeInTheDocument();
+    expect(chartState.lineSeriesOptions.map((option) => option.title)).toEqual(["RSI · Value"]);
+    expect(screen.queryByTestId("separate-pane-message-rsi")).toBeNull();
+  });
+
+  it("keeps the separate section and states an empty range without a chart", () => {
+    const empty: ChartIndicatorSeries = { ...rsi, lines: [], status: "empty" };
+    render(
+      <ThemeProvider>
+        <PriceChart bars={bars} lifecycle={null} indicators={[empty]} />
+      </ThemeProvider>,
+    );
+    expect(chartState.createChartCount).toBe(1);
+    expect(chartState.lineSeriesOptions).toEqual([]);
+    expect(screen.getByText(/server-computed series/i)).toBeInTheDocument();
+    expect(screen.queryByTestId("separate-pane-rsi")).toBeNull();
+    expect(screen.getByTestId("separate-pane-message-rsi").textContent).toBe(
+      "No values in this range",
+    );
+  });
+
+  it("says it is awaiting server values while a separate pane has no preview", () => {
+    const loading: ChartIndicatorSeries = { ...rsi, lines: [], status: "loading" };
+    render(
+      <ThemeProvider>
+        <PriceChart bars={bars} lifecycle={null} indicators={[loading]} />
+      </ThemeProvider>,
+    );
+    expect(chartState.createChartCount).toBe(1);
+    expect(screen.getByTestId("separate-pane-message-rsi").textContent).toBe(
+      "Awaiting server values",
+    );
+  });
+
   it("gives every separate pane the main visible range and follows later main changes", () => {
     render(
       <ThemeProvider>

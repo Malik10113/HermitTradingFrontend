@@ -21,6 +21,8 @@ export interface WorkspaceState {
   runId: string;
   compare: string[];
   phase: PhaseFilter;
+  /** Chart goal markers; halftime and kickoff/end are unaffected. */
+  showGoals: boolean;
 }
 
 export interface ParsedWorkspace {
@@ -43,6 +45,7 @@ export const DEFAULT_WORKSPACE_STATE: WorkspaceState = {
   runId: "",
   compare: [],
   phase: "all",
+  showGoals: true,
 };
 
 const STORAGE_KEY = "htf.workspace.defaults";
@@ -240,6 +243,13 @@ export function parseWorkspaceSearch(search: string): ParsedWorkspace {
     else issues.push(`unknown phase "${phase}"`);
   }
 
+  const goals = params.get("goals");
+  if (goals !== null) {
+    if (goals === "0") state.showGoals = false;
+    else if (goals === "1") state.showGoals = true;
+    else issues.push(`unknown goals toggle "${goals}", using on`);
+  }
+
   return { state, issues };
 }
 
@@ -278,6 +288,7 @@ export function serializeWorkspaceState(state: WorkspaceState): URLSearchParams 
   if (state.runId) params.set("run", state.runId);
   if (state.compare.length > 0) params.set("compare", state.compare.join(","));
   if (state.phase !== "all") params.set("phase", state.phase);
+  if (!state.showGoals) params.set("goals", "0");
   return params;
 }
 

@@ -29,6 +29,7 @@ const fullState: WorkspaceState = {
   runId: "run-123",
   compare: ["run-1", "run-2"],
   phase: "in_play",
+  showGoals: false,
 };
 
 describe("workspace URL state", () => {
@@ -141,5 +142,22 @@ describe("workspace URL state", () => {
 
   it("serialises a default state to an empty query", () => {
     expect(workspaceSearchString(DEFAULT_WORKSPACE_STATE)).toBe("");
+  });
+
+  it("defaults goals on and round-trips goals=0 without serialising goals=1", () => {
+    expect(DEFAULT_WORKSPACE_STATE.showGoals).toBe(true);
+    const disabled = parseWorkspaceSearch("?goals=0");
+    expect(disabled.state.showGoals).toBe(false);
+    expect(serializeWorkspaceState(disabled.state).get("goals")).toBe("0");
+    expect(parseWorkspaceSearch(workspaceSearchString(disabled.state)).state.showGoals).toBe(false);
+
+    const enabled = parseWorkspaceSearch("?goals=1");
+    expect(enabled.state.showGoals).toBe(true);
+    expect(serializeWorkspaceState(enabled.state).get("goals")).toBeNull();
+  });
+
+  it("falls back to goals on for an invalid goals value without throwing", () => {
+    const parsed = parseWorkspaceSearch("?goals=maybe");
+    expect(parsed.state.showGoals).toBe(true);
   });
 });

@@ -565,6 +565,15 @@ export interface PositionWindow {
   exit_fallback_reason?: string | null;
 }
 
+/** One observed in-play event, as served by the lifecycle endpoint. */
+export interface LifecycleEvent {
+  ts: string;
+  type: "goal" | "halftime";
+  label: string;
+  team?: string | null;
+  detail?: string | null;
+}
+
 export interface LifecycleMeta {
   match_key?: string | null;
   actual_kickoff_utc?: string | null;
@@ -573,6 +582,8 @@ export interface LifecycleMeta {
   source?: string | null;
   precision?: string | null;
   phase?: LifecyclePhase | null;
+  /** Observed halftime/goal events, sorted by ts; absent data is an empty list. */
+  events?: LifecycleEvent[] | null;
 }
 
 export interface RunSummary {

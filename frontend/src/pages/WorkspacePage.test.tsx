@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
+import userEvent from "@testing-library/user-event";
+import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { WorkspacePage } from "./WorkspacePage";
 import { MetaProvider } from "../state/meta";
 import { ThemeProvider } from "../state/theme";
@@ -38,6 +39,26 @@ vi.mock("lightweight-charts", () => {
   };
 });
 
+// The workspace passes the goals toggle to the chart; record the prop instead
+// of rendering candles so the wiring can be asserted directly.
+const chartProps = vi.hoisted(() => ({
+  showGoals: null as boolean | null,
+  renders: 0,
+}));
+
+vi.mock("../components/PriceChart", () => ({
+  PriceChart: (props: { showGoals?: boolean }) => {
+    chartProps.showGoals = props.showGoals ?? true;
+    chartProps.renders += 1;
+    return <div data-testid="price-chart" data-show-goals={String(props.showGoals ?? true)} />;
+  },
+}));
+
+function SearchProbe() {
+  const location = useLocation();
+  return <div data-testid="search">{location.search}</div>;
+}
+
 function jsonResponse(body: unknown, status = 200): Response {
   return {
     ok: status >= 200 && status < 300,
@@ -59,131 +80,137 @@ const indicators = [
   },
 ];
 
+function stubApi(lifecycle: unknown) {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/api/meta")) {
+        return jsonResponse({
+          data_version: "sha256:abc123def4567890",
+          code_version: "git:deadbeef",
+          nautilus_version: "2.0.0rc9",
+        });
+      }
+      if (url.includes("/api/instruments?") || url.endsWith("/api/instruments")) {
+        return jsonResponse({
+          instruments: [
+            {
+              instrument_id: instrumentId,
+              question: "Bournemouth vs Arsenal",
+              league: "EPL",
+              selection: "YES",
+              venue: "POLYMARKET",
+              coverage: { from: "2024-10-01", to: "2024-12-01" },
+              trade_count: 1200,
+              quality_grade: "A",
+              settlement_known: true,
+              settlement_value: 0,
+              lifecycle,
+            },
+          ],
+          total: 1,
+        });
+      }
+      if (url.includes("/quality")) {
+        return jsonResponse({
+          instrument_id: instrumentId,
+          available_from: "2024-10-01",
+          available_to: "2024-12-01",
+          trade_count: 1200,
+          active_minute_pct: 42.5,
+          longest_gap_s: 3600,
+          median_trade_usd: 25,
+          quality_grade: "A",
+          warnings: [],
+          gaps: [{ from: "2024-10-05", to: "2024-10-06", duration_s: 86400 }],
+        });
+      }
+      if (url.includes("/api/bars")) {
+        return jsonResponse({
+          instrument_id: instrumentId,
+          bar_type: "...-5-MINUTE-LAST-INTERNAL@1-MINUTE-LAST-EXTERNAL",
+          data_version: "sha256:abc123def4567890",
+          bars: [
+            {
+              ts_event: "2024-10-19T13:55:00Z",
+              open: 0.4,
+              high: 0.42,
+              low: 0.39,
+              close: 0.41,
+              volume_usd: 120,
+              trade_count: 4,
+            },
+            {
+              ts_event: "2024-10-19T14:00:00Z",
+              open: 0.41,
+              high: 0.43,
+              low: 0.4,
+              close: 0.42,
+              volume_usd: 90,
+              trade_count: 3,
+            },
+          ],
+        });
+      }
+      if (url.endsWith("/api/indicators")) {
+        return jsonResponse([
+          {
+            id: "ema",
+            label: "EMA",
+            pane: "overlay",
+            parameters: [
+              { name: "period", type: "int", min: 2, max: 400, default: 20, step: 1 },
+            ],
+            outputs: [{ key: "value" }],
+            warmup: 19,
+          },
+        ]);
+      }
+      if (url.endsWith("/api/indicators/preview")) {
+        return jsonResponse({
+          series: { ema20: { value: [null, 0.42] } },
+          warmup: { ema20: 1 },
+          bars: 2,
+        });
+      }
+      if (url.endsWith("/api/strategies")) {
+        return jsonResponse({
+          builtins: [
+            {
+              id: "nautilus_ema_cross",
+              label: "Nautilus EMA cross",
+              description: "Fast EMA crosses slow EMA",
+              provenance: "Nautilus EMACross example",
+              parameters: [
+                { name: "fast", type: "int", min: 2, max: 100, default: 10, step: 1 },
+              ],
+            },
+          ],
+          saved: [],
+        });
+      }
+      if (url.endsWith("/api/execution/preflight")) {
+        return jsonResponse({
+          requested: "conservative",
+          effective: "conservative",
+          fallback_reason: null,
+          cost_estimate: { fee_bps: 0, slippage_bps: 10, per_side_bps: 10 },
+        });
+      }
+      throw new Error(`Unexpected request ${url} ${init?.method ?? "GET"}`);
+    }),
+  );
+}
+
+const defaultLifecycle = {
+  actual_kickoff_utc: "2024-10-19T14:00:00Z",
+  actual_end_utc: "2024-10-19T16:00:00Z",
+};
+
 describe("workspace wiring", () => {
   it("renders an instrument, server indicator and enabled run control without fabricating data", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-        const url = String(input);
-        if (url.endsWith("/api/meta")) {
-          return jsonResponse({
-            data_version: "sha256:abc123def4567890",
-            code_version: "git:deadbeef",
-            nautilus_version: "2.0.0rc9",
-          });
-        }
-        if (url.includes("/api/instruments?") || url.endsWith("/api/instruments")) {
-          return jsonResponse({
-            instruments: [
-              {
-                instrument_id: instrumentId,
-                question: "Bournemouth vs Arsenal",
-                league: "EPL",
-                selection: "YES",
-                venue: "POLYMARKET",
-                coverage: { from: "2024-10-01", to: "2024-12-01" },
-                trade_count: 1200,
-                quality_grade: "A",
-                settlement_known: true,
-                settlement_value: 0,
-                lifecycle: {
-                  actual_kickoff_utc: "2024-10-19T14:00:00Z",
-                  actual_end_utc: "2024-10-19T16:00:00Z",
-                },
-              },
-            ],
-            total: 1,
-          });
-        }
-        if (url.includes("/quality")) {
-          return jsonResponse({
-            instrument_id: instrumentId,
-            available_from: "2024-10-01",
-            available_to: "2024-12-01",
-            trade_count: 1200,
-            active_minute_pct: 42.5,
-            longest_gap_s: 3600,
-            median_trade_usd: 25,
-            quality_grade: "A",
-            warnings: [],
-            gaps: [{ from: "2024-10-05", to: "2024-10-06", duration_s: 86400 }],
-          });
-        }
-        if (url.includes("/api/bars")) {
-          return jsonResponse({
-            instrument_id: instrumentId,
-            bar_type: "...-5-MINUTE-LAST-INTERNAL@1-MINUTE-LAST-EXTERNAL",
-            data_version: "sha256:abc123def4567890",
-            bars: [
-              {
-                ts_event: "2024-10-19T13:55:00Z",
-                open: 0.4,
-                high: 0.42,
-                low: 0.39,
-                close: 0.41,
-                volume_usd: 120,
-                trade_count: 4,
-              },
-              {
-                ts_event: "2024-10-19T14:00:00Z",
-                open: 0.41,
-                high: 0.43,
-                low: 0.4,
-                close: 0.42,
-                volume_usd: 90,
-                trade_count: 3,
-              },
-            ],
-          });
-        }
-        if (url.endsWith("/api/indicators")) {
-          return jsonResponse([
-            {
-              id: "ema",
-              label: "EMA",
-              pane: "overlay",
-              parameters: [
-                { name: "period", type: "int", min: 2, max: 400, default: 20, step: 1 },
-              ],
-              outputs: [{ key: "value" }],
-              warmup: 19,
-            },
-          ]);
-        }
-        if (url.endsWith("/api/indicators/preview")) {
-          return jsonResponse({
-            series: { ema20: { value: [null, 0.42] } },
-            warmup: { ema20: 1 },
-            bars: 2,
-          });
-        }
-        if (url.endsWith("/api/strategies")) {
-          return jsonResponse({
-            builtins: [
-              {
-                id: "nautilus_ema_cross",
-                label: "Nautilus EMA cross",
-                description: "Fast EMA crosses slow EMA",
-                provenance: "Nautilus EMACross example",
-                parameters: [
-                  { name: "fast", type: "int", min: 2, max: 100, default: 10, step: 1 },
-                ],
-              },
-            ],
-            saved: [],
-          });
-        }
-        if (url.endsWith("/api/execution/preflight")) {
-          return jsonResponse({
-            requested: "conservative",
-            effective: "conservative",
-            fallback_reason: null,
-            cost_estimate: { fee_bps: 0, slippage_bps: 10, per_side_bps: 10 },
-          });
-        }
-        throw new Error(`Unexpected request ${url} ${init?.method ?? "GET"}`);
-      }),
-    );
+    stubApi(defaultLifecycle);
 
     const state = JSON.stringify(indicators);
     render(
@@ -219,5 +246,67 @@ describe("workspace wiring", () => {
       expect(screen.getByRole("button", { name: /run backtest/i })).toBeEnabled();
     });
     expect(screen.queryByText(/fabricated/i)).toBeNull();
+  });
+
+  it("defaults the Goals checkbox on and keeps goals=0 in the URL when unchecked", async () => {
+    chartProps.showGoals = null;
+    stubApi({
+      actual_kickoff_utc: "2024-10-19T14:00:00Z",
+      actual_end_utc: "2024-10-19T16:00:00Z",
+      events: [
+        {
+          ts: "2024-10-19T14:55:00Z",
+          type: "goal",
+          label: "GOAL",
+          team: "Bournemouth",
+          detail: "Goal! Bournemouth 1-0 Arsenal",
+        },
+        {
+          ts: "2024-10-19T15:05:00Z",
+          type: "halftime",
+          label: "HALF TIME",
+          team: null,
+          detail: null,
+        },
+      ],
+    });
+
+    const user = userEvent.setup();
+    render(
+      <MemoryRouter initialEntries={[`/?instrument=${encodeURIComponent(instrumentId)}`]}>
+        <ThemeProvider>
+          <MetaProvider>
+            <Routes>
+              <Route
+                path="/"
+                element={
+                  <>
+                    <WorkspacePage />
+                    <SearchProbe />
+                  </>
+                }
+              />
+            </Routes>
+          </MetaProvider>
+        </ThemeProvider>
+      </MemoryRouter>,
+    );
+
+    const toggle = await screen.findByLabelText(/goals/i);
+    expect(toggle).toBeChecked();
+    await waitFor(() => {
+      expect(screen.getByTestId("price-chart")).toHaveAttribute("data-show-goals", "true");
+    });
+    expect(chartProps.showGoals).toBe(true);
+
+    await user.click(toggle);
+    expect(toggle).not.toBeChecked();
+    await waitFor(() => {
+      expect(screen.getByTestId("price-chart")).toHaveAttribute("data-show-goals", "false");
+    });
+    expect(chartProps.showGoals).toBe(false);
+    await waitFor(() => {
+      expect(screen.getByTestId("search").textContent).toContain("goals=0");
+    });
   });
 });

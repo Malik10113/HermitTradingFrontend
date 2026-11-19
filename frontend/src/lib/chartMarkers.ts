@@ -1,5 +1,6 @@
 import type {
   Bar,
+  LifecycleEvent,
   LifecycleMeta,
   LifecyclePhase,
   PositionWindow,
@@ -14,6 +15,8 @@ export const CHART_COLORS = {
   neutral: "#E69F00",
   signal: "#56B4E9",
   settlement: "#CC79A7",
+  goal: "#0072B2",
+  halftime: "#56B4E9",
   positionLong: "rgba(0,158,115,0.10)",
   positionShort: "rgba(213,94,0,0.10)",
   preMatch: "rgba(86,180,233,0.10)",
@@ -388,6 +391,35 @@ export function lifecycleMarkers(
 }
 
 /**
+ * Halftime and goal markers. Halftime is always shown; goals only when the
+ * caller asked for them. Events with no parseable time are skipped, never
+ * placed at a guessed time.
+ */
+export function lifecycleEventMarkers(
+  events: LifecycleEvent[] | null | undefined,
+  showGoals = true,
+): ChartMarker[] {
+  const markers: ChartMarker[] = [];
+  (events ?? []).forEach((event, index) => {
+    if (event.type !== "halftime" && event.type !== "goal") return;
+    if (event.type === "goal" && !showGoals) return;
+    const time = toSeconds(event.ts);
+    if (time === null) return;
+    const halftime = event.type === "halftime";
+    markers.push({
+      time,
+      position: halftime ? "aboveBar" : "belowBar",
+      color: halftime ? CHART_COLORS.halftime : CHART_COLORS.goal,
+      shape: halftime ? "circle" : "square",
+      text: halftime ? "HALF TIME" : "GOAL",
+      id: `lifecycle:${event.type}:${index}:${time}`,
+      kind: "signal",
+    });
+  });
+  return markers.sort((a, b) => a.time - b.time || a.id.localeCompare(b.id));
+}
+
+/**
  * Every marker the chart shows for a run: entry/exit/settlement from the trade
  * artifact, signal/fill evidence from the signals artifact, then observed
  * lifecycle events. Signatures are from the artifacts, never inferred here.
@@ -396,12 +428,21 @@ export function runChartMarkers({
   trades,
   signals,
   lifecycle,
+  events,
+  showGoals = true,
 }: {
   trades: Trade[];
   signals: SignalPoint[];
   lifecycle: LifecycleMeta | null | undefined;
+  events?: LifecycleEvent[] | null;
+  showGoals?: boolean;
 }): ChartMarker[] {
-  return mergeMarkers(tradeMarkers(trades), signalMarkers(signals), lifecycleMarkers(lifecycle));
+  return mergeMarkers(
+    tradeMarkers(trades),
+    signalMarkers(signals),
+    lifecycleMarkers(lifecycle),
+    lifecycleEventMarkers(events ?? lifecycle?.events, showGoals),
+  );
 }
 
 export interface EquitySeries {

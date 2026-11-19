@@ -423,6 +423,9 @@ export function WorkspacePage() {
   const fullBarType = barsResource.data?.bar_type ?? barTypeLabel(state.barType);
   const barDuration = BAR_DURATION_MS[state.barType];
   const phaseAvailable = !!(lifecycle?.actual_kickoff_utc && lifecycle?.actual_end_utc);
+  const hasLifecycleEvents = (lifecycle?.events ?? []).some(
+    (event) => event.type === "halftime" || event.type === "goal",
+  );
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
@@ -553,6 +556,16 @@ export function WorkspacePage() {
                 </button>
               ))}
             </div>
+            <label className="flex items-center gap-1" htmlFor="chart-goals-toggle">
+              <input
+                id="chart-goals-toggle"
+                type="checkbox"
+                className="h-3 w-3 accent-current"
+                checked={state.showGoals}
+                onChange={(event) => patch({ showGoals: event.target.checked })}
+              />
+              <span className="label">Goals</span>
+            </label>
 
             <span className="ml-auto flex items-center gap-1.5">
               <button type="button" className="btn-ghost text-[11px]" onClick={copyLink}>
@@ -648,6 +661,7 @@ export function WorkspacePage() {
                   signals={run?.signals ?? []}
                   positions={positionWindows}
                   phaseFilter={state.phase}
+                  showGoals={state.showGoals}
                   stale={stale}
                   onSelectTrade={(tradeId) => {
                     setFocusTradeId(tradeId);
@@ -677,6 +691,11 @@ export function WorkspacePage() {
                 {(run?.trades?.length ?? 0) > 0 || (run?.signals?.length ?? 0) > 0 ? (
                   <span className="text-[9px] text-ink-faint" aria-label="Marker legend">
                     markers: ▲ buy · ▼ sell · ● settlement
+                  </span>
+                ) : null}
+                {hasLifecycleEvents ? (
+                  <span className="text-[9px] text-ink-faint" aria-label="Lifecycle marker legend">
+                    {state.showGoals ? "■ goal · ● half time" : "● half time"}
                   </span>
                 ) : null}
               </div>

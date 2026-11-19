@@ -229,6 +229,52 @@ describe("price chart markers", () => {
     expect(screen.queryByText(/Phase unknown/i)).toBeNull();
   });
 
+  it("labels halftime and goals, and hides only the goals when showGoals is false", () => {
+    const lifecycle: LifecycleMeta = {
+      actual_kickoff_utc: "2024-10-19T10:00:00Z",
+      actual_end_utc: "2024-10-19T12:00:00Z",
+      events: [
+        {
+          ts: "2024-10-19T10:55:00Z",
+          type: "goal",
+          label: "GOAL",
+          team: "Bournemouth",
+          detail: "Goal! Bournemouth 1-0 Arsenal",
+        },
+        {
+          ts: "2024-10-19T11:05:00Z",
+          type: "halftime",
+          label: "HALF TIME",
+          team: null,
+          detail: null,
+        },
+      ],
+    };
+    const view = render(
+      <ThemeProvider>
+        <PriceChart bars={bars} lifecycle={lifecycle} trades={[trade]} signals={[]} />
+      </ThemeProvider>,
+    );
+    expect(chartState.markers.map((marker) => marker.text)).toEqual(
+      expect.arrayContaining(["GOAL", "HALF TIME", "KICKOFF", "END"]),
+    );
+
+    view.rerender(
+      <ThemeProvider>
+        <PriceChart
+          bars={bars}
+          lifecycle={lifecycle}
+          trades={[trade]}
+          signals={[]}
+          showGoals={false}
+        />
+      </ThemeProvider>,
+    );
+    const texts = chartState.markers.map((marker) => marker.text);
+    expect(texts).not.toContain("GOAL");
+    expect(texts).toEqual(expect.arrayContaining(["HALF TIME", "KICKOFF", "END"]));
+  });
+
   it("renders an empty position-window list without inventing shading or markers", () => {
     render(
       <ThemeProvider>

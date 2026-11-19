@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
-import type { Bar, LifecycleMeta, Trade } from "../api/types";
+import type { Bar, LifecycleEvent, LifecycleMeta, Trade } from "../api/types";
 import {
   alignIndicatorSeries,
   barsToCandleData,
   CHART_COLORS,
+  lifecycleEventMarkers,
   lifecycleMarkers,
   normaliseEquityCurves,
   openPositionBands,
@@ -178,6 +179,85 @@ describe("chart markers from run artifacts", () => {
   it("uses a colour-blind-safe up/down pair that differs by more than hue", () => {
     expect(CHART_COLORS.up).not.toBe(CHART_COLORS.down);
     expect(CHART_COLORS.settlement).not.toBe(CHART_COLORS.signal);
+  });
+});
+
+describe("halftime and goal markers", () => {
+  const events: LifecycleEvent[] = [
+    {
+      ts: "2024-10-19T10:55:00Z",
+      type: "goal",
+      label: "GOAL",
+      team: "Bournemouth",
+      detail: "Goal! Bournemouth 1-0 Arsenal",
+    },
+    { ts: "2024-10-19T11:05:00Z", type: "halftime", label: "HALF TIME", team: null, detail: null },
+  ];
+  const at = (iso: string) => Math.floor(Date.parse(iso) / 1000);
+
+  it("keeps the halftime marker whether or not goals are shown", () => {
+    for (const showGoals of [true, false]) {
+      const halftime = lifecycleEventMarkers(events, showGoals).filter(
+        (marker) => marker.text === "HALF TIME",
+      );
+      expect(halftime).toHaveLength(1);
+      expect(halftime[0]).toMatchObject({
+        time: at("2024-10-19T11:05:00Z"),
+        position: "aboveBar",
+        shape: "circle",
+      });
+      expect(halftime[0].id.startsWith("lifecycle:halftime:")).toBe(true);
+    }
+  });
+
+  it("shows goal markers only when goals are enabled", () => {
+    const on = lifecycleEventMarkers(events, true);
+    const goals = on.filter((marker) => marker.text === "GOAL");
+    expect(goals).toHaveLength(1);
+    expect(goals[0]).toMatchObject({
+      time: at("2024-10-19T10:55:00Z"),
+      position: "belowBar",
+      shape: "square",
+    });
+    expect(goals[0].id.startsWith("lifecycle:goal:")).toBe(true);
+
+    const off = lifecycleEventMarkers(events, false);
+    expect(off.filter((marker) => marker.text === "GOAL")).toEqual([]);
+    expect(off.map((marker) => marker.text)).toEqual(["HALF TIME"]);
+  });
+
+  it("skips events with an unparseable time instead of inventing one", () => {
+    const markers = lifecycleEventMarkers(
+      [
+        { ts: "not-a-time", type: "goal", label: "GOAL", team: null, detail: null },
+        { ts: "", type: "halftime", label: "HALF TIME", team: null, detail: null },
+        ...events,
+      ],
+      true,
+    );
+    expect(markers.map((marker) => marker.text)).toEqual(["GOAL", "HALF TIME"]);
+    expect(markers.every((marker) => Number.isFinite(marker.time))).toBe(true);
+  });
+
+  it("sorts events by time and leaves kickoff/end markers unchanged", () => {
+    const markers = runChartMarkers({
+      trades: [],
+      signals: [],
+      lifecycle: { ...lifecycle, events: [events[1], events[0]] },
+      events: [events[1], events[0]],
+      showGoals: true,
+    });
+    expect(markers.map((marker) => marker.text)).toEqual([
+      "KICKOFF",
+      "GOAL",
+      "HALF TIME",
+      "END",
+    ]);
+    const kickoff = markers.find((marker) => marker.id === "lifecycle:kickoff");
+    expect(kickoff).toMatchObject({ text: "KICKOFF", shape: "arrowDown", position: "aboveBar" });
+    expect(markers.find((marker) => marker.id === "lifecycle:end")?.time).toBe(
+      at("2024-10-19T12:00:00Z"),
+    );
   });
 });
 

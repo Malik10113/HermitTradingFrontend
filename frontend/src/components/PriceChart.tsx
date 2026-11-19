@@ -53,6 +53,8 @@ interface PriceChartProps {
   /** Artifact-derived position windows; shading is never inferred from trades. */
   positions?: PositionWindow[];
   phaseFilter?: PhaseFilter;
+  /** Show goal markers; halftime and kickoff/end stay visible either way. */
+  showGoals?: boolean;
   stale?: boolean;
   height?: number;
   onSelectTrade?: (tradeId: string) => void;
@@ -118,6 +120,7 @@ export function PriceChart({
   signals = [],
   positions = [],
   phaseFilter = "all",
+  showGoals = true,
   stale = false,
   height = 460,
   onSelectTrade,
@@ -193,10 +196,16 @@ export function PriceChart({
   const lifecycleSignature = useMemo(
     () =>
       lifecycle
-        ? `${lifecycle.actual_kickoff_utc ?? ""}|${lifecycle.actual_end_utc ?? ""}|${lifecycle.settlement_ts ?? ""}`
+        ? `${lifecycle.actual_kickoff_utc ?? ""}|${lifecycle.actual_end_utc ?? ""}|${lifecycle.settlement_ts ?? ""}|${(lifecycle.events ?? [])
+            .map((event) => `${event.ts}:${event.type}`)
+            .join(",")}`
         : "",
     [lifecycle],
   );
+
+  // Goals can be hidden without touching the candles or panes: the marker list
+  // is rebuilt and re-applied, and the effect keeps the cursor state.
+  const goalsSignature = showGoals ? "goals:on" : "goals:off";
 
   const positionSignature = useMemo(
     () =>
@@ -322,9 +331,13 @@ export function PriceChart({
 
     // Trades and signals are independent artifacts: merging (not choosing
     // between them) keeps fill evidence visible once a trade list exists.
-    const markerList = runChartMarkers({ trades, signals, lifecycle }).filter((marker) =>
-      Number.isFinite(marker.time),
-    );
+    const markerList = runChartMarkers({
+      trades,
+      signals,
+      lifecycle,
+      events: lifecycle?.events ?? null,
+      showGoals,
+    }).filter((marker) => Number.isFinite(marker.time));
 
     const tickets = markerList.filter(
       (marker) =>
@@ -535,6 +548,7 @@ export function PriceChart({
     indicatorSignature,
     markerSignature,
     lifecycleSignature,
+    goalsSignature,
     positionSignature,
     theme,
     height,

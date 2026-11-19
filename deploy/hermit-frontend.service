@@ -1,22 +1,20 @@
 [Unit]
-Description=Hermit Trading Frontend (tailnet research dashboard)
+Description=Hermit Trading Frontend (production, tailnet research dashboard)
 After=network.target tailscaled.service
 Wants=tailscaled.service
 
 [Service]
 Type=simple
 User=root
-WorkingDirectory=/root/HermitTradingFrontend
+WorkingDirectory=/opt/hermit/prod
 Environment=HTF_HOST=127.0.0.1
 Environment=HTF_PORT=8787
-Environment=HTF_DATA_ROOT=/root/FundedBetBacktesting/data
-Environment=HTF_VAR=/root/HermitTradingFrontend/var
+Environment=HTF_VAR=/opt/hermit/var
 # Optional shared secret; set it in the environment, never in git.
 # Environment=HTF_APP_TOKEN=change-me
-ExecStart=/root/HermitTradingFrontend/.venv/bin/uvicorn backend.main:app --host 127.0.0.1 --port 8787
+ExecStart=/opt/hermit/prod/.venv/bin/uvicorn backend.main:app --host 127.0.0.1 --port 8787
 Restart=on-failure
 RestartSec=3
-# Workers are separate process groups; allow a run to finish or be terminated.
 KillMode=mixed
 TimeoutStopSec=30
 

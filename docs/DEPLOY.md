@@ -9,13 +9,53 @@ the checked-in exposure helper is [`deploy/tailscale-serve.sh`](../deploy/tailsc
 If this document and those files disagree, the files win — fix both in the same
 change.
 
-## 1. Build
+## 0. Build vs production
+
+Two checkouts, one listener:
+
+| Role | Path | Port | State |
+|---|---|---|---|
+| Build | `/root/HermitTradingFrontend` | 8788 (dev unit only) | `HTF_VAR=/opt/hermit/var-dev` |
+| Production | `/opt/hermit/prod` | 8787 | `HTF_VAR=/opt/hermit/var` |
+
+Production is a detached checkout promoted from a tested commit. Development
+and agent work happens in `/root/HermitTradingFrontend`; promoting a release
+never overwrites production `var/`.
+
+Promote:
 
 ```bash
 cd /root/HermitTradingFrontend
+deploy/promote.sh                 # origin/master
+deploy/promote.sh <commit-or-tag> # pinned release or rollback
+```
+
+The script fetches, checks out the target in `/opt/hermit/prod`, runs
+`uv sync --frozen`, rebuilds the frontend, restarts the unit and health-checks
+it. `var/` lives outside the checkout and is untouched.
+
+Preview the build without touching production:
+
+```bash
+sudo install -m 0644 deploy/hermit-frontend-dev.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now hermit-frontend-dev
+# http://127.0.0.1:8788
+```
+
+The dev unit uses `/opt/hermit/var-dev`, so its runs/presets are separate.
+Stop it when not needed; production continues on 8787.
+
+## 1. First production install
+
+```bash
+git clone /root/HermitTradingFrontend /opt/hermit/prod
+cd /opt/hermit/prod
 uv sync
-cd frontend && npm ci && npm run build && cd ..
-uv run python scripts/build_match_lifecycle.py
+(cd frontend && npm ci && npm run build)
+mkdir -p /opt/hermit/var
+# first install only: seed state from an existing checkout if desired
+# cp -a /root/HermitTradingFrontend/var/. /opt/hermit/var/
 ```
 
 Optional first load of bars and the instrument catalogue:
@@ -39,25 +79,24 @@ sudo systemctl enable --now hermit-frontend
 sudo systemctl status hermit-frontend
 ```
 
-The unit is:
+The production unit is:
 
 ```ini
 [Unit]
-Description=Hermit Trading Frontend (tailnet research dashboard)
+Description=Hermit Trading Frontend (production, tailnet research dashboard)
 After=network.target tailscaled.service
 Wants=tailscaled.service
 
 [Service]
 Type=simple
 User=root
-WorkingDirectory=/root/HermitTradingFrontend
+WorkingDirectory=/opt/hermit/prod
 Environment=HTF_HOST=127.0.0.1
 Environment=HTF_PORT=8787
-Environment=HTF_DATA_ROOT=/root/FundedBetBacktesting/data
-Environment=HTF_VAR=/root/HermitTradingFrontend/var
+Environment=HTF_VAR=/opt/hermit/var
 # Optional shared secret; set it in the environment, never in git.
 # Environment=HTF_APP_TOKEN=change-me
-ExecStart=/root/HermitTradingFrontend/.venv/bin/uvicorn backend.main:app --host 127.0.0.1 --port 8787
+ExecStart=/opt/hermit/prod/.venv/bin/uvicorn backend.main:app --host 127.0.0.1 --port 8787
 Restart=on-failure
 RestartSec=3
 # Workers are separate process groups; allow a run to finish or be terminated.

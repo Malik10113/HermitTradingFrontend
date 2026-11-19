@@ -1,0 +1,19 @@
+[Unit]
+Description=Hermit Trading Frontend (development build, tailnet preview)
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/HermitTradingFrontend
+Environment=HTF_HOST=127.0.0.1
+Environment=HTF_PORT=8788
+Environment=HTF_VAR=/opt/hermit/var-dev
+ExecStart=/root/HermitTradingFrontend/.venv/bin/uvicorn backend.main:app --host 127.0.0.1 --port 8788
+Restart=on-failure
+RestartSec=3
+KillMode=mixed
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

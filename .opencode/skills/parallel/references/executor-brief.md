@@ -16,6 +16,9 @@ You are an executor for feature <F1 "intent">. Work only inside the boundary bel
 - Write set (allowed, exclusive):
   - <path>#<symbol or line range>
   - <path2>
+- Test scope (exclusive): domain <data|indicators|engine|api|frontend|e2e|tooling>; command
+  `scripts/test_domains.sh --domain <domain> [--fast]` (or the narrower single-file command
+  in step 3). Never `--all` or `--changed`.
 - Read-only (do not modify): <paths>
 - Forbidden: any path outside the worktree; `var/`; `.trail/`; `.venv/`; `node_modules/`;
   `/root/FundedBetBacktesting/`; other worktrees; `git push`, `git tag`, `git rebase`,
@@ -33,7 +36,9 @@ You are an executor for feature <F1 "intent">. Work only inside the boundary bel
 0. Confirm the skeleton imports and your write set is the only thing you change.
 1. Read the files in the write set.
 2. <Specific change, in 1–4 steps. No design decisions left open.>
-3. Run: <exact acceptance command>
+3. Run exactly: `scripts/test_domains.sh --domain <domain> [--fast]` (or the narrower
+   single-file command named here). Never `--all` and never `--changed`: one widens the scope
+   past your atom, the other selects nothing after your commit.
    Expected: <exact expected output or assertion, e.g. "OK" with N tests, or specific
    new test name passing>
 4. Stage exactly the write set by path (`git add <path> …`), never `git add -A`;
@@ -72,11 +77,17 @@ passing check.
   that look like bad atoms.
 - Every acceptance check must be runnable in the worktree as written, with absolute or
   repo-relative paths that exist after `git switch -c` and the bootstrap.
+- Scope verification per task: only the domains the write set touches. `--all` is the master's
+  pre-merge gate, and `--changed` is wrong here because it diffs against `HEAD` and selects
+  nothing after the executor commits.
 - If the task needs data under `var/`, say how to materialize it read-only; do not let the
   executor write to the real store.
 - If you cannot state the contract verbatim, the task is not atomic: land the skeleton or a
   spine change first.
 - One commit per brief. If the change needs two commits, it is two briefs or a sequence.
+- A `skip` or `nothing to run` from the domain runner is not a passing check: bootstrap the
+  missing dependency (or say why it cannot be bootstrapped) or the executor must report
+  `BLOCKED`, never `DONE`.
 - Never put README or docs in a facade atom's write set. An atom that imports three or more
   other atoms is a wave-2 facade; docs are an import-free wave-1 atom of their own.
 - Say "stage by path, never `git add -A`" in every brief. The usual contamination is

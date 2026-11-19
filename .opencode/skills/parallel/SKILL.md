@@ -60,7 +60,8 @@ Parallelize only if **all four** hold:
 1. At least two atoms are independently mergeable, each with its own acceptance check.
 2. The serial spine — skeleton, contracts, acceptance harness — is under ~40% of the work.
 3. At least two atoms can start in the same wave, from the same merged base.
-4. The acceptance script exists and is frozen; neither executors nor the reviewer may edit it.
+4. The acceptance harness and each atom's domain check exist and are frozen; neither executors
+   nor the reviewer may edit them.
 
 If any fails: name the failing condition in one line, implement in this session, stop. Measured
 basis: five executors took 731 s against 245 s single-agent on a 1.5k-LOC project, both green.
@@ -98,6 +99,11 @@ them read-only; and paths in briefs must be absolute. Detail in `references/prot
   file list.
 - Do not let the reviewer edit, or an executor review its own diff.
 - Do not invent atoms to fill slots. Idle slots are cheaper than collisions.
+- Scope tests per executor: only the domains its write set touches
+  (`scripts/test_domains.sh --domain <domain>`, `--fast` when the brief says so). Never `--all`
+  from a subagent, and never `--changed` in a worktree: it diffs against `HEAD`, so it selects
+  nothing once the executor commits. The master runs `--all` before a wave merges. A `skip` or
+  `nothing to run` line from the runner is not a pass: fix the bootstrap or report `BLOCKED`.
 - Do not push, tag, or touch `var/` or `.trail/` unless the feature is about them. Executors
   never push; only the master pushes, and only after the gate and `trail check` are clean.
 - `/root/FundedBetBacktesting/` is read-only upstream data: never a write set, never a
@@ -124,6 +130,7 @@ M → F persona → general subagent (depth 1) — never deeper
 skeleton F1-S: signatures + fixtures, ≤80 lines, merged before wave 1, then frozen
 atomic = 1 intent + exclusive write set + 1 check + clean cherry-pick + 1 revert
 worktree per writer; bootstrap fixtures/ports/DBs; detached ⇒ git switch -c
+executor tests: --domain <d> only, never --all or --changed; master runs --all before merge
 wave 1 = no cross-atom imports;  facade (≥3 imports) is wave 2 and docs-free;  docs ride wave 1
 dispatch longest first;  launch while d ≥ 2c, backlog < 3, n < N_cap, width still pays
 integrate as it lands: one pick, gate it, green advances, red resets and routes

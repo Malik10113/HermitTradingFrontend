@@ -14,7 +14,7 @@ revert, and width change.
   "branch": "master",
   "repo": "/root/HermitTradingFrontend",
   "commands": {
-    "task": "pytest tests/data/test_sources.py -q",
+    "task": "scripts/test_domains.sh --domain data --fast",
     "wave": "scripts/test_domains.sh --all"
   },
   "costs": { "c_seconds": 600, "notes": "seeded; replaced after first measured round trip" },
@@ -38,6 +38,7 @@ revert, and width change.
           "kind": "atom",
           "imports": [],
           "write_set": ["backend/data/sources.py#load_tape"],
+          "test_scope": ["data"],
           "depends_on": [],
           "worktree": "/root/.local/share/opencode/worktree/eff35f/1118-1402-f1-e1",
           "branch": "pll/1118-1402/f1-e1",
@@ -83,8 +84,9 @@ F1-E5	2	facade	F1-E1,F1-E2,F1-E3	backend/api/routes.py tests/api/test_routes.py
 ```
 
 `imports` lists task ids whose modules this task imports, or `-`. `write_set` is
-space-separated. The ledger carries the same `wave`, `kind` and `imports` fields for the
-report; if the two disagree, the plan is wrong and `plan_check.mjs` is the arbiter.
+space-separated. The ledger carries the same `wave`, `kind` and `imports` fields, plus the
+`test_scope` domains the task runs; if the first three disagree, the plan is wrong and
+`plan_check.mjs` is the arbiter.
 
 ### Worktree bootstrap record
 

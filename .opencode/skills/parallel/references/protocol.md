@@ -15,15 +15,19 @@ skill's directory.
    needs). A red baseline means the run starts blocked; report it and stop dispatching.
 4. `RUN=$(date +%m%d-%H%M)`; create
    `/tmp/opencode/parallel/$RUN/{ledger.json,plan.tsv,briefs,reports,diffs}`.
-5. Record the repo's verification commands from `AGENTS.md`. Executors verify with the
-   narrowest one that proves their task.
-6. Record per-worktree resources: fixture paths, env files, port range, database paths.
+5. Record the repo's verification commands from `AGENTS.md` and map each atom's write set to
+   its domains. Executors verify with `scripts/test_domains.sh --domain <domain>` (add
+   `--fast` only when the brief says so) or a single test file. Never `--all`, and never
+   `--changed`: it diffs against `HEAD`, so inside an executor worktree it selects nothing
+   after the executor commits. `--all` belongs to the master's pre-merge gate.
+6. Record per-worktree resources: fixture paths, env files, port range, database paths, and
+   test dependencies (`frontend/node_modules`, the Python env).
 
 ## Phase 1 — Decompose (master, as each feature agent)
 
 For each feature, produce an `F` brief: intent in one sentence, observable acceptance
-criterion, subsystems touched, dependency edges, and the list of candidate atoms. Then turn
-each candidate into an atomic task.
+criterion with the domain-scoped command that proves it, subsystems touched, dependency edges,
+and the list of candidate atoms. Then turn each candidate into an atomic task.
 
 ### Atomicity test
 
@@ -154,6 +158,7 @@ what the repo's tests actually need, and declare it in the brief:
 | Env files (`.env`, `.env.test`) | Copy the test variant; never the secret-bearing one |
 | Ports | Allocate `PORT_BASE + index` per atom; two live servers must never share a port |
 | Databases | Path inside the worktree; a shared writable DB is a Tier C violation |
+| Test dependencies | `frontend/node_modules` installed per worktree (or copied read-only); Python via `uv run` in the worktree; a skipped domain is not a pass |
 | Generated caches | Leave absent; the executor's first run creates them |
 
 Record the allocation in the ledger and repeat it in the brief. In the measured run the
@@ -263,8 +268,8 @@ every report, not a phase barrier.
 
 ```sh
 git cherry-pick -x pll/<run>/<task>      # one pick at a time, never two
-<the atom's acceptance check>            # always
-scripts/test_domains.sh --changed        # when the atom touched a shared file or the skeleton
+<the atom's domain check>                # always: scripts/test_domains.sh --domain <d>
+scripts/test_domains.sh --all            # before the wave merges or a push, never per executor
 ```
 
 Rules:

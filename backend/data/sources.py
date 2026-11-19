@@ -76,6 +76,12 @@ DATASETS: tuple[Dataset, ...] = (
         None,
         "Cached ESPN summary JSON (keyEvents kickoff / end-regular-time)",
     ),
+    Dataset(
+        "espn_match_events",
+        "MATCH_EVENTS",
+        "wallclock_utc",
+        "ESPN in-play events (goals, cards, VAR) for the match spine",
+    ),
 )
 
 _BY_NAME = {dataset.name: dataset for dataset in DATASETS}

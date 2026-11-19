@@ -6,7 +6,7 @@ This file is generated from [`docs/data_register.json`](data_register.json). Do 
 
 `data/` is gitignored, so a clone contains no datasets. Every path below must be restored from its source or rebuilt from the recorded command. `verify` reports `MISSING` when a path is absent and `SIZE_DRIFT` when the measured size differs from the registered size by more than 10%.
 
-Registered: **8 datasets** (7 raw, 1 derived), **2.7 GB** on disk at registration.
+Registered: **9 datasets** (8 raw, 1 derived), **2.7 GB** on disk at registration.
 
 ## Datasets
 
@@ -20,6 +20,7 @@ Registered: **8 datasets** (7 raw, 1 derived), **2.7 GB** on disk at registratio
 | `polymarket_orderbooks_compact` | raw | `../FundedBetBacktesting/data/cache/orderbooks_compact` | 1.6 GB | Derived compaction of the Predexon per-token L2 files | 2026-11-18 | Predexon API terms of service; not redistributable |
 | `espn_fixture_map` | raw | `../FundedBetBacktesting/data/events/fixture_map.parquet` | 32.9 KB | ESPN fixture spine (match_key to event id) | 2026-11-18 | ESPN terms of service; personal research use only, not redistributable |
 | `espn_summary_cache` | raw | `../FundedBetBacktesting/data/events/espn/summary` | 34.1 MB | ESPN match summaries with keyEvents kickoff/end wallclock | 2026-11-18 | ESPN terms of service; personal research use only, not redistributable |
+| `espn_match_events` | raw | `../FundedBetBacktesting/data/events/match_events.parquet` | 329.1 KB | ESPN in-play match events (goals, cards, VAR, penalties) for the match spine | 2026-11-18 | ESPN terms of service; personal research use only, not redistributable |
 
 ## Re-download and rebuild notes
 
@@ -142,6 +143,21 @@ Registered: **8 datasets** (7 raw, 1 derived), **2.7 GB** on disk at registratio
   python scripts/build_match_lifecycle.py
   ```
 - **Notes:** 2026 ESPN match-summary cache (1,006/1,007 fixtures with both kickoff and end-regular-time wallclocks). Only keyEvents[].wallclock is read for lifecycle; pre-2026 backfill is cached under var/raw/espn. ESPN terms of service: personal research use only, not redistributable.
+
+### `espn_match_events`
+
+- **Path:** `../FundedBetBacktesting/data/events/match_events.parquet`
+- **Kind:** raw
+- **Source:** ESPN in-play match events (goals, cards, VAR, penalties) for the match spine <https://site.api.espn.com/apis/site/v2/sports/soccer/eng.1/summary>
+- **Retrieved:** 2026-11-18
+- **Size:** 329.1 KB (329,111 bytes)
+- **License:** ESPN terms of service; personal research use only, not redistributable
+- **Re-download / rebuild:**
+
+  ```bash
+  restore from the sibling repo; never modified
+  ```
+- **Notes:** One row per observed in-play event (match_key, event_type, wallclock_utc, team, event_text, sequence); 7,678 rows across 1,006 matches, 2026-01-01..2026-10-21. The chart reads goal types only (goal, goal---*, own-goal, penalty---scored); cards, VAR decisions and missed/saved penalties are never returned. Read-only; this repo never rebuilds or edits it.
 
 ---
 

@@ -96,6 +96,30 @@ def extract_wallclocks(
     return kickoff, end
 
 
+def extract_event_wallclock(payload: object | None, event_type: str) -> datetime | None:
+    """Earliest observed wallclock for one ``keyEvents`` type, or ``None``.
+
+    Used for observed in-play markers such as ``halftime``.  A missing or
+    malformed event yields ``None``; a time is never inferred from the clock.
+    """
+    if not isinstance(payload, dict):
+        return None
+    observed: list[datetime] = []
+    for event in payload.get("keyEvents") or ():
+        if not isinstance(event, dict):
+            continue
+        if (event.get("type") or {}).get("type") != event_type:
+            continue
+        raw = event.get("wallclock")
+        if not isinstance(raw, str) or not raw.strip():
+            continue
+        try:
+            observed.append(parse_iso_utc(raw))
+        except ValueError:
+            continue
+    return min(observed) if observed else None
+
+
 def _read_summary(path: Path) -> dict[str, Any] | None:
     try:
         with gzip.open(path, "rt", encoding="utf-8") as handle:

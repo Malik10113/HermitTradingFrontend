@@ -562,15 +562,25 @@ def quality(instrument_id: str, start: str | None, end: str | None) -> dict[str,
 
 def lifecycle(instrument_id: str) -> dict[str, Any]:
     inst = get_instrument(instrument_id)
+    from backend.data import events
     from backend.data import lifecycle as lc
 
+    match_key = inst.get("match_key")
+    observed = events.lifecycle_events(match_key) if match_key else []
     getter = getattr(lc, "lifecycle_for", None)
     if getter is None:
-        return {"phase_source": "unavailable"}
-    row = getter(inst.get("match_key"))
+        return {"phase_source": "unavailable", "events": observed}
+    row = getter(match_key)
     if row is None:
-        return {"match_key": inst.get("match_key"), "phase": "unknown", "reason": "no verified lifecycle row"}
-    return row.as_dict() if hasattr(row, "as_dict") else dict(row)
+        return {
+            "match_key": match_key,
+            "phase": "unknown",
+            "reason": "no verified lifecycle row",
+            "events": observed,
+        }
+    payload = row.as_dict() if hasattr(row, "as_dict") else dict(row)
+    payload["events"] = observed
+    return payload
 
 
 def settlement_for(instrument_id: str) -> dict[str, Any] | None:

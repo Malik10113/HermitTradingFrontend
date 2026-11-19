@@ -34,6 +34,7 @@ BOOKS_DIR = DATA_ROOT / "cache/orderbooks_compact"
 ESPN_SUMMARY_DIR = DATA_ROOT / "events/espn/summary"
 ESPN_SCOREBOARD_DIR = DATA_ROOT / "events/espn/scoreboard"
 FIXTURE_MAP = DATA_ROOT / "events/fixture_map.parquet"
+MATCH_EVENTS = DATA_ROOT / "events/match_events.parquet"
 
 # Generated paths.
 BARS_DIR = VAR_DIR / "bars"

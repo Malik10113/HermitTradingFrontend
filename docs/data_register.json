@@ -94,5 +94,17 @@
     "license": "ESPN terms of service; personal research use only, not redistributable",
     "rebuild": "python scripts/build_match_lifecycle.py",
     "notes": "2026 ESPN match-summary cache (1,006/1,007 fixtures with both kickoff and end-regular-time wallclocks). Only keyEvents[].wallclock is read for lifecycle; pre-2026 backfill is cached under var/raw/espn. ESPN terms of service: personal research use only, not redistributable."
+  },
+  {
+    "name": "espn_match_events",
+    "kind": "raw",
+    "path": "../FundedBetBacktesting/data/events/match_events.parquet",
+    "source": "ESPN in-play match events (goals, cards, VAR, penalties) for the match spine",
+    "source_url": "https://site.api.espn.com/apis/site/v2/sports/soccer/eng.1/summary",
+    "retrieved": "2026-11-18",
+    "size_bytes": 329111,
+    "license": "ESPN terms of service; personal research use only, not redistributable",
+    "rebuild": "restore from the sibling repo; never modified",
+    "notes": "One row per observed in-play event (match_key, event_type, wallclock_utc, team, event_text, sequence); 7,678 rows across 1,006 matches, 2026-01-01..2026-10-21. The chart reads goal types only (goal, goal---*, own-goal, penalty---scored); cards, VAR decisions and missed/saved penalties are never returned. Read-only; this repo never rebuilds or edits it."
   }
 ]

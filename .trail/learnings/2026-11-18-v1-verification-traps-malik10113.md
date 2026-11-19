@@ -1,5 +1,5 @@
 ---
-title: v1 verification traps: empty parquet rows, aggregated bars, path-dependent versions
+title: "v1 verification traps: empty parquet rows, aggregated bars, path-dependent versions"
 author: Malik10113
 date: 2026-11-18
 branch: verify-v1

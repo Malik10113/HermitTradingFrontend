@@ -16,6 +16,24 @@ measured. Keep entries short enough to scan; link the commit or PR.
 
 ---
 
+## 2026-11-19  Production/build split and v1 handoff
+
+- **Changed:** Production now runs from `/opt/hermit/prod` with
+  `HTF_VAR=/opt/hermit/var`; the build checkout remains
+  `/root/HermitTradingFrontend` with `var-dev`. Added
+  `deploy/promote.sh` (fetch, checkout, frozen sync, frontend build, restart,
+  health check, rollback line), a dev unit on 8788, and this session handoff.
+- **Why:** keep production serving while features are developed and tested in
+  the build tree, without sharing `app.db` or run artifacts.
+- **Measured:** production promoted to `98fb081`; `/api/health` green; frontend
+  23 files / 145 tests pass; backend suite green. Data: lifecycle 1,880 rows
+  (874 pre-2026 of 948 spine fixtures).
+- **Notes:** Tailscale Serve still needs the one-time admin-console enable; no
+  public listener exists. Production `var/` is outside the checkout and is never
+  overwritten by a promotion.
+
+---
+
 ## 2026-11-19  Lifecycle backfill: concurrency, global pacing and staging
 
 - **Changed:** Added `--concurrency` (default 1, cap 8) to the ESPN lifecycle

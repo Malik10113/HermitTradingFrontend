@@ -1,3 +1,5 @@
+> Current state and next steps: see [`SESSION_MASTER_2026-11-19_V1_HANDOFF.md`](SESSION_MASTER_2026-11-19_V1_HANDOFF.md).
+
 # Session master — 2026-11-18 — v1
 
 > The wrapup for the v1 build. `docs/BRIEF.md` stays authoritative for design;

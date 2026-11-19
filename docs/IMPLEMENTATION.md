@@ -87,9 +87,16 @@ event summary. Raw responses are cached gzipped under
 `var/raw/espn/scoreboard/{league}_{YYYY-MM-DD}.json.gz` and
 `var/raw/espn/summary/{league}_{event_id}.json.gz`, so a rerun resumes without
 repeating successful requests. Options: `--from`, `--to`, `--leagues`,
-`--limit`, `--delay` (default 0.25 s), `--refresh`. A cached observation and an
-existing artifact row always win over a backfilled one; no wallclock is
-invented, and unmatched or incomplete fixtures are reported but not written.
+`--limit`, `--delay` (default 0.25 s), `--concurrency` (default 1, cap 8),
+`--refresh`, and `--stage`. `--concurrency` parallelises summary fetches inside
+each league/date group; the shared limiter spaces request starts globally, so
+the delay is not multiplied by worker count. Retries and backoff are unchanged,
+duplicate scoreboard/summary URLs are coalesced to one request per run, and the
+artifact is written once after all workers finish. `--stage` writes
+`<out>.next` and atomically replaces the real lifecycle only after success, so
+readers never see a partial slice. A cached observation and an existing
+artifact row always win over a backfilled one; no wallclock is invented, and
+unmatched or incomplete fixtures are reported but not written.
 
 ### Bars
 

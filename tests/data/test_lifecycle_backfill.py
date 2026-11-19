@@ -10,6 +10,10 @@ from __future__ import annotations
 import gzip
 import importlib.util
 import json
+import shutil
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -193,13 +197,18 @@ class FakeEspn:
         self,
         scoreboards: dict[tuple[str, str], dict[str, Any]] | None = None,
         summaries: dict[tuple[str, str], dict[str, Any]] | None = None,
+        *,
+        fetch_delay_s: float = 0.0,
     ) -> None:
         self.scoreboards = scoreboards or {}
         self.summaries = summaries or {}
+        self.fetch_delay_s = fetch_delay_s
         self.calls: list[str] = []
 
     def __call__(self, url: str) -> dict[str, Any]:
         self.calls.append(url)
+        if self.fetch_delay_s:
+            time.sleep(self.fetch_delay_s)
         from urllib.parse import parse_qs, urlparse
 
         parsed = urlparse(url)
@@ -644,6 +653,234 @@ def test_leagues_filter_selects_only_requested_league(env: Env) -> None:
     assert result.report.fixtures == 1
     assert len(result.rows) == 1
     assert all("eng.1" in call for call in fetcher.calls)
+
+
+class FakeClock:
+    """Thread-safe fake monotonic clock advanced by fake sleeps."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._now = 0.0
+
+    def clock(self) -> float:
+        with self._lock:
+            return self._now
+
+    def sleep(self, seconds: float) -> None:
+        with self._lock:
+            self._now += max(0.0, seconds)
+
+
+def test_concurrency_produces_same_rows_and_version(env: Env) -> None:
+    fixtures = [
+        ("epl-aaa-bbb-2025-12-30", "burnley", "newcastle united", "bur", "new"),
+        ("epl-ccc-ddd-2025-12-30", "arsenal", "aston villa", "ars", "ast"),
+        ("epl-eee-fff-2025-12-30", "chelsea", "bournemouth", "che", "bou"),
+        ("epl-ggg-hhh-2025-12-30", "everton", "fulham", "eve", "ful"),
+    ]
+    _write_events(
+        env.events,
+        [
+            _event_row(key, "epl", date(2025, 12, 30), home, away, hc, ac)
+            for key, home, away, hc, ac in fixtures
+        ],
+    )
+    events = {
+        "burnley": ("9001", "Burnley", "Newcastle United", "BUR", "NEW"),
+        "arsenal": ("9002", "Arsenal", "Aston Villa", "ARS", "AST"),
+        "chelsea": ("9003", "Chelsea", "Bournemouth", "CHE", "BOU"),
+        "everton": ("9004", "Everton", "Fulham", "EVE", "FUL"),
+    }
+    scoreboard = _scoreboard(
+        "2025-12-30T19:30Z",
+        *((event_id, home, away, hc, ac) for event_id, home, away, hc, ac in events.values()),
+    )
+    summaries = {
+        ("eng.1", event_id): _summary(
+            f"2025-12-30T{kickoff}:00Z", f"2025-12-30T{end}:00Z"
+        )
+        for (event_id, *_rest), (kickoff, end) in zip(
+            events.values(),
+            (("19:30", "21:20"), ("20:00", "21:50"), ("20:30", "22:20"), ("21:00", "22:50")),
+        )
+    }
+
+    def fetcher() -> FakeEspn:
+        return FakeEspn(
+            scoreboards={("eng.1", "20251230"): scoreboard},
+            summaries=summaries,
+        )
+
+    serial_path = env.var / "lifecycle/serial.parquet"
+    serial = lifecycle.build_match_lifecycle(
+        backfill=True,
+        out_path=serial_path,
+        fetcher=fetcher(),
+        delay_s=0.0,
+        concurrency=1,
+        sleep=lambda _seconds: None,
+        today=date(2026, 11, 19),
+    )
+    shutil.rmtree(env.scoreboard, ignore_errors=True)
+    shutil.rmtree(env.backfill_summary, ignore_errors=True)
+    parallel_path = env.var / "lifecycle/parallel.parquet"
+    parallel = lifecycle.build_match_lifecycle(
+        backfill=True,
+        out_path=parallel_path,
+        fetcher=fetcher(),
+        delay_s=0.0,
+        concurrency=4,
+        sleep=lambda _seconds: None,
+        today=date(2026, 11, 19),
+    )
+
+    assert serial["rows"] == parallel["rows"] == 4
+    assert serial["lifecycle_version"] == parallel["lifecycle_version"]
+    assert serial["backfill_report"]["requests"] == parallel["backfill_report"]["requests"] == 5
+    assert lifecycle.load_lifecycle(serial_path) == lifecycle.load_lifecycle(parallel_path)
+
+
+def test_global_rate_limit_is_not_multiplied_by_workers() -> None:
+    clock = FakeClock()
+    requester = lifecycle_backfill._Requester(
+        lambda _url: {},
+        delay_s=0.25,
+        sleep=clock.sleep,
+        clock=clock.clock,
+    )
+    urls = [f"https://example.test/{index}" for index in range(6)]
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        list(pool.map(requester.get, urls))
+
+    starts = sorted(requester.start_times)
+    assert requester.request_count == 6
+    assert len(starts) == 6
+    assert all(round(later - earlier, 9) >= 0.25 for earlier, later in zip(starts, starts[1:]))
+
+
+def test_duplicate_summary_url_is_coalesced_and_written_once(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_events(
+        env.events,
+        [
+            _event_row("epl-aaa-bbb-2025-12-30", "epl", date(2025, 12, 30), "burnley", "newcastle united", "bur", "new"),
+            # A second Polymarket leg for the same ESPN event (same teams/date).
+            _event_row("epl-aaa-bbb-2025-12-30-b", "epl", date(2025, 12, 30), "burnley", "newcastle united", "bur", "new"),
+        ],
+    )
+    fetcher = FakeEspn(
+        scoreboards={
+            ("eng.1", "20251230"): _scoreboard(
+                "2025-12-30T19:30Z",
+                ("9001", "Burnley", "Newcastle United", "BUR", "NEW"),
+            )
+        },
+        summaries={
+            ("eng.1", "9001"): _summary(
+                "2025-12-30T19:30:00Z", "2025-12-30T21:20:00Z"
+            )
+        },
+        fetch_delay_s=0.02,
+    )
+
+    writes: list[Path] = []
+    write_lock = threading.Lock()
+    original_write = lifecycle_backfill._write_gzip_json
+
+    def tracking_write(path: Path, payload: dict[str, Any]) -> Path:
+        with write_lock:
+            writes.append(Path(path))
+        return original_write(path, payload)
+
+    monkeypatch.setattr(lifecycle_backfill, "_write_gzip_json", tracking_write)
+
+    result = _run(env, fetcher, concurrency=4)
+
+    summary_path = env.backfill_summary / "eng.1_9001.json.gz"
+    assert len(result.rows) == 2
+    assert result.report.matched == 2
+    assert result.report.requests == 2  # one scoreboard + one summary
+    assert result.report.coalesced == 1
+    assert sum(1 for call in fetcher.calls if "/summary?" in call) == 1
+    assert writes.count(summary_path) == 1
+
+
+def test_one_failed_summary_does_not_abort_others(env: Env) -> None:
+    _write_events(
+        env.events,
+        [
+            _event_row("epl-aaa-bbb-2025-12-30", "epl", date(2025, 12, 30), "burnley", "newcastle united", "bur", "new"),
+            _event_row("epl-ccc-ddd-2025-12-30", "epl", date(2025, 12, 30), "arsenal", "aston villa", "ars", "ast"),
+        ],
+    )
+    fetcher = FakeEspn(
+        scoreboards={
+            ("eng.1", "20251230"): _scoreboard(
+                "2025-12-30T19:30Z",
+                ("9001", "Burnley", "Newcastle United", "BUR", "NEW"),
+                ("9002", "Arsenal", "Aston Villa", "ARS", "AST"),
+            )
+        },
+        summaries={
+            ("eng.1", "9001"): _summary(
+                "2025-12-30T19:30:00Z", "2025-12-30T21:20:00Z"
+            )
+        },
+    )
+
+    result = _run(env, fetcher, concurrency=4)
+
+    assert len(result.rows) == 1
+    assert result.rows[0]["match_key"] == "epl-aaa-bbb-2025-12-30"
+    assert result.report.matched == 2
+    assert result.report.rows_written == 1
+    assert len(result.report.errors) == 1
+    assert "event 9002" in result.report.errors[0]
+
+
+def test_concurrency_validation_rejects_out_of_range(env: Env) -> None:
+    for value in (0, -1, 9):
+        with pytest.raises(ValueError):
+            _run(env, FailingFetcher(), concurrency=value)
+        with pytest.raises(ValueError):
+            lifecycle.build_match_lifecycle(concurrency=value)
+
+
+def test_stage_writes_next_then_replaces(env: Env) -> None:
+    _write_events(
+        env.events,
+        [_event_row("epl-aaa-bbb-2025-12-30", "epl", date(2025, 12, 30), "burnley", "newcastle united", "bur", "new")],
+    )
+    fetcher = FakeEspn(
+        scoreboards={
+            ("eng.1", "20251230"): _scoreboard(
+                "2025-12-30T19:30Z",
+                ("9001", "Burnley", "Newcastle United", "BUR", "NEW"),
+            )
+        },
+        summaries={
+            ("eng.1", "9001"): _summary(
+                "2025-12-30T19:30:00Z", "2025-12-30T21:20:00Z"
+            )
+        },
+    )
+
+    result = lifecycle.build_match_lifecycle(
+        backfill=True,
+        stage=True,
+        fetcher=fetcher,
+        delay_s=0.0,
+        sleep=lambda _seconds: None,
+        today=date(2026, 11, 19),
+    )
+
+    assert result["staged"] is True
+    assert env.lifecycle.exists()
+    assert not (env.lifecycle.with_name(env.lifecycle.name + ".next")).exists()
+    assert lifecycle.load_lifecycle()["epl-aaa-bbb-2025-12-30"].actual_end_utc == utc(
+        "2025-12-30T21:20:00Z"
+    )
 
 
 class _Response:

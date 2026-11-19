@@ -16,6 +16,23 @@ measured. Keep entries short enough to scan; link the commit or PR.
 
 ---
 
+## 2026-11-19  Lifecycle backfill: concurrency, global pacing and staging
+
+- **Changed:** Added `--concurrency` (default 1, cap 8) to the ESPN lifecycle
+  backfill, with a shared request-start limiter, in-run URL coalescing, atomic
+  cache writes, and `--stage` (`<out>.next` then replace). Cache gzip headers
+  and filesystem mtimes are pinned so identical payloads keep the same data
+  version.
+- **Why:** serial 0.25 s pacing made the remaining pre-2026 Big-4 backfill slow;
+  it must be safe to run in the background while the frontend is deployed.
+- **Measured:** `uv run pytest tests/data` (63 passed, 1 skipped). Real EPL
+  2024-11-01..30 slice: serial 46 requests / 26.69 s; concurrency 4 46 requests /
+  24.33 s, both with 36 matched, 28 rows and 8 incomplete. Global delay still
+  dominates and scoreboard dates remain serial.
+- **Notes:** `--stage` writes `<out>.next` and replaces the real artifact only
+  after success. Duplicate summary URLs are coalesced to one request; one failed
+  summary records an error and does not abort the run.
+
 ## 2026-11-18  Run provenance: per-fill sources, entry context, position windows
 
 - **Changed:** `GET /api/backtests/{id}` trade rows now keep the artifact

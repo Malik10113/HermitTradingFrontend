@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import gzip
 import json
+import os
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
@@ -193,7 +194,9 @@ def build_match_lifecycle(
     to_date: date | datetime | str | None = None,
     leagues: Iterable[str] | None = None,
     delay_s: float = 0.25,
+    concurrency: int = 1,
     refresh: bool = False,
+    stage: bool = False,
     events_path: Path | None = None,
     scoreboard_dir: Path | None = None,
     backfill_summary_dir: Path | None = None,
@@ -216,6 +219,14 @@ def build_match_lifecycle(
     end = _coerce_date(to_date)
     if start is not None and end is not None and start > end:
         raise ValueError("from_date must be <= to_date")
+
+    from backend.data import lifecycle_backfill
+
+    if concurrency < 1 or concurrency > lifecycle_backfill.MAX_CONCURRENCY:
+        raise ValueError(
+            "concurrency must be between 1 and "
+            f"{lifecycle_backfill.MAX_CONCURRENCY}, got {concurrency}"
+        )
 
     fixtures = _fixtures(fixture_path)
     if limit is not None:
@@ -266,8 +277,6 @@ def build_match_lifecycle(
                 existing_by_key.setdefault(key, row)
         carried_rows = list(existing_by_key.values())
 
-        from backend.data import lifecycle_backfill
-
         result = lifecycle_backfill.run_backfill(
             events_path=events_path,
             scoreboard_dir=scoreboard_dir,
@@ -279,6 +288,7 @@ def build_match_lifecycle(
             leagues=leagues,
             limit=limit,
             delay_s=delay_s,
+            concurrency=concurrency,
             refresh=refresh,
             fetcher=fetcher,
             sleep=sleep if sleep is not None else __import__("time").sleep,
@@ -326,9 +336,12 @@ def build_match_lifecycle(
         backfill_report["lifecycle_version_date"] = built_on
         backfill_report["built_on"] = built_on
         backfill_report["rows_in_artifact"] = table.num_rows
+    write_target = destination
+    if stage:
+        write_target = destination.with_name(f"{destination.name}.next")
     write_table(
         table,
-        destination,
+        write_target,
         {
             "lifecycle_version": version,
             "builder_version": versions.LIFECYCLE_BUILDER_VERSION,
@@ -343,6 +356,8 @@ def build_match_lifecycle(
             else "",
         },
     )
+    if stage:
+        os.replace(write_target, destination)
     return {
         "path": destination,
         "rows": table.num_rows,
@@ -356,6 +371,7 @@ def build_match_lifecycle(
         "preserved_existing": len(carried_rows),
         "built_on": built_on,
         "lifecycle_version_date": built_on,
+        "staged": stage,
     }
 
 

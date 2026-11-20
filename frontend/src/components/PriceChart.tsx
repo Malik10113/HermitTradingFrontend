@@ -94,6 +94,7 @@ interface GoalOverlay {
   team: string | null;
   minute: number | null;
   addedMinute: number | null;
+  clock: string | null;
   gapped: boolean;
   /** Vertical row for a flag when several goals share the same narrow gap. */
   row: number;
@@ -106,6 +107,7 @@ interface GoalPopup {
   team: string | null;
   minute: number | null;
   addedMinute: number | null;
+  clock: string | null;
   row: number;
 }
 
@@ -418,6 +420,7 @@ export function PriceChart({
       team: goal.team,
       minute: goal.minute,
       addedMinute: goal.addedMinute,
+      clock: goal.clock,
       row: goal.row,
     });
 
@@ -650,6 +653,7 @@ export function PriceChart({
           team: event.team ?? null,
           minute: event.minute ?? null,
           addedMinute: event.added_minute ?? null,
+          clock: event.clock ?? null,
           gapped: !goalCoveredByBar(goalTime, barTimes, barIntervalSeconds),
           row,
         });
@@ -1005,7 +1009,9 @@ export function PriceChart({
               role="note"
               tabIndex={0}
               aria-label={`Goal · ${goal.team ?? "team not available"} · ${
-                goalClock(goal) ? `${goalClock(goal)} · ` : ""
+                (goal.clock ?? goalClock(goal))
+                  ? `${goal.clock ?? goalClock(goal)} · `
+                  : ""
               }${fmtTimestamp(goal.ts)}`}
               className="pointer-events-auto absolute z-20 flex cursor-pointer items-start justify-center focus-visible:ring-1 focus-visible:ring-accent focus-visible:outline-none"
               style={{ left: Math.max(0, goal.x - 7), width: 14, height: 16, top: goal.row * 18 }}
@@ -1034,7 +1040,9 @@ export function PriceChart({
               }}
             >
               {`GOAL · ${goalPopup.team ?? "team not available"} · ${
-                goalClock(goalPopup) ? `${goalClock(goalPopup)} · ` : ""
+                (goalPopup.clock ?? goalClock(goalPopup))
+                  ? `${goalPopup.clock ?? goalClock(goalPopup)} · `
+                  : ""
               }${fmtTimestamp(goalPopup.ts)}`}
             </div>
           ) : null}

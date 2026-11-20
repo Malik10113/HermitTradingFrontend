@@ -107,7 +107,12 @@ def sources(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         json.dump(
             {
                 "keyEvents": [
-                    {"type": {"type": "halftime"}, "wallclock": "2026-05-19T21:50:00Z"}
+                    {
+                        "type": {"type": "goal"},
+                        "wallclock": "2026-05-19T21:08:56Z",
+                        "clock": {"displayValue": "32'"},
+                    },
+                    {"type": {"type": "halftime"}, "wallclock": "2026-05-19T21:50:00Z"},
                 ],
                 "commentary": [
                     {
@@ -176,6 +181,7 @@ def test_known_row_keeps_its_fields_and_adds_events(sources):
             "detail": "Goal! 1-0",
             "minute": 32,
             "added_minute": 0,
+            "clock": "32'",
         }
     ]
     assert payload["match_state"]["corners"] == [

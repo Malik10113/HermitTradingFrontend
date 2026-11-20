@@ -59,6 +59,9 @@ def _goal_rows(match_key: str, path: Path | None = None) -> list[tuple[datetime,
     source = _events_path(path)
     if not match_key or not source.is_file():
         return []
+    # The ESPN display clock ("32'", "90'+2'") is authoritative for the goal
+    # minute; the parquet `minute` is zero-based and loses stoppage time.
+    clock_by_wallclock = _goal_display_clocks(match_key) if path is None else {}
     con = duckdb.connect()
     try:
         rows = con.execute(
@@ -78,22 +81,21 @@ def _goal_rows(match_key: str, path: Path | None = None) -> list[tuple[datetime,
         if not is_goal_type(event_type):
             continue
         when = as_utc(wallclock)
-        out.append(
-            (
-                when,
-                {
-                    "ts": isoformat_z(when),
-                    "type": "goal",
-                    "label": "GOAL",
-                    "team": team if isinstance(team, str) and team.strip() else None,
-                    "detail": event_text
-                    if isinstance(event_text, str) and event_text.strip()
-                    else None,
-                    "minute": int(minute) if minute is not None else None,
-                    "added_minute": int(added_minute) if added_minute is not None else None,
-                },
-            )
-        )
+        row: dict[str, Any] = {
+            "ts": isoformat_z(when),
+            "type": "goal",
+            "label": "GOAL",
+            "team": team if isinstance(team, str) and team.strip() else None,
+            "detail": event_text
+            if isinstance(event_text, str) and event_text.strip()
+            else None,
+            "minute": int(minute) if minute is not None else None,
+            "added_minute": int(added_minute) if added_minute is not None else None,
+        }
+        clock = clock_by_wallclock.get(isoformat_z(when))
+        if clock:
+            row["clock"] = clock
+        out.append((when, row))
     out.sort(key=lambda item: item[0])
     return out
 
@@ -198,6 +200,47 @@ def _summary_payload(
             if payload is not None:
                 return payload
     return None
+
+
+def _goal_display_clocks(match_key: str) -> dict[str, str]:
+    """ESPN ``clock.displayValue`` per goal wallclock, from the cached summary.
+
+    Key events and commentary are both scanned: key events occasionally omit a
+    penalty goal that commentary carries.  A missing summary or clock simply
+    yields no display value; the caller still has the observed wallclock.
+    """
+    payload = _summary_payload(match_key, None, None)
+    if payload is None:
+        return {}
+    clocks: dict[str, str] = {}
+    for entry in payload.get("keyEvents") or ():
+        if not isinstance(entry, dict):
+            continue
+        kind = (entry.get("type") or {}).get("type")
+        wallclock = entry.get("wallclock")
+        clock = (entry.get("clock") or {}).get("displayValue")
+        if not is_goal_type(kind) or not isinstance(wallclock, str) or not isinstance(clock, str):
+            continue
+        try:
+            clocks[isoformat_z(parse_iso_utc(wallclock))] = clock
+        except ValueError:
+            continue
+    for entry in payload.get("commentary") or ():
+        if not isinstance(entry, dict):
+            continue
+        play = entry.get("play")
+        if not isinstance(play, dict):
+            continue
+        kind = (play.get("type") or {}).get("type")
+        wallclock = play.get("wallclock")
+        clock = (play.get("clock") or {}).get("displayValue")
+        if not is_goal_type(kind) or not isinstance(wallclock, str) or not isinstance(clock, str):
+            continue
+        try:
+            clocks[isoformat_z(parse_iso_utc(wallclock))] = clock
+        except ValueError:
+            continue
+    return clocks
 
 
 def _corner_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:

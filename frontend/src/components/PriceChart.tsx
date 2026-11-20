@@ -10,7 +10,14 @@ import {
   type Time,
   type UTCTimestamp,
 } from "lightweight-charts";
-import type { Bar, LifecycleMeta, PositionWindow, SignalPoint, Trade } from "../api/types";
+import type {
+  Bar,
+  LifecycleEvent,
+  LifecycleMeta,
+  PositionWindow,
+  SignalPoint,
+  Trade,
+} from "../api/types";
 import type { PhaseFilter } from "../lib/urlState";
 import {
   barsToCandleData,
@@ -71,6 +78,54 @@ interface OverlayBand {
   color: string;
   label: string;
   kind: "phase" | "position";
+}
+
+/** One goal pinned to an x coordinate; `gapped` means no bar covers its time. */
+interface GoalOverlay {
+  key: string;
+  x: number;
+  ts: string;
+  team: string | null;
+  gapped: boolean;
+}
+
+interface GoalPopup {
+  key: string;
+  x: number;
+  ts: string;
+  team: string | null;
+}
+
+/**
+ * True when some bar starts at or before the goal and the goal falls before
+ * that bar's start plus one bar interval. Only observed bar times are used.
+ */
+export function goalCoveredByBar(
+  goalTime: number,
+  barTimes: number[],
+  intervalSeconds: number,
+): boolean {
+  let low = 0;
+  let high = barTimes.length - 1;
+  let candidate = -1;
+  while (low <= high) {
+    const mid = (low + high) >> 1;
+    if (barTimes[mid] <= goalTime) {
+      candidate = mid;
+      low = mid + 1;
+    } else {
+      high = mid - 1;
+    }
+  }
+  if (candidate < 0) return false;
+  return goalTime < barTimes[candidate] + intervalSeconds;
+}
+
+/** The bar interval from the candle series; default 60 s. */
+function barIntervalSeconds(barTimes: number[]): number {
+  if (barTimes.length < 2) return 60;
+  const interval = barTimes[1] - barTimes[0];
+  return interval > 0 ? interval : 60;
 }
 
 const PHASE_LABELS: Record<string, string> = {
@@ -147,6 +202,14 @@ export function PriceChart({
   // Bumped after every chart creation so marker application re-runs against the
   // series that now exists; markers are never applied from the build effect.
   const [chartGeneration, setChartGeneration] = useState(0);
+  // Goal lines and hit areas are positioned from the chart's time scale, so
+  // they are recomputed on every visible-range change like the phase bands.
+  const [goalOverlays, setGoalOverlays] = useState<GoalOverlay[]>([]);
+  // One popup at a time; the goal it belongs to is identified by overlay key.
+  const [goalPopup, setGoalPopup] = useState<GoalPopup | null>(null);
+  // Chart width, kept for clamping the popup inside the plot area.
+  const [overlayWidth, setOverlayWidth] = useState(0);
+  const updateOverlayRef = useRef<(() => void) | null>(null);
 
   const candle = useMemo(() => barsToCandleData(bars), [bars]);
   const volume = useMemo(() => barsToVolumeData(bars), [bars]);
@@ -202,6 +265,20 @@ export function PriceChart({
         : "",
     [lifecycle],
   );
+
+  // Live state is served alongside the lifecycle row. `null` per list means the
+  // source does not cover the match; a covered but empty list is a real zero.
+  const matchState = lifecycle?.match_state ?? null;
+  // Goal lines and popups use the live goal list, falling back to the observed
+  // lifecycle events when an older payload has no match_state.
+  const goalEvents = useMemo<LifecycleEvent[]>(() => {
+    if (matchState) return matchState.goals ?? [];
+    return (lifecycle?.events ?? []).filter((event) => event.type === "goal");
+  }, [matchState, lifecycle]);
+  const goalEventsRef = useRef(goalEvents);
+  goalEventsRef.current = goalEvents;
+  const showGoalsRef = useRef(showGoals);
+  showGoalsRef.current = showGoals;
 
   // Markers are data, not chart structure: a new trade list or a goals toggle
   // re-applies them on the existing candle series instead of rebuilding.
@@ -259,6 +336,25 @@ export function PriceChart({
   const lastBar = bars[bars.length - 1];
   const legendCandle = hovered ?? last;
   const legendBar = hovered ?? lastBar;
+
+  // Goals and corners observed up to the hovered bar (or the last bar). A null
+  // list stays "n/a": an uncovered source is never reported as zero.
+  const matchCounts = useMemo(() => {
+    if (!matchState || !legendBar) return null;
+    const cutoff = Date.parse(legendBar.ts_event);
+    const countUpTo = (events: Array<{ ts: string }> | null): number | null => {
+      if (events === null) return null;
+      if (Number.isNaN(cutoff)) return null;
+      return events.filter((event) => {
+        const ts = Date.parse(event.ts);
+        return Number.isFinite(ts) && ts <= cutoff;
+      }).length;
+    };
+    return { goals: countUpTo(matchState.goals), corners: countUpTo(matchState.corners) };
+  }, [matchState, legendBar]);
+
+  const showGoalPopup = (goal: GoalOverlay) =>
+    setGoalPopup({ key: goal.key, x: goal.x, ts: goal.ts, team: goal.team });
 
   useEffect(() => {
     const container = containerRef.current;
@@ -374,14 +470,17 @@ export function PriceChart({
     chart.timeScale().fitContent();
 
     // Phase and open-position bands are drawn as a DOM overlay because the
-    // charting library has no native vertical-band primitive.
-    const updateBands = () => {
+    // charting library has no native vertical-band primitive. Goal lines and
+    // hit areas ride on the same timeToCoordinate pass.
+    const updateOverlay = () => {
       if (!overlayRef.current) return;
       const width = chart.timeScale().width();
       if (width <= 0) {
         setOverlay([]);
+        setGoalOverlays([]);
         return;
       }
+      setOverlayWidth(width);
       const visible = chart.timeScale().getVisibleRange();
       const visibleFrom = visible ? Number(visible.from) : -Infinity;
       const visibleTo = visible ? Number(visible.to) : Infinity;
@@ -421,15 +520,46 @@ export function PriceChart({
         });
       }
       setOverlay(bands);
-    };
 
-    chart.timeScale().subscribeVisibleLogicalRangeChange(updateBands);
+      if (!showGoalsRef.current) {
+        setGoalOverlays([]);
+        setGoalPopup(null);
+        return;
+      }
+      const barTimes = candle.data.map((point) => point.time);
+      const interval = barIntervalSeconds(barTimes);
+      const goals: GoalOverlay[] = [];
+      goalEventsRef.current.forEach((event, index) => {
+        const goalTime = Math.floor(Date.parse(event.ts) / 1000);
+        if (!Number.isFinite(goalTime)) return;
+        const rawX = chart.timeScale().timeToCoordinate(goalTime as UTCTimestamp);
+        if (rawX === null) return;
+        goals.push({
+          key: `goal:${index}:${goalTime}`,
+          x: Number(rawX),
+          ts: event.ts,
+          team: event.team ?? null,
+          gapped: !goalCoveredByBar(goalTime, barTimes, interval),
+        });
+      });
+      setGoalOverlays(goals);
+      // A pan can move or hide the goal the popup belongs to; keep it truthful
+      // or close it rather than leaving a popup at a stale coordinate.
+      setGoalPopup((previous) => {
+        if (!previous) return null;
+        const match = goals.find((goal) => goal.key === previous.key);
+        return match ? { ...previous, x: match.x } : null;
+      });
+    };
+    updateOverlayRef.current = updateOverlay;
+
+    chart.timeScale().subscribeVisibleLogicalRangeChange(updateOverlay);
     const resizeObserver = new ResizeObserver(() => {
       chart.applyOptions({ width: container.clientWidth || 600 });
-      updateBands();
+      updateOverlay();
     });
     resizeObserver.observe(container);
-    window.requestAnimationFrame(updateBands);
+    window.requestAnimationFrame(updateOverlay);
 
     chart.subscribeClick((param) => {
       if (!param.time || !onSelectTradeRef.current) return;
@@ -538,7 +668,8 @@ export function PriceChart({
 
     return () => {
       resizeObserver.disconnect();
-      chart.timeScale().unsubscribeVisibleLogicalRangeChange(updateBands);
+      chart.timeScale().unsubscribeVisibleLogicalRangeChange(updateOverlay);
+      if (updateOverlayRef.current === updateOverlay) updateOverlayRef.current = null;
       if (subscribedToMainRange) {
         chart.timeScale().unsubscribeVisibleTimeRangeChange(applyMainVisibleRange);
       }
@@ -549,6 +680,8 @@ export function PriceChart({
       chartRef.current = null;
       candleRef.current = null;
       setOverlay([]);
+      setGoalOverlays([]);
+      setGoalPopup(null);
       setHovered(null);
     };
     // Chart is rebuilt when the data signature changes; the range is re-fitted,
@@ -571,6 +704,12 @@ export function PriceChart({
   useEffect(() => {
     candleRef.current?.setMarkers(visibleMarkers);
   }, [visibleMarkers, chartGeneration]);
+
+  // A goals toggle or a new live goal list repositions the goal lines and hit
+  // areas on the existing chart instead of rebuilding it.
+  useEffect(() => {
+    updateOverlayRef.current?.();
+  }, [showGoals, goalEvents]);
 
   // Reset view bumps `resetKey`; re-fit the existing chart rather than tearing
   // it down. The initial key is remembered so mounting never counts as a reset
@@ -628,6 +767,25 @@ export function PriceChart({
             {legendBar?.trade_count == null ? "not available" : legendBar.trade_count}
           </span>
         </span>
+        {matchCounts ? (
+          <span
+            className="numeric text-ink"
+            data-testid="match-state"
+            title={`Live match state at the ${hovered ? "hovered" : "last"} bar · ${fmtTimestamp(
+              legendBar?.ts_event,
+            )}`}
+          >
+            Goals{" "}
+            <span className="text-ink-muted">
+              {matchCounts.goals === null ? "n/a" : matchCounts.goals}
+            </span>
+            {" · "}
+            Corners{" "}
+            <span className="text-ink-muted">
+              {matchCounts.corners === null ? "n/a" : matchCounts.corners}
+            </span>
+          </span>
+        ) : null}
         <span className="text-ink-faint">
           {hovered ? "Bar" : "Last bar"} {fmtTimestamp(legendBar?.ts_event, false)}
         </span>
@@ -696,22 +854,74 @@ export function PriceChart({
             lifecyclePhaseAvailable(lifecycle) ? ", lifecycle phases shaded" : ""
           }`}
         />
-        <div ref={overlayRef} className="pointer-events-none absolute inset-0" aria-hidden="true">
-          {overlay.map((band) => (
+        <div ref={overlayRef} className="pointer-events-none absolute inset-0">
+          <div aria-hidden="true" className="pointer-events-none absolute inset-0">
+            {overlay.map((band) => (
+              <div
+                key={band.key}
+                title={band.label}
+                className="absolute"
+                style={{
+                  left: band.left,
+                  width: band.width,
+                  background: band.color,
+                  top: band.kind === "position" ? undefined : 0,
+                  bottom: 0,
+                  height: band.kind === "position" ? 16 : undefined,
+                }}
+              />
+            ))}
+            {goalOverlays
+              .filter((goal) => goal.gapped)
+              .map((goal) => (
+                <div
+                  key={goal.key}
+                  data-testid="goal-line"
+                  className="absolute border-l border-dashed"
+                  style={{
+                    left: goal.x,
+                    top: 0,
+                    bottom: 0,
+                    borderColor: CHART_COLORS.goal,
+                  }}
+                >
+                  <span
+                    className="absolute left-0 top-0 whitespace-nowrap rounded-sm px-1 text-[9px] font-semibold leading-4 text-white"
+                    style={{ background: CHART_COLORS.goal }}
+                  >
+                    GOAL
+                  </span>
+                </div>
+              ))}
+          </div>
+          {goalOverlays.map((goal) => (
             <div
-              key={band.key}
-              title={band.label}
-              className="absolute"
-              style={{
-                left: band.left,
-                width: band.width,
-                background: band.color,
-                top: band.kind === "position" ? undefined : 0,
-                bottom: 0,
-                height: band.kind === "position" ? 16 : undefined,
-              }}
+              key={`hit:${goal.key}`}
+              data-testid="goal-hit"
+              role="button"
+              tabIndex={0}
+              aria-label={`Goal · ${goal.team ?? "team not available"} · ${fmtTimestamp(goal.ts)}`}
+              className="pointer-events-auto absolute cursor-pointer"
+              style={{ left: Math.max(0, goal.x - 6), width: 12, top: 0, bottom: 22 }}
+              onMouseEnter={() => showGoalPopup(goal)}
+              onFocus={() => showGoalPopup(goal)}
+              onMouseLeave={() => setGoalPopup(null)}
+              onBlur={() => setGoalPopup(null)}
             />
           ))}
+          {goalPopup ? (
+            <div
+              data-testid="goal-popup"
+              className="pointer-events-none absolute z-10 rounded border border-line bg-surface px-2 py-1 text-[10px] text-ink shadow"
+              style={{
+                left: Math.max(0, Math.min(goalPopup.x + 8, Math.max(0, overlayWidth - 230))),
+                top: 22,
+                maxWidth: 220,
+              }}
+            >
+              {`GOAL · ${goalPopup.team ?? "team not available"} · ${fmtTimestamp(goalPopup.ts)}`}
+            </div>
+          ) : null}
         </div>
       </div>
 

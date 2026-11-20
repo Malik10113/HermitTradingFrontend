@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { act, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import type { Bar, LifecycleMeta, Trade } from "../api/types";
 import type { ChartIndicatorSeries } from "./PriceChart";
 import { PriceChart } from "./PriceChart";
@@ -44,7 +44,18 @@ vi.mock("lightweight-charts", () => {
       setVisibleRange: (range: { from: number; to: number }) => {
         chartState.setVisibleRangeCalls.push({ index, range });
       },
-      timeToCoordinate: () => null,
+      // Map an in-range time linearly across the mocked 600 px plot, and return
+      // null out of range, like the real time scale. Goal lines depend on it.
+      timeToCoordinate: (time: number) => {
+        const times = chartState.candleTimes;
+        const range = chartState.mainVisibleRange;
+        if (times.length === 0) return null;
+        const from = range ? range.from : times[0];
+        const to = range ? range.to : times[times.length - 1];
+        if (to <= from) return null;
+        if (time < from || time > to) return null;
+        return ((time - from) / (to - from)) * 600;
+      },
       subscribeVisibleLogicalRangeChange: () => {},
       unsubscribeVisibleLogicalRangeChange: () => {},
       setVisibleLogicalRange: () => {},
@@ -154,6 +165,94 @@ const lifecycleWithEvents: LifecycleMeta = {
       detail: null,
     },
   ],
+};
+
+// The bars are 5-minute spaced at the start, so 10:00..10:05 is one interval
+// and anything after 10:10 (like the 10:55 goal below) is a gap.
+const lifecycleGoalGap = lifecycleWithEvents;
+
+const lifecycleGoalInsideBar: LifecycleMeta = {
+  actual_kickoff_utc: "2024-10-19T10:00:00Z",
+  actual_end_utc: "2024-10-19T12:00:00Z",
+  events: [
+    {
+      ts: "2024-10-19T10:02:00Z",
+      type: "goal",
+      label: "GOAL",
+      team: "Bournemouth",
+      detail: null,
+    },
+    {
+      ts: "2024-10-19T11:05:00Z",
+      type: "halftime",
+      label: "HALF TIME",
+      team: null,
+      detail: null,
+    },
+  ],
+};
+
+const lifecycleGoalWithoutTeam: LifecycleMeta = {
+  actual_kickoff_utc: "2024-10-19T10:00:00Z",
+  actual_end_utc: "2024-10-19T12:00:00Z",
+  events: [
+    { ts: "2024-10-19T10:02:00Z", type: "goal", label: "GOAL", team: null, detail: null },
+  ],
+};
+
+const liveMatchState: LifecycleMeta = {
+  actual_kickoff_utc: "2024-10-19T10:00:00Z",
+  actual_end_utc: "2024-10-19T12:00:00Z",
+  events: [
+    {
+      ts: "2024-10-19T10:00:00Z",
+      type: "goal",
+      label: "GOAL",
+      team: "Bournemouth",
+      detail: null,
+    },
+    {
+      ts: "2024-10-19T11:30:00Z",
+      type: "goal",
+      label: "GOAL",
+      team: "Arsenal",
+      detail: null,
+    },
+    {
+      ts: "2024-10-19T11:05:00Z",
+      type: "halftime",
+      label: "HALF TIME",
+      team: null,
+      detail: null,
+    },
+  ],
+  match_state: {
+    goals: [
+      {
+        ts: "2024-10-19T10:00:00Z",
+        type: "goal",
+        label: "GOAL",
+        team: "Bournemouth",
+        detail: null,
+      },
+      {
+        ts: "2024-10-19T11:30:00Z",
+        type: "goal",
+        label: "GOAL",
+        team: "Arsenal",
+        detail: null,
+      },
+    ],
+    corners: [
+      { ts: "2024-10-19T10:05:00Z", team: "Manchester City" },
+      { ts: "2024-10-19T12:30:00Z", team: "Manchester City" },
+    ],
+  },
+};
+
+const unavailableMatchState: LifecycleMeta = {
+  ...liveMatchState,
+  match_state: { goals: null, corners: null },
 };
 
 const macd: ChartIndicatorSeries = {
@@ -532,5 +631,145 @@ describe("price chart markers", () => {
 
     expect(chartState.createChartCount).toBe(1);
     expect(chartState.fitContentCalls).toBe(fittedOnMount + 1);
+  });
+
+  it("draws a dashed goal line and a hit area when a goal falls in a bar gap", async () => {
+    render(
+      <ThemeProvider>
+        <PriceChart bars={bars} lifecycle={lifecycleGoalGap} trades={[]} signals={[]} />
+      </ThemeProvider>,
+    );
+    const hits = await screen.findAllByTestId("goal-hit");
+    expect(hits).toHaveLength(1);
+    const lines = screen.getAllByTestId("goal-line");
+    expect(lines).toHaveLength(1);
+    expect(lines[0].className).toContain("border-dashed");
+    expect(lines[0].style.left).not.toBe("");
+    expect(hits[0].getAttribute("aria-label")).toContain("Bournemouth");
+    expect(hits[0].getAttribute("aria-label")).toContain("2024-10-19 10:55:00 UTC");
+  });
+
+  it("gives a goal inside a bar interval a hit area but no second line", async () => {
+    render(
+      <ThemeProvider>
+        <PriceChart bars={bars} lifecycle={lifecycleGoalInsideBar} trades={[]} signals={[]} />
+      </ThemeProvider>,
+    );
+    const hits = await screen.findAllByTestId("goal-hit");
+    expect(hits).toHaveLength(1);
+    expect(screen.queryAllByTestId("goal-line")).toHaveLength(0);
+  });
+
+  it("shows the goal team and formatted time on hover or focus and hides on leave", async () => {
+    render(
+      <ThemeProvider>
+        <PriceChart bars={bars} lifecycle={lifecycleGoalGap} trades={[]} signals={[]} />
+      </ThemeProvider>,
+    );
+    const [hit] = await screen.findAllByTestId("goal-hit");
+    fireEvent.mouseEnter(hit);
+    expect(screen.getByTestId("goal-popup").textContent).toContain("Bournemouth");
+    expect(screen.getByTestId("goal-popup").textContent).toContain("2024-10-19 10:55:00 UTC");
+    fireEvent.mouseLeave(hit);
+    expect(screen.queryByTestId("goal-popup")).toBeNull();
+
+    fireEvent.focusIn(hit);
+    expect(screen.getByTestId("goal-popup").textContent).toContain("Bournemouth");
+    fireEvent.focusOut(hit);
+    expect(screen.queryByTestId("goal-popup")).toBeNull();
+  });
+
+  it("never invents a team for a goal that names none", async () => {
+    render(
+      <ThemeProvider>
+        <PriceChart bars={bars} lifecycle={lifecycleGoalWithoutTeam} trades={[]} signals={[]} />
+      </ThemeProvider>,
+    );
+    const [hit] = await screen.findAllByTestId("goal-hit");
+    fireEvent.mouseEnter(hit);
+    const popup = screen.getByTestId("goal-popup");
+    expect(popup.textContent).toContain("team not available");
+    expect(hit.getAttribute("aria-label")).toContain("team not available");
+  });
+
+  it("hides goal lines, hit areas and popups with showGoals false but keeps halftime", async () => {
+    const view = render(
+      <ThemeProvider>
+        <PriceChart
+          bars={bars}
+          lifecycle={lifecycleGoalGap}
+          trades={[trade]}
+          signals={[]}
+        />
+      </ThemeProvider>,
+    );
+    const [hit] = await screen.findAllByTestId("goal-hit");
+    expect(screen.getAllByTestId("goal-line")).toHaveLength(1);
+    fireEvent.mouseEnter(hit);
+    expect(screen.getByTestId("goal-popup")).toBeInTheDocument();
+
+    view.rerender(
+      <ThemeProvider>
+        <PriceChart
+          bars={bars}
+          lifecycle={lifecycleGoalGap}
+          trades={[trade]}
+          signals={[]}
+          showGoals={false}
+        />
+      </ThemeProvider>,
+    );
+
+    expect(screen.queryAllByTestId("goal-line")).toHaveLength(0);
+    expect(screen.queryAllByTestId("goal-hit")).toHaveLength(0);
+    expect(screen.queryByTestId("goal-popup")).toBeNull();
+    const texts = chartState.markers.map((marker) => marker.text);
+    expect(texts).not.toContain("GOAL");
+    expect(texts).toEqual(expect.arrayContaining(["HALF TIME", "KICKOFF", "END"]));
+    // The toggle still never rebuilds the chart.
+    expect(chartState.createChartCount).toBe(1);
+  });
+
+  it("counts goals and corners up to the hovered bar and back to the last bar", () => {
+    render(
+      <ThemeProvider>
+        <PriceChart bars={bars} lifecycle={liveMatchState} trades={[]} signals={[]} />
+      </ThemeProvider>,
+    );
+    const chip = () => screen.getByTestId("match-state");
+    expect(chip().textContent).toContain("Goals 2");
+    expect(chip().textContent).toContain("Corners 1");
+    expect(chip().getAttribute("title")).toContain("last bar");
+
+    const handler = chartState.crosshairHandlers[0];
+    act(() => handler?.({ time: seconds(bars[1].ts_event) }));
+    expect(chip().textContent).toContain("Goals 1");
+    expect(chip().textContent).toContain("Corners 1");
+    expect(chip().getAttribute("title")).toContain("hovered bar");
+
+    act(() => handler?.({ time: seconds(bars[0].ts_event) }));
+    expect(chip().textContent).toContain("Goals 1");
+    expect(chip().textContent).toContain("Corners 0");
+
+    act(() => handler?.({ time: undefined }));
+    expect(chip().textContent).toContain("Goals 2");
+    expect(chip().textContent).toContain("Corners 1");
+  });
+
+  it("shows n/a instead of zero when a match-state source is unavailable", () => {
+    render(
+      <ThemeProvider>
+        <PriceChart bars={bars} lifecycle={unavailableMatchState} trades={[]} signals={[]} />
+      </ThemeProvider>,
+    );
+    const chip = screen.getByTestId("match-state");
+    expect(chip.textContent).toContain("Goals n/a");
+    expect(chip.textContent).toContain("Corners n/a");
+    expect(chip.textContent).not.toMatch(/Goals 0|Corners 0/);
+  });
+
+  it("adds no live-state chip when the lifecycle carries no match state", () => {
+    renderChart(lifecycleGoalGap);
+    expect(screen.queryByTestId("match-state")).toBeNull();
   });
 });

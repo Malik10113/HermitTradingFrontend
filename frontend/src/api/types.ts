@@ -574,6 +574,12 @@ export interface LifecycleEvent {
   detail?: string | null;
 }
 
+/** Live goal and corner state; `null` means the source does not cover it. */
+export interface MatchState {
+  goals: LifecycleEvent[] | null;
+  corners: Array<{ ts: string; team?: string | null }> | null;
+}
+
 export interface LifecycleMeta {
   match_key?: string | null;
   actual_kickoff_utc?: string | null;
@@ -584,6 +590,8 @@ export interface LifecycleMeta {
   phase?: LifecyclePhase | null;
   /** Observed halftime/goal events, sorted by ts; absent data is an empty list. */
   events?: LifecycleEvent[] | null;
+  /** Live goals and corners; absent when the API did not return a match state. */
+  match_state?: MatchState | null;
 }
 
 export interface RunSummary {

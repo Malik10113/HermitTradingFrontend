@@ -19,6 +19,7 @@ from backend.data import events
 
 MATCH = "epl-aaa-bbb-2026-05-19"
 OTHER = "epl-ccc-ddd-2026-05-20"
+CARD_ONLY = "epl-eee-fff-2026-05-21"
 
 EVENTS_SCHEMA = pa.schema(
     [
@@ -91,6 +92,8 @@ def _write_events(path: Path) -> Path:
         ),
         # another match never leaks into this one
         _event(OTHER, "goal", "2026-05-20T19:00:00Z", 0, "Other FC", "Goal! 1-0"),
+        # covered by the source, but with no goal at all
+        _event(CARD_ONLY, "yellow-card", "2026-05-21T19:00:00Z", 0, "Card FC", "card"),
     ]
     path.parent.mkdir(parents=True, exist_ok=True)
     pq.write_table(pa.Table.from_pylist(rows, schema=EVENTS_SCHEMA), path)
@@ -110,6 +113,23 @@ def _write_summary(path: Path, key_events) -> Path:
     with gzip.open(path, "wt", encoding="utf-8") as handle:
         json.dump({"keyEvents": key_events}, handle)
     return path
+
+
+def _write_summary_payload(path: Path, payload: dict) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with gzip.open(path, "wt", encoding="utf-8") as handle:
+        json.dump(payload, handle)
+    return path
+
+
+def _corner(wallclock, team):
+    return {
+        "play": {
+            "type": {"type": "corner-awarded"},
+            "wallclock": wallclock,
+            "team": {"displayName": team},
+        }
+    }
 
 
 @pytest.fixture()
@@ -306,4 +326,152 @@ def test_lifecycle_events_unknown_match_is_empty(tmp_path):
             summary_dirs=[tmp_path / "no-summaries"],
         )
         == []
+    )
+
+
+def test_corners_parse_commentary_with_team_and_observed_time(tmp_path):
+    summary_dir = tmp_path / "summary"
+    _write_summary_payload(
+        summary_dir / "epl_111.json.gz",
+        {
+            "keyEvents": [],
+            "commentary": [
+                _corner("2026-05-19T20:10:00Z", "AFC Bournemouth"),
+                {
+                    "play": {
+                        "type": {"type": "goal"},
+                        "wallclock": "2026-05-19T20:20:00Z",
+                        "team": {"displayName": "AFC Bournemouth"},
+                    }
+                },
+                _corner("2026-05-19T20:05:00Z", "Chelsea"),
+                # a corner without an observed wallclock is skipped
+                {"play": {"type": {"type": "corner-awarded"}, "team": {"displayName": "Chelsea"}}},
+                # and one without a team cannot fill the required field
+                {"play": {"type": {"type": "corner-awarded"}, "wallclock": "2026-05-19T20:30:00Z"}},
+                {"note": "no play object"},
+            ],
+        },
+    )
+    fixture_map = _write_fixture_map(tmp_path / "fixture_map.parquet")
+
+    assert events.corners(MATCH, fixture_map, [summary_dir]) == [
+        {"ts": "2026-05-19T20:05:00Z", "team": "Chelsea"},
+        {"ts": "2026-05-19T20:10:00Z", "team": "AFC Bournemouth"},
+    ]
+
+
+def test_corners_from_the_backfill_cache_uses_the_espn_slug(tmp_path):
+    backfill_dir = tmp_path / "var/raw/espn/summary"
+    _write_summary_payload(
+        backfill_dir / "eng.1_222.json.gz",
+        {"commentary": [_corner("2026-05-19T20:10:00Z", "Chelsea")]},
+    )
+    fixture_map = _write_fixture_map(
+        tmp_path / "fixture_map.parquet",
+        [dict(match_key=MATCH, league="epl", espn_event_id="222")],
+    )
+    assert events.corners(MATCH, fixture_map, [tmp_path / "cache", backfill_dir]) == [
+        {"ts": "2026-05-19T20:10:00Z", "team": "Chelsea"}
+    ]
+
+
+def test_corners_summary_without_corners_is_empty(tmp_path):
+    summary_dir = tmp_path / "summary"
+    _write_summary(
+        summary_dir / "epl_111.json.gz",
+        [{"type": {"type": "halftime"}, "wallclock": "2026-05-19T21:50:00Z"}],
+    )
+    fixture_map = _write_fixture_map(tmp_path / "fixture_map.parquet")
+    assert events.corners(MATCH, fixture_map, [summary_dir]) == []
+
+
+def test_corners_without_fixture_or_summary_is_none(tmp_path):
+    fixture_map = _write_fixture_map(tmp_path / "fixture_map.parquet")
+    # no match key at all never reaches the sources
+    assert events.corners("") is None
+    # fixture exists, no cached summary
+    assert events.corners(MATCH, fixture_map, [tmp_path / "empty"]) is None
+    # summary exists, but the match is not in the fixture map
+    summary_dir = tmp_path / "summary"
+    _write_summary_payload(
+        summary_dir / "epl_111.json.gz",
+        {"commentary": [_corner("2026-05-19T20:10:00Z", "Chelsea")]},
+    )
+    assert events.corners("not-in-the-map", fixture_map, [summary_dir]) is None
+
+
+def test_match_state_goals_covered_empty_and_absent(tmp_path, events_path):
+    fixture_map = _write_fixture_map(tmp_path / "fixture_map.parquet")
+    missing_corners = [tmp_path / "no-summaries"]
+
+    state = events.match_state(
+        MATCH, events_path=events_path, fixture_map=fixture_map, summary_dirs=missing_corners
+    )
+    assert [row["ts"] for row in state["goals"]] == [
+        "2026-05-19T21:08:56Z",
+        "2026-05-19T21:20:00Z",
+        "2026-05-19T21:25:00Z",
+        "2026-05-19T21:30:00Z",
+        "2026-05-19T21:35:00Z",
+        "2026-05-19T21:40:00Z",
+    ]
+    assert state["corners"] is None
+
+    # covered by the source, no goal observed
+    assert (
+        events.match_state(
+            CARD_ONLY, events_path=events_path, fixture_map=fixture_map, summary_dirs=missing_corners
+        )["goals"]
+        == []
+    )
+    # absent from the source
+    assert (
+        events.match_state(
+            "never-seen", events_path=events_path, fixture_map=fixture_map, summary_dirs=missing_corners
+        )["goals"]
+        is None
+    )
+    assert (
+        events.match_state(
+            "never-seen",
+            events_path=tmp_path / "absent.parquet",
+            fixture_map=fixture_map,
+            summary_dirs=missing_corners,
+        )["goals"]
+        is None
+    )
+
+
+def test_match_state_corners_present_empty_and_absent(tmp_path, events_path):
+    fixture_map = _write_fixture_map(tmp_path / "fixture_map.parquet")
+    summary_dir = tmp_path / "summary"
+    _write_summary_payload(
+        summary_dir / "epl_111.json.gz",
+        {"commentary": [_corner("2026-05-19T20:10:00Z", "AFC Bournemouth")]},
+    )
+    state = events.match_state(
+        MATCH, events_path=events_path, fixture_map=fixture_map, summary_dirs=[summary_dir]
+    )
+    assert state["corners"] == [{"ts": "2026-05-19T20:10:00Z", "team": "AFC Bournemouth"}]
+    assert len(state["goals"]) == 6
+
+    # the summary exists but has no corner
+    _write_summary(summary_dir / "epl_111.json.gz", [])
+    assert (
+        events.match_state(
+            MATCH, events_path=events_path, fixture_map=fixture_map, summary_dirs=[summary_dir]
+        )["corners"]
+        == []
+    )
+
+    # no summary at all
+    assert (
+        events.match_state(
+            MATCH,
+            events_path=events_path,
+            fixture_map=fixture_map,
+            summary_dirs=[tmp_path / "empty"],
+        )["corners"]
+        is None
     )

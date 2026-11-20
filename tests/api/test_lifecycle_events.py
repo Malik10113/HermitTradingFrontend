@@ -100,7 +100,16 @@ def sources(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
             {
                 "keyEvents": [
                     {"type": {"type": "halftime"}, "wallclock": "2026-05-19T21:50:00Z"}
-                ]
+                ],
+                "commentary": [
+                    {
+                        "play": {
+                            "type": {"type": "corner-awarded"},
+                            "wallclock": "2026-05-19T20:10:00Z",
+                            "team": {"displayName": "AFC Bournemouth"},
+                        }
+                    }
+                ],
             },
             handle,
         )
@@ -150,6 +159,18 @@ def test_known_row_keeps_its_fields_and_adds_events(sources):
         "2026-05-19T21:08:56Z",
         "2026-05-19T21:50:00Z",
     ]
+    assert payload["match_state"]["goals"] == [
+        {
+            "ts": "2026-05-19T21:08:56Z",
+            "type": "goal",
+            "label": "GOAL",
+            "team": "AFC Bournemouth",
+            "detail": "Goal! 1-0",
+        }
+    ]
+    assert payload["match_state"]["corners"] == [
+        {"ts": "2026-05-19T20:10:00Z", "team": "AFC Bournemouth"}
+    ]
 
 
 def test_unknown_phase_still_serves_observed_events(sources):
@@ -158,9 +179,15 @@ def test_unknown_phase_still_serves_observed_events(sources):
     assert payload["reason"] == "no verified lifecycle row"
     assert [row["type"] for row in payload["events"]] == ["goal"]
     assert payload["events"][0]["team"] == "Other FC"
+    assert [row["ts"] for row in payload["match_state"]["goals"]] == [
+        "2026-05-20T19:30:00Z"
+    ]
+    # no cached summary for this match, so corners are unavailable, not zero
+    assert payload["match_state"]["corners"] is None
 
 
 def test_no_observed_events_is_an_empty_list(sources):
     payload = services.lifecycle("m-bare")
     assert payload["phase"] == "unknown"
     assert payload["events"] == []
+    assert payload["match_state"] == {"goals": None, "corners": None}

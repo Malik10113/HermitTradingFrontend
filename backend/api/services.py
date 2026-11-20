@@ -567,6 +567,7 @@ def lifecycle(instrument_id: str) -> dict[str, Any]:
 
     match_key = inst.get("match_key")
     observed = events.lifecycle_events(match_key) if match_key else []
+    state = events.match_state(match_key)
     getter = getattr(lc, "lifecycle_for", None)
     if getter is None:
         return {"phase_source": "unavailable", "events": observed}
@@ -577,9 +578,11 @@ def lifecycle(instrument_id: str) -> dict[str, Any]:
             "phase": "unknown",
             "reason": "no verified lifecycle row",
             "events": observed,
+            "match_state": state,
         }
     payload = row.as_dict() if hasattr(row, "as_dict") else dict(row)
     payload["events"] = observed
+    payload["match_state"] = state
     return payload
 
 

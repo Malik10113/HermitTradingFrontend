@@ -3,14 +3,15 @@
 Two read-only sources, both observed rather than derived:
 
 * ``data/events/match_events.parquet`` for goals (ESPN in-play events);
-* the cached ESPN summary ``keyEvents`` for the halftime wallclock.
+* the cached ESPN summary ``keyEvents`` for the halftime wallclock and
+  ``commentary`` for awarded corners.
 
 Cards, VAR decisions and missed/saved penalties are not goals and are never
 returned.  Both sources are required: when no explicit path is supplied the
 registered dataset is looked up and an absent one raises ``MissingDatasetError``
 naming the register entry, so "not restored" never reads as "no goals".  A
 present match with no observed event yields no row: this module never invents a
-nominal halftime or a team name.
+nominal halftime, a corner or a team name.
 """
 
 from __future__ import annotations
@@ -24,11 +25,12 @@ import duckdb
 from backend import config
 from backend.data import sources
 from backend.data.lifecycle import _read_summary, extract_event_wallclock
-from backend.data.timeutil import as_utc, isoformat_z
+from backend.data.timeutil import as_utc, isoformat_z, parse_iso_utc
 
 # ``goal---header`` / ``goal---volley`` / ``goal---free-kick`` share the prefix.
 GOAL_TYPES = frozenset({"goal", "own-goal", "penalty---scored"})
 _HALFTIME = "halftime"
+_CORNER = "corner-awarded"
 
 
 def is_goal_type(event_type: object) -> bool:
@@ -99,6 +101,26 @@ def goals(match_key: str, path: Path | None = None) -> list[dict[str, Any]]:
     return [row for _, row in _goal_rows(match_key, path)]
 
 
+def _match_present(match_key: str, path: Path | None = None) -> bool:
+    """True when ``match_events`` has at least one row for the match.
+
+    Coverage, not goals: a covered match with no observed goal still returns
+    ``True`` here.
+    """
+    source = _events_path(path)
+    if not match_key or not source.is_file():
+        return False
+    con = duckdb.connect()
+    try:
+        rows = con.execute(
+            "SELECT 1 FROM read_parquet(?) WHERE match_key = ? LIMIT 1",
+            [str(source), str(match_key)],
+        ).fetchall()
+    finally:
+        con.close()
+    return bool(rows)
+
+
 def _fixture(match_key: str, fixture_map: Path | None) -> tuple[str, str] | None:
     """``(league, espn_event_id)`` for a match, or ``None``."""
     if fixture_map is not None:
@@ -139,19 +161,25 @@ def _default_summary_dirs() -> list[Path]:
     ]
 
 
-def _halftime_row(
+def _summary_payload(
     match_key: str,
     fixture_map: Path | None,
     summary_dirs: Iterable[Path] | None,
-) -> tuple[datetime, dict[str, Any]] | None:
+) -> dict[str, Any] | None:
+    """First readable cached ESPN summary for a match, or ``None``.
+
+    The fixture map is the entry point; the 2026 cache is keyed by the league
+    code and the backfill cache by the ESPN competition slug, so both names are
+    tried cache first.  A summary that exists but lacks the requested section
+    is still a summary: callers distinguish "no summary" (``None``) from "the
+    summary has no such event" (empty).
+    """
     fixture = _fixture(match_key, fixture_map)
     if fixture is None:
         return None
     league, event_id = fixture
     from backend.data.lifecycle_backfill import ESPN_LEAGUE_SLUGS
 
-    # The 2026 cache is keyed by the league code; the backfill cache uses the
-    # ESPN competition slug.  Both are tried, cache first.
     names = [league]
     slug = ESPN_LEAGUE_SLUGS.get(league)
     if slug is not None:
@@ -165,19 +193,96 @@ def _halftime_row(
                 continue
             seen.add(candidate)
             payload = _read_summary(candidate)
-            if payload is None:
-                continue
-            when = extract_event_wallclock(payload, _HALFTIME)
-            if when is None:
-                continue
-            return when, {
-                "ts": isoformat_z(when),
-                "type": "halftime",
-                "label": "HALF TIME",
-                "team": None,
-                "detail": None,
-            }
+            if payload is not None:
+                return payload
     return None
+
+
+def _corner_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """Awarded corners from the summary ``commentary``, ordered by wallclock.
+
+    Only an observed ``play.wallclock`` is used; a corner without one (or
+    without a team) is skipped rather than timed from the match clock.
+    """
+    observed: list[tuple[datetime, dict[str, Any]]] = []
+    for entry in payload.get("commentary") or ():
+        if not isinstance(entry, dict):
+            continue
+        play = entry.get("play")
+        if not isinstance(play, dict):
+            continue
+        event_type = play.get("type")
+        if not isinstance(event_type, dict) or event_type.get("type") != _CORNER:
+            continue
+        team = play.get("team")
+        name = team.get("displayName") if isinstance(team, dict) else None
+        if not isinstance(name, str) or not name.strip():
+            continue
+        raw = play.get("wallclock")
+        if not isinstance(raw, str) or not raw.strip():
+            continue
+        try:
+            when = parse_iso_utc(raw)
+        except ValueError:
+            continue
+        observed.append((when, {"ts": isoformat_z(when), "team": name}))
+    observed.sort(key=lambda item: item[0])
+    return [row for _, row in observed]
+
+
+def corners(
+    match_key: str,
+    fixture_map: Path | None = None,
+    summary_dirs: Iterable[Path] | None = None,
+) -> list[dict[str, Any]] | None:
+    """Observed corners, ``[]`` when the summary has none, ``None`` when unknown."""
+    if not match_key:
+        return None
+    payload = _summary_payload(match_key, fixture_map, summary_dirs)
+    if payload is None:
+        return None
+    return _corner_rows(payload)
+
+
+def match_state(
+    match_key: str,
+    *,
+    events_path: Path | None = None,
+    fixture_map: Path | None = None,
+    summary_dirs: Iterable[Path] | None = None,
+) -> dict[str, list[dict[str, Any]] | None]:
+    """Live goals and corners, each ``None`` when its source does not cover it.
+
+    Goals are ``None`` when the match key is absent from ``match_events`` and
+    ``[]`` when it is covered without a goal.  Corners are ``None`` when no
+    cached summary exists and ``[]`` when the summary has no corner.
+    """
+    covered = bool(match_key) and _match_present(match_key, events_path)
+    goal_rows = _goal_rows(match_key, events_path) if covered else []
+    return {
+        "goals": [row for _, row in goal_rows] if covered else None,
+        "corners": corners(match_key, fixture_map, summary_dirs),
+    }
+
+
+def _halftime_row(
+    match_key: str,
+    fixture_map: Path | None,
+    summary_dirs: Iterable[Path] | None,
+) -> tuple[datetime, dict[str, Any]] | None:
+    payload = _summary_payload(match_key, fixture_map, summary_dirs)
+    if payload is None:
+        return None
+    when = extract_event_wallclock(payload, _HALFTIME)
+    if when is None:
+        return None
+    return when, {
+        "ts": isoformat_z(when),
+        "type": "halftime",
+        "label": "HALF TIME",
+        "team": None,
+        "detail": None,
+    }
 
 
 def halftime(

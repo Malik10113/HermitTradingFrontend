@@ -371,29 +371,15 @@ describe("price chart markers", () => {
     expect(screen.queryByText(/Phase unknown/i)).toBeNull();
   });
 
-  it("labels halftime and goals, and hides only the goals when showGoals is false", () => {
+  it("labels halftime and kickoff/end; goals are drawn by the overlay", () => {
     const lifecycle = lifecycleWithEvents;
-    const view = render(
+    render(
       <ThemeProvider>
         <PriceChart bars={bars} lifecycle={lifecycle} trades={[trade]} signals={[]} />
       </ThemeProvider>,
     );
-    expect(chartState.markers.map((marker) => marker.text)).toEqual(
-      expect.arrayContaining(["GOAL", "HALF TIME", "KICKOFF", "END"]),
-    );
-
-    view.rerender(
-      <ThemeProvider>
-        <PriceChart
-          bars={bars}
-          lifecycle={lifecycle}
-          trades={[trade]}
-          signals={[]}
-          showGoals={false}
-        />
-      </ThemeProvider>,
-    );
     const texts = chartState.markers.map((marker) => marker.text);
+    // Candle markers only accept bar times; the overlay owns goal positions.
     expect(texts).not.toContain("GOAL");
     expect(texts).toEqual(expect.arrayContaining(["HALF TIME", "KICKOFF", "END"]));
   });
@@ -411,7 +397,9 @@ describe("price chart markers", () => {
     );
     expect(chartState.createChartCount).toBe(1);
     const texts = () => chartState.markers.map((marker) => marker.text);
-    expect(texts()).toEqual(expect.arrayContaining(["GOAL", "HALF TIME", "KICKOFF", "END"]));
+    // Goals are overlay flags; only the lifecycle events remain as candle markers.
+    expect(texts()).not.toContain("GOAL");
+    expect(texts()).toEqual(expect.arrayContaining(["HALF TIME", "KICKOFF", "END"]));
 
     const handler = chartState.crosshairHandlers[0];
     act(() => handler?.({ time: seconds(bars[1].ts_event) }));
@@ -673,7 +661,7 @@ describe("price chart markers", () => {
     expect(hits[0].getAttribute("aria-label")).toContain("2024-10-19 10:55:00 UTC");
   });
 
-  it("interpolates a goal in a gap in logical space because no bar starts at its time", async () => {
+  it("interpolates a gap goal between the bracketing bar coordinates", async () => {
     render(
       <ThemeProvider>
         <PriceChart
@@ -686,13 +674,10 @@ describe("price chart markers", () => {
       </ThemeProvider>,
     );
     const [line] = await screen.findAllByTestId("goal-line");
-    // 10:55 is 50 of the 115 minutes between the 10:05 bar and the 12:00 bar,
-    // so logical 1 + 3000/6900 lands at x 275 on the mocked 600 px plot even
-    // though the library cannot resolve the goal time itself.
+    // 10:55 is 50 of the 115 minutes between the 10:05 bar and the 12:00 bar;
+    // their coordinates interpolate to 275 on the mocked 600 px plot.
     expect(line.style.left).toBe("275px");
-    expect(
-      chartState.logicalCalls.some((logical) => Math.abs(logical - (1 + 3000 / 6900)) < 1e-9),
-    ).toBe(true);
+    expect(chartState.logicalCalls).toHaveLength(0);
   });
 
   it("uses the covering bar's coordinate for a goal inside its interval", async () => {
@@ -878,7 +863,7 @@ describe("price chart markers", () => {
     expect(chartState.createChartCount).toBe(1);
   });
 
-  it("counts goals and corners up to the hovered bar and back to the last bar", () => {
+  it("counts goals up to the hovered bar and back to the last bar", () => {
     render(
       <ThemeProvider>
         <PriceChart bars={bars} lifecycle={liveMatchState} trades={[]} signals={[]} />
@@ -886,25 +871,22 @@ describe("price chart markers", () => {
     );
     const chip = () => screen.getByTestId("match-state");
     expect(chip().textContent).toContain("Goals 2");
-    expect(chip().textContent).toContain("Corners 1");
+    expect(chip().textContent).not.toContain("Corners");
     expect(chip().getAttribute("title")).toContain("last bar");
 
     const handler = chartState.crosshairHandlers[0];
     act(() => handler?.({ time: seconds(bars[1].ts_event) }));
     expect(chip().textContent).toContain("Goals 1");
-    expect(chip().textContent).toContain("Corners 1");
     expect(chip().getAttribute("title")).toContain("hovered bar");
 
     act(() => handler?.({ time: seconds(bars[0].ts_event) }));
     expect(chip().textContent).toContain("Goals 1");
-    expect(chip().textContent).toContain("Corners 0");
 
     act(() => handler?.({ time: undefined }));
     expect(chip().textContent).toContain("Goals 2");
-    expect(chip().textContent).toContain("Corners 1");
   });
 
-  it("counts a goal or corner inside the hovered bar's interval, not just at its start", () => {
+  it("counts a goal inside the hovered bar's interval, not just at its start", () => {
     render(
       <ThemeProvider>
         <PriceChart
@@ -918,10 +900,10 @@ describe("price chart markers", () => {
     );
     const chip = () => screen.getByTestId("match-state");
     const handler = chartState.crosshairHandlers[0];
-    // The 10:00 bar covers 10:00–10:05, so the 10:05 corner now counts.
+    // The 10:00 bar covers 10:00–10:05, so the 10:00 goal counts.
     act(() => handler?.({ time: seconds(bars[0].ts_event) }));
     expect(chip().textContent).toContain("Goals 1");
-    expect(chip().textContent).toContain("Corners 1");
+    expect(chip().textContent).not.toContain("Corners");
   });
 
   it("shows n/a instead of zero when a match-state source is unavailable", () => {
@@ -932,8 +914,8 @@ describe("price chart markers", () => {
     );
     const chip = screen.getByTestId("match-state");
     expect(chip.textContent).toContain("Goals n/a");
-    expect(chip.textContent).toContain("Corners n/a");
-    expect(chip.textContent).not.toMatch(/Goals 0|Corners 0/);
+    expect(chip.textContent).not.toContain("Corners");
+    expect(chip.textContent).not.toMatch(/Goals 0/);
   });
 
   it("adds no live-state chip when the lifecycle carries no match state", () => {

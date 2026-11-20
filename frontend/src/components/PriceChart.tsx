@@ -5,7 +5,6 @@ import {
   createChart,
   type IChartApi,
   type ISeriesApi,
-  type Logical,
   type MouseEventParams,
   type SeriesMarker,
   type Time,
@@ -131,17 +130,16 @@ export function goalCoveredByBar(
 /** The subset of the time scale the goal positioning needs. */
 interface GoalCoordinateScale {
   timeToCoordinate: (time: UTCTimestamp) => number | null;
-  logicalToCoordinate: (logical: Logical) => number | null;
 }
 
 /**
- * Resolve a goal wallclock to an x coordinate using coordinates the time scale
- * can actually produce. Lightweight-charts only resolves a time that is a data
- * point, and goal times carry seconds while bars are bucket aligned, so:
+ * Resolve a goal wallclock to an x coordinate using only coordinates the time
+ * scale can actually produce. Lightweight-charts only resolves a time that is a
+ * data point, and goal times carry seconds while bars are bucket aligned, so:
  *
  * - a goal inside a bar interval takes that bar's coordinate;
- * - a goal in a gap is interpolated in logical (bar-index) space between the
- *   previous and next bars;
+ * - a goal in a gap is interpolated in screen space between the previous and
+ *   next bar coordinates (fractional logical indices are not reliable);
  * - a goal with no bracketing bar, or no resolvable coordinate, is skipped.
  *
  * Returns the raw coordinate; the caller clips it against the plot width.
@@ -172,9 +170,11 @@ export function goalCoordinate(
   }
   const nextTime = barTimes[candidate + 1];
   if (nextTime === undefined || nextTime <= barTime) return null;
-  const logical = candidate + (goalTime - barTime) / (nextTime - barTime);
-  const raw = scale.logicalToCoordinate(logical as Logical);
-  return raw === null ? null : Number(raw);
+  const previousX = scale.timeToCoordinate(barTime as UTCTimestamp);
+  const nextX = scale.timeToCoordinate(nextTime as UTCTimestamp);
+  if (previousX === null || nextX === null) return null;
+  const fraction = (goalTime - barTime) / (nextTime - barTime);
+  return Number(previousX) + fraction * (Number(nextX) - Number(previousX));
 }
 
 const PHASE_LABELS: Record<string, string> = {
@@ -338,10 +338,12 @@ export function PriceChart({
         trades,
         signals,
         lifecycle,
-        events: lifecycle?.events ?? null,
-        showGoals,
+        // Goals are drawn by the overlay at their real time; the candle marker
+        // API only accepts bar times and would snap a gap goal to the last bar.
+        events: (lifecycle?.events ?? []).filter((event) => event.type === "halftime"),
+        showGoals: false,
       }).filter((marker) => Number.isFinite(marker.time)),
-    [trades, signals, lifecycle, showGoals],
+    [trades, signals, lifecycle],
   );
   // The click handler reads this ref, so hit-testing always sees the current
   // list even though the subscription is installed only when the chart is built.
@@ -387,21 +389,18 @@ export function PriceChart({
   const legendCandle = hovered ?? last;
   const legendBar = hovered ?? lastBar;
 
-  // Goals and corners observed up to the end of the hovered bar's interval (or
-  // the last bar's). A null list stays "n/a": an uncovered source is never
-  // reported as zero.
-  const matchCounts = useMemo(() => {
+  // The relevant in-play metric for a moneyline market is goals. Corners are
+  // still served for future market types but are not shown next to OHLC. A
+  // null list stays "n/a": an uncovered source is never reported as zero.
+  const matchGoals = useMemo(() => {
     if (!matchState || !legendBar) return null;
+    if (matchState.goals === null) return null;
     const cutoff = Date.parse(legendBar.ts_event) + barIntervalSeconds * 1000;
-    const countUpTo = (events: Array<{ ts: string }> | null): number | null => {
-      if (events === null) return null;
-      if (Number.isNaN(cutoff)) return null;
-      return events.filter((event) => {
-        const ts = Date.parse(event.ts);
-        return Number.isFinite(ts) && ts <= cutoff;
-      }).length;
-    };
-    return { goals: countUpTo(matchState.goals), corners: countUpTo(matchState.corners) };
+    if (Number.isNaN(cutoff)) return null;
+    return matchState.goals.filter((event) => {
+      const ts = Date.parse(event.ts);
+      return Number.isFinite(ts) && ts <= cutoff;
+    }).length;
   }, [matchState, legendBar, barIntervalSeconds]);
 
   const showGoalPopup = (goal: GoalOverlay) =>
@@ -582,6 +581,9 @@ export function PriceChart({
       goalEventsRef.current.forEach((event, index) => {
         const goalTime = Math.floor(Date.parse(event.ts) / 1000);
         if (!Number.isFinite(goalTime)) return;
+        // A goal outside the visible time window is not a line clamped to the
+        // edge; it simply is not in this view.
+        if (goalTime < visibleFrom || goalTime > visibleTo) return;
         const x = goalCoordinate(
           goalTime,
           barTimes,
@@ -824,23 +826,15 @@ export function PriceChart({
             {legendBar?.trade_count == null ? "not available" : legendBar.trade_count}
           </span>
         </span>
-        {matchCounts ? (
+        {matchState ? (
           <span
             className="numeric text-ink"
             data-testid="match-state"
-            title={`Live match state at the ${hovered ? "hovered" : "last"} bar · ${fmtTimestamp(
+            title={`Goals at the ${hovered ? "hovered" : "last"} bar (moneyline resolves on goals) · ${fmtTimestamp(
               legendBar?.ts_event,
             )}`}
           >
-            Goals{" "}
-            <span className="text-ink-muted">
-              {matchCounts.goals === null ? "n/a" : matchCounts.goals}
-            </span>
-            {" · "}
-            Corners{" "}
-            <span className="text-ink-muted">
-              {matchCounts.corners === null ? "n/a" : matchCounts.corners}
-            </span>
+            Goals <span className="text-ink-muted">{matchGoals === null ? "n/a" : matchGoals}</span>
           </span>
         ) : null}
         <span className="text-ink-faint">

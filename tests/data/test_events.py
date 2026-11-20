@@ -30,6 +30,8 @@ EVENTS_SCHEMA = pa.schema(
         pa.field("sequence", pa.int64()),
         pa.field("team", pa.string()),
         pa.field("event_text", pa.string()),
+        pa.field("minute", pa.int64()),
+        pa.field("added_minute", pa.int64()),
     ]
 )
 
@@ -46,7 +48,16 @@ def utc(text: str) -> datetime:
     return datetime.fromisoformat(text.replace("Z", "+00:00")).astimezone(timezone.utc)
 
 
-def _event(match_key, event_type, wallclock, sequence, team=None, text=None):
+def _event(
+    match_key,
+    event_type,
+    wallclock,
+    sequence,
+    team=None,
+    text=None,
+    minute=None,
+    added_minute=None,
+):
     return dict(
         match_key=match_key,
         league="epl",
@@ -55,13 +66,24 @@ def _event(match_key, event_type, wallclock, sequence, team=None, text=None):
         sequence=sequence,
         team=team,
         event_text=text,
+        minute=minute,
+        added_minute=added_minute,
     )
 
 
 def _write_events(path: Path) -> Path:
     rows = [
         _event(MATCH, "yellow-card", "2026-05-19T20:15:00Z", 0, "AFC Bournemouth", "card"),
-        _event(MATCH, "goal", "2026-05-19T21:08:56Z", 1, "AFC Bournemouth", "Goal! 1-0"),
+        _event(
+            MATCH,
+            "goal",
+            "2026-05-19T21:08:56Z",
+            1,
+            "AFC Bournemouth",
+            "Goal! 1-0",
+            minute=32,
+            added_minute=0,
+        ),
         _event(MATCH, "goal---header", "2026-05-19T21:20:00Z", 2, "AFC Bournemouth", "Header"),
         _event(MATCH, "goal---volley", "2026-05-19T21:25:00Z", 3, "AFC Bournemouth", "Volley"),
         _event(MATCH, "goal---free-kick", "2026-05-19T21:30:00Z", 4, "AFC Bournemouth", "Free kick"),
@@ -180,6 +202,8 @@ def test_goals_filters_sorts_and_carries_fields(events_path):
         "label": "GOAL",
         "team": "AFC Bournemouth",
         "detail": "Goal! 1-0",
+        "minute": 32,
+        "added_minute": 0,
     }
     assert events.goals(OTHER, events_path)[0]["team"] == "Other FC"
 

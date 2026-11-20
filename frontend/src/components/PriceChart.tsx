@@ -92,6 +92,8 @@ interface GoalOverlay {
   x: number;
   ts: string;
   team: string | null;
+  minute: number | null;
+  addedMinute: number | null;
   gapped: boolean;
   /** Vertical row for a flag when several goals share the same narrow gap. */
   row: number;
@@ -102,6 +104,8 @@ interface GoalPopup {
   x: number;
   ts: string;
   team: string | null;
+  minute: number | null;
+  addedMinute: number | null;
   row: number;
 }
 
@@ -407,7 +411,20 @@ export function PriceChart({
   }, [matchState, legendBar, barIntervalSeconds]);
 
   const showGoalPopup = (goal: GoalOverlay) =>
-    setGoalPopup({ key: goal.key, x: goal.x, ts: goal.ts, team: goal.team, row: goal.row });
+    setGoalPopup({
+      key: goal.key,
+      x: goal.x,
+      ts: goal.ts,
+      team: goal.team,
+      minute: goal.minute,
+      addedMinute: goal.addedMinute,
+      row: goal.row,
+    });
+
+  const goalClock = (goal: { minute: number | null; addedMinute: number | null }) =>
+    goal.minute === null
+      ? null
+      : `${goal.minute}${goal.addedMinute ? `+${goal.addedMinute}` : ""}'`;
 
   useEffect(() => {
     const container = containerRef.current;
@@ -631,6 +648,8 @@ export function PriceChart({
           x,
           ts: event.ts,
           team: event.team ?? null,
+          minute: event.minute ?? null,
+          addedMinute: event.added_minute ?? null,
           gapped: !goalCoveredByBar(goalTime, barTimes, barIntervalSeconds),
           row,
         });
@@ -985,7 +1004,9 @@ export function PriceChart({
               data-testid="goal-hit"
               role="note"
               tabIndex={0}
-              aria-label={`Goal · ${goal.team ?? "team not available"} · ${fmtTimestamp(goal.ts)}`}
+              aria-label={`Goal · ${goal.team ?? "team not available"} · ${
+                goalClock(goal) ? `${goalClock(goal)} · ` : ""
+              }${fmtTimestamp(goal.ts)}`}
               className="pointer-events-auto absolute z-20 flex cursor-pointer items-start justify-center focus-visible:ring-1 focus-visible:ring-accent focus-visible:outline-none"
               style={{ left: Math.max(0, goal.x - 7), width: 14, height: 16, top: goal.row * 18 }}
               onMouseEnter={() => showGoalPopup(goal)}
@@ -1012,7 +1033,9 @@ export function PriceChart({
                 maxWidth: 220,
               }}
             >
-              {`GOAL · ${goalPopup.team ?? "team not available"} · ${fmtTimestamp(goalPopup.ts)}`}
+              {`GOAL · ${goalPopup.team ?? "team not available"} · ${
+                goalClock(goalPopup) ? `${goalClock(goalPopup)} · ` : ""
+              }${fmtTimestamp(goalPopup.ts)}`}
             </div>
           ) : null}
         </div>

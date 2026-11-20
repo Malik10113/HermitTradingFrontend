@@ -34,6 +34,7 @@ export const BAR_DURATION_MS: Partial<Record<BarAlias, number>> = {
 /** Range buttons, resolved against the selected instrument's coverage. */
 export const CHART_RANGES = [
   { id: "all", label: "All", days: null },
+  { id: "match", label: "Match", days: null },
   { id: "1m", label: "1M", days: 31 },
   { id: "3m", label: "3M", days: 92 },
   { id: "1y", label: "1Y", days: 366 },

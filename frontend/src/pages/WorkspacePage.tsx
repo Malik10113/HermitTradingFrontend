@@ -360,6 +360,16 @@ export function WorkspacePage() {
   const stale = bars.some((bar) => bar.is_stale === true);
 
   const applyPresetRanges = (rangeId: string) => {
+    if (rangeId === "match") {
+      // Focus the observed match day (the API range is date-granular), rather
+      // than leaving a week of pre-match fills compressing the goals.
+      const kickoff = isoDateOnly(lifecycle?.actual_kickoff_utc);
+      const end = isoDateOnly(lifecycle?.actual_end_utc);
+      if (kickoff && end) {
+        patch({ from: kickoff, to: end });
+      }
+      return;
+    }
     if (rangeId === "all") {
       const from = isoDateOnly(qualityResource.data?.available_from ?? selected?.coverage?.from);
       let to = isoDateOnly(qualityResource.data?.available_to ?? selected?.coverage?.to);

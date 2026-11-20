@@ -30,6 +30,8 @@ EVENTS_SCHEMA = pa.schema(
         pa.field("sequence", pa.int64()),
         pa.field("team", pa.string()),
         pa.field("event_text", pa.string()),
+        pa.field("minute", pa.int64()),
+        pa.field("added_minute", pa.int64()),
     ]
 )
 FIXTURE_SCHEMA = pa.schema(
@@ -66,6 +68,8 @@ def sources(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
                     sequence=0,
                     team="AFC Bournemouth",
                     event_text="Goal! 1-0",
+                    minute=32,
+                    added_minute=0,
                 ),
                 dict(
                     match_key=KNOWN,
@@ -74,6 +78,8 @@ def sources(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
                     sequence=1,
                     team="AFC Bournemouth",
                     event_text="card",
+                    minute=None,
+                    added_minute=None,
                 ),
                 dict(
                     match_key=WITHOUT_ROW,
@@ -82,6 +88,8 @@ def sources(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
                     sequence=0,
                     team="Other FC",
                     event_text="Header",
+                    minute=78,
+                    added_minute=0,
                 ),
             ],
             schema=EVENTS_SCHEMA,
@@ -166,6 +174,8 @@ def test_known_row_keeps_its_fields_and_adds_events(sources):
             "label": "GOAL",
             "team": "AFC Bournemouth",
             "detail": "Goal! 1-0",
+            "minute": 32,
+            "added_minute": 0,
         }
     ]
     assert payload["match_state"]["corners"] == [

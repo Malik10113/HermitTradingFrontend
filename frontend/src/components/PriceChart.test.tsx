@@ -187,6 +187,8 @@ const lifecycleWithEvents: LifecycleMeta = {
       label: "GOAL",
       team: "Bournemouth",
       detail: "Goal! Bournemouth 1-0 Arsenal",
+      minute: 55,
+      added_minute: 0,
     },
     {
       ts: "2024-10-19T11:05:00Z",
@@ -816,6 +818,7 @@ describe("price chart markers", () => {
     const [hit] = await screen.findAllByTestId("goal-hit");
     fireEvent.mouseEnter(hit);
     expect(screen.getByTestId("goal-popup").textContent).toContain("Bournemouth");
+    expect(screen.getByTestId("goal-popup").textContent).toContain("55'");
     expect(screen.getByTestId("goal-popup").textContent).toContain("2024-10-19 10:55:00 UTC");
     fireEvent.mouseLeave(hit);
     expect(screen.queryByTestId("goal-popup")).toBeNull();

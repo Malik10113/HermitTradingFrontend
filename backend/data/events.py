@@ -63,7 +63,7 @@ def _goal_rows(match_key: str, path: Path | None = None) -> list[tuple[datetime,
     try:
         rows = con.execute(
             """
-            SELECT event_type, wallclock_utc, sequence, team, event_text
+            SELECT event_type, wallclock_utc, sequence, team, event_text, minute, added_minute
             FROM read_parquet(?)
             WHERE match_key = ?
               AND wallclock_utc IS NOT NULL
@@ -74,7 +74,7 @@ def _goal_rows(match_key: str, path: Path | None = None) -> list[tuple[datetime,
     finally:
         con.close()
     out: list[tuple[datetime, dict[str, Any]]] = []
-    for event_type, wallclock, _sequence, team, event_text in rows:
+    for event_type, wallclock, _sequence, team, event_text, minute, added_minute in rows:
         if not is_goal_type(event_type):
             continue
         when = as_utc(wallclock)
@@ -89,6 +89,8 @@ def _goal_rows(match_key: str, path: Path | None = None) -> list[tuple[datetime,
                     "detail": event_text
                     if isinstance(event_text, str) and event_text.strip()
                     else None,
+                    "minute": int(minute) if minute is not None else None,
+                    "added_minute": int(added_minute) if added_minute is not None else None,
                 },
             )
         )

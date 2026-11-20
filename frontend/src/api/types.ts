@@ -572,6 +572,9 @@ export interface LifecycleEvent {
   label: string;
   team?: string | null;
   detail?: string | null;
+  /** ESPN match-clock minute and stoppage-time addition for goals. */
+  minute?: number | null;
+  added_minute?: number | null;
 }
 
 /** Live goal and corner state; `null` means the source does not cover it. */

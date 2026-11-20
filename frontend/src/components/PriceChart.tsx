@@ -93,6 +93,8 @@ interface GoalOverlay {
   ts: string;
   team: string | null;
   gapped: boolean;
+  /** Vertical row for a flag when several goals share the same narrow gap. */
+  row: number;
 }
 
 interface GoalPopup {
@@ -100,6 +102,7 @@ interface GoalPopup {
   x: number;
   ts: string;
   team: string | null;
+  row: number;
 }
 
 /**
@@ -404,7 +407,7 @@ export function PriceChart({
   }, [matchState, legendBar, barIntervalSeconds]);
 
   const showGoalPopup = (goal: GoalOverlay) =>
-    setGoalPopup({ key: goal.key, x: goal.x, ts: goal.ts, team: goal.team });
+    setGoalPopup({ key: goal.key, x: goal.x, ts: goal.ts, team: goal.team, row: goal.row });
 
   useEffect(() => {
     const container = containerRef.current;
@@ -592,12 +595,22 @@ export function PriceChart({
         );
         // Never draw or hit-test outside the plot.
         if (x === null || x < 0 || x > width) return;
+        // A sparse chart compresses a long gap into one bar slot, so several
+        // goals can land within a few pixels. Stack their flags vertically
+        // instead of drawing five overlapping labels at one x.
+        let row = 0;
+        while (
+          goals.some((goal) => goal.row === row && Math.abs(goal.x - x) < 16)
+        ) {
+          row += 1;
+        }
         goals.push({
           key: `goal:${index}:${goalTime}`,
           x,
           ts: event.ts,
           team: event.team ?? null,
           gapped: !goalCoveredByBar(goalTime, barTimes, barIntervalSeconds),
+          row,
         });
       });
       setGoalOverlays(goals);
@@ -606,7 +619,7 @@ export function PriceChart({
       setGoalPopup((previous) => {
         if (!previous) return null;
         const match = goals.find((goal) => goal.key === previous.key);
-        return match ? { ...previous, x: match.x } : null;
+        return match ? { ...previous, x: match.x, row: match.row } : null;
       });
     };
     updateOverlayRef.current = updateOverlay;
@@ -952,7 +965,7 @@ export function PriceChart({
               tabIndex={0}
               aria-label={`Goal · ${goal.team ?? "team not available"} · ${fmtTimestamp(goal.ts)}`}
               className="pointer-events-auto absolute z-20 flex cursor-pointer items-start justify-center focus-visible:ring-1 focus-visible:ring-accent focus-visible:outline-none"
-              style={{ left: Math.max(0, goal.x - 7), width: 14, height: 16, top: 0 }}
+              style={{ left: Math.max(0, goal.x - 7), width: 14, height: 16, top: goal.row * 18 }}
               onMouseEnter={() => showGoalPopup(goal)}
               onFocus={() => showGoalPopup(goal)}
               onMouseLeave={() => setGoalPopup(null)}
@@ -973,7 +986,7 @@ export function PriceChart({
               className="pointer-events-none absolute z-30 rounded border border-line bg-surface px-2 py-1 text-[10px] text-ink shadow"
               style={{
                 left: Math.max(0, Math.min(goalPopup.x + 8, Math.max(0, overlayWidth - 240))),
-                top: 20,
+                top: goalPopup.row * 18 + 18,
                 maxWidth: 220,
               }}
             >

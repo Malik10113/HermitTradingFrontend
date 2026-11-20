@@ -9,6 +9,7 @@ const chartState = vi.hoisted(() => ({
   markers: [] as Array<{ text?: string; id?: string }>,
   candleTimes: [] as number[],
   volumeTimes: [] as number[],
+  rulerTimes: [] as number[],
   lineSeriesOptions: [] as Array<Record<string, unknown>>,
   createChartCount: 0,
   fitContentCalls: 0,
@@ -32,11 +33,17 @@ vi.mock("lightweight-charts", () => {
     if (to <= from) return null;
     return ((time - from) / (to - from)) * 600;
   };
-  const makeSeries = (kind: "candle" | "volume" | "line") => {
+  const makeSeries = (
+    kind: "candle" | "volume" | "line",
+    options?: Record<string, unknown>,
+  ) => {
     const series = {
       setData: (data: Array<{ time: number }>) => {
         if (kind === "candle") chartState.candleTimes = data.map((point) => point.time);
         if (kind === "volume") chartState.volumeTimes = data.map((point) => point.time);
+        if (kind === "line" && options?.title === "__time_ruler") {
+          chartState.rulerTimes = data.map((point) => point.time);
+        }
       },
       setMarkers: (markers: Array<{ text?: string; id?: string }>) => {
         if (kind === "candle") chartState.markers = markers;
@@ -58,7 +65,12 @@ vi.mock("lightweight-charts", () => {
       // Like the library: only a real data time resolves; a goal wallclock with
       // seconds that no bar starts at returns null.
       timeToCoordinate: (time: number) => {
-        if (!chartState.candleTimes.includes(time)) return null;
+        if (
+          !chartState.candleTimes.includes(time) &&
+          !chartState.rulerTimes.includes(time)
+        ) {
+          return null;
+        }
         return timeToX(time);
       },
       // Logical indices are bar indices; interpolate between bar times so a
@@ -93,8 +105,10 @@ vi.mock("lightweight-charts", () => {
       addCandlestickSeries: () => makeSeries("candle"),
       addHistogramSeries: () => makeSeries("volume"),
       addLineSeries: (options: Record<string, unknown>) => {
-        chartState.lineSeriesOptions.push(options ?? {});
-        return makeSeries("line");
+        if (options?.title !== "__time_ruler") {
+          chartState.lineSeriesOptions.push(options ?? {});
+        }
+        return makeSeries("line", options);
       },
       timeScale: () => timeScale,
       subscribeClick: () => {},

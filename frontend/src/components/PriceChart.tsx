@@ -473,6 +473,28 @@ export function PriceChart({
       })),
     );
 
+    // Sparse fills mean a two-hour no-trade gap can occupy one bar slot, which
+    // compresses goal times into a few pixels. An invisible whitespace series on
+    // a five-minute time ruler makes the horizontal scale follow wallclock time
+    // between bars, so a goal sits at its actual time rather than in a pile.
+    const rulerStep = Math.max(60, Math.min(barIntervalSeconds, 300));
+    const rulerTimes: number[] = [];
+    const firstTime = candle.data[0].time;
+    const lastTime = candle.data[candle.data.length - 1].time;
+    for (let time = firstTime; time <= lastTime; time += rulerStep) rulerTimes.push(time);
+    if (rulerTimes[rulerTimes.length - 1] !== lastTime) rulerTimes.push(lastTime);
+    const rulerSeries = chart.addLineSeries({
+      color: "rgba(0,0,0,0)",
+      lineVisible: false,
+      priceLineVisible: false,
+      lastValueVisible: false,
+      crosshairMarkerVisible: false,
+      priceScaleId: "ruler",
+      title: "__time_ruler",
+    });
+    rulerSeries.priceScale().applyOptions({ visible: false });
+    rulerSeries.setData(rulerTimes.map((time) => ({ time: time as UTCTimestamp })));
+
     if (volume.length > 0) {
       const volumeSeries = chart.addHistogramSeries({
         priceFormat: { type: "volume" },
@@ -589,8 +611,8 @@ export function PriceChart({
         if (goalTime < visibleFrom || goalTime > visibleTo) return;
         const x = goalCoordinate(
           goalTime,
-          barTimes,
-          barIntervalSeconds,
+          rulerTimes,
+          rulerStep,
           chart.timeScale(),
         );
         // Never draw or hit-test outside the plot.

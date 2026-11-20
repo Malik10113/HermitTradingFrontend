@@ -15,12 +15,23 @@ const chartState = vi.hoisted(() => ({
   crosshairHandlers: [] as Array<(param: { time?: unknown }) => void>,
   mainVisibleRange: null as { from: number; to: number } | null,
   setVisibleRangeCalls: [] as Array<{ index: number; range: { from: number; to: number } }>,
+  logicalCalls: [] as number[],
   visibleTimeRangeHandlers: [] as Array<
     ((range: { from: number; to: number } | null) => void) | undefined
   >,
 }));
 
 vi.mock("lightweight-charts", () => {
+  // Map a time to the mocked 600 px plot, linear over the visible range.
+  const timeToX = (time: number): number | null => {
+    const times = chartState.candleTimes;
+    const range = chartState.mainVisibleRange;
+    if (times.length === 0) return null;
+    const from = range ? range.from : times[0];
+    const to = range ? range.to : times[times.length - 1];
+    if (to <= from) return null;
+    return ((time - from) / (to - from)) * 600;
+  };
   const makeSeries = (kind: "candle" | "volume" | "line") => {
     const series = {
       setData: (data: Array<{ time: number }>) => {
@@ -44,17 +55,23 @@ vi.mock("lightweight-charts", () => {
       setVisibleRange: (range: { from: number; to: number }) => {
         chartState.setVisibleRangeCalls.push({ index, range });
       },
-      // Map an in-range time linearly across the mocked 600 px plot, and return
-      // null out of range, like the real time scale. Goal lines depend on it.
+      // Like the library: only a real data time resolves; a goal wallclock with
+      // seconds that no bar starts at returns null.
       timeToCoordinate: (time: number) => {
+        if (!chartState.candleTimes.includes(time)) return null;
+        return timeToX(time);
+      },
+      // Logical indices are bar indices; interpolate between bar times so a
+      // fractional index inside a gap lands between its bracketing bars.
+      logicalToCoordinate: (logical: number) => {
         const times = chartState.candleTimes;
-        const range = chartState.mainVisibleRange;
         if (times.length === 0) return null;
-        const from = range ? range.from : times[0];
-        const to = range ? range.to : times[times.length - 1];
-        if (to <= from) return null;
-        if (time < from || time > to) return null;
-        return ((time - from) / (to - from)) * 600;
+        chartState.logicalCalls.push(logical);
+        const low = Math.floor(logical);
+        const high = Math.ceil(logical);
+        if (low < 0 || high > times.length - 1) return null;
+        const time = times[low] + (logical - low) * (times[high] - times[low]);
+        return timeToX(time);
       },
       subscribeVisibleLogicalRangeChange: () => {},
       unsubscribeVisibleLogicalRangeChange: () => {},
@@ -323,6 +340,7 @@ describe("price chart markers", () => {
       to: seconds(bars[2].ts_event),
     };
     chartState.setVisibleRangeCalls = [];
+    chartState.logicalCalls = [];
     chartState.visibleTimeRangeHandlers = [];
   });
 
@@ -636,7 +654,13 @@ describe("price chart markers", () => {
   it("draws a dashed goal line and a hit area when a goal falls in a bar gap", async () => {
     render(
       <ThemeProvider>
-        <PriceChart bars={bars} lifecycle={lifecycleGoalGap} trades={[]} signals={[]} />
+        <PriceChart
+          bars={bars}
+          lifecycle={lifecycleGoalGap}
+          trades={[]}
+          signals={[]}
+          barIntervalSeconds={300}
+        />
       </ThemeProvider>,
     );
     const hits = await screen.findAllByTestId("goal-hit");
@@ -649,15 +673,107 @@ describe("price chart markers", () => {
     expect(hits[0].getAttribute("aria-label")).toContain("2024-10-19 10:55:00 UTC");
   });
 
+  it("interpolates a goal in a gap in logical space because no bar starts at its time", async () => {
+    render(
+      <ThemeProvider>
+        <PriceChart
+          bars={bars}
+          lifecycle={lifecycleGoalGap}
+          trades={[]}
+          signals={[]}
+          barIntervalSeconds={300}
+        />
+      </ThemeProvider>,
+    );
+    const [line] = await screen.findAllByTestId("goal-line");
+    // 10:55 is 50 of the 115 minutes between the 10:05 bar and the 12:00 bar,
+    // so logical 1 + 3000/6900 lands at x 275 on the mocked 600 px plot even
+    // though the library cannot resolve the goal time itself.
+    expect(line.style.left).toBe("275px");
+    expect(
+      chartState.logicalCalls.some((logical) => Math.abs(logical - (1 + 3000 / 6900)) < 1e-9),
+    ).toBe(true);
+  });
+
+  it("uses the covering bar's coordinate for a goal inside its interval", async () => {
+    render(
+      <ThemeProvider>
+        <PriceChart
+          bars={bars}
+          lifecycle={lifecycleGoalInsideBar}
+          trades={[]}
+          signals={[]}
+          barIntervalSeconds={300}
+        />
+      </ThemeProvider>,
+    );
+    const hits = await screen.findAllByTestId("goal-hit");
+    expect(hits).toHaveLength(1);
+    // The 10:00 bar owns 10:02, so the goal sits on that bar's coordinate.
+    expect(hits[0].style.left).toBe("0px");
+    expect(screen.queryAllByTestId("goal-line")).toHaveLength(0);
+    expect(chartState.logicalCalls).toHaveLength(0);
+  });
+
+  it("skips a goal whose coordinate falls outside the plot", async () => {
+    chartState.mainVisibleRange = {
+      from: seconds(bars[0].ts_event),
+      to: seconds(bars[1].ts_event),
+    };
+    render(
+      <ThemeProvider>
+        <PriceChart
+          bars={bars}
+          lifecycle={lifecycleGoalGap}
+          trades={[]}
+          signals={[]}
+          barIntervalSeconds={300}
+        />
+      </ThemeProvider>,
+    );
+    expect(await screen.findByTestId("price-chart-legend")).toBeInTheDocument();
+    expect(screen.queryAllByTestId("goal-hit")).toHaveLength(0);
+    expect(screen.queryAllByTestId("goal-line")).toHaveLength(0);
+  });
+
   it("gives a goal inside a bar interval a hit area but no second line", async () => {
     render(
       <ThemeProvider>
-        <PriceChart bars={bars} lifecycle={lifecycleGoalInsideBar} trades={[]} signals={[]} />
+        <PriceChart
+          bars={bars}
+          lifecycle={lifecycleGoalInsideBar}
+          trades={[]}
+          signals={[]}
+          barIntervalSeconds={300}
+        />
       </ThemeProvider>,
     );
     const hits = await screen.findAllByTestId("goal-hit");
     expect(hits).toHaveLength(1);
     expect(screen.queryAllByTestId("goal-line")).toHaveLength(0);
+  });
+
+  it("keeps the goal line non-interactive and confines the hit area to the flag", async () => {
+    render(
+      <ThemeProvider>
+        <PriceChart
+          bars={bars}
+          lifecycle={lifecycleGoalGap}
+          trades={[]}
+          signals={[]}
+          barIntervalSeconds={300}
+        />
+      </ThemeProvider>,
+    );
+    const [hit] = await screen.findAllByTestId("goal-hit");
+    // A short flag at the top leaves the plot free to pan and crosshair.
+    expect(hit.style.height).toBe("16px");
+    expect(hit.style.top).toBe("0px");
+    expect(Number.parseFloat(hit.style.width)).toBeLessThanOrEqual(16);
+    expect(hit.getAttribute("tabindex")).toBe("0");
+    expect(hit.getAttribute("role")).not.toBe("button");
+    const [line] = screen.getAllByTestId("goal-line");
+    expect(line.className).toContain("pointer-events-none");
   });
 
   it("shows the goal team and formatted time on hover or focus and hides on leave", async () => {
@@ -753,6 +869,26 @@ describe("price chart markers", () => {
 
     act(() => handler?.({ time: undefined }));
     expect(chip().textContent).toContain("Goals 2");
+    expect(chip().textContent).toContain("Corners 1");
+  });
+
+  it("counts a goal or corner inside the hovered bar's interval, not just at its start", () => {
+    render(
+      <ThemeProvider>
+        <PriceChart
+          bars={bars}
+          lifecycle={liveMatchState}
+          trades={[]}
+          signals={[]}
+          barIntervalSeconds={300}
+        />
+      </ThemeProvider>,
+    );
+    const chip = () => screen.getByTestId("match-state");
+    const handler = chartState.crosshairHandlers[0];
+    // The 10:00 bar covers 10:00–10:05, so the 10:05 corner now counts.
+    act(() => handler?.({ time: seconds(bars[0].ts_event) }));
+    expect(chip().textContent).toContain("Goals 1");
     expect(chip().textContent).toContain("Corners 1");
   });
 

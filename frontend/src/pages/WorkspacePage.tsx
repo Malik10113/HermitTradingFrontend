@@ -421,16 +421,21 @@ export function WorkspacePage() {
   };
 
   const dataVersion = barsResource.data?.data_version ?? meta?.data_version ?? null;
-  const fillCount = bars.every((bar) => typeof bar.trade_count === "number")
-    ? bars.reduce((sum, bar) => sum + (bar.trade_count as number), 0)
-    : null;
-  // A total is only shown when every loaded bar contributed a value; a partial
-  // sum would read as a complete one.
-  const totalVolume = bars.every((bar) => typeof bar.volume_usd === "number")
-    ? bars.reduce((sum, bar) => sum + (bar.volume_usd as number), 0)
-    : null;
+  // A total needs at least one bar and a value on every loaded bar; an empty
+  // list or a partial sum reads as "not available", never as a real zero.
+  const fillCount =
+    bars.length > 0 && bars.every((bar) => typeof bar.trade_count === "number")
+      ? bars.reduce((sum, bar) => sum + (bar.trade_count as number), 0)
+      : null;
+  const totalVolume =
+    bars.length > 0 && bars.every((bar) => typeof bar.volume_usd === "number")
+      ? bars.reduce((sum, bar) => sum + (bar.volume_usd as number), 0)
+      : null;
   const fullBarType = barsResource.data?.bar_type ?? barTypeLabel(state.barType);
   const barDuration = BAR_DURATION_MS[state.barType];
+  // Goal coverage uses the selected bar type's duration; non-time bars have no
+  // registered duration and fall back to one minute.
+  const chartBarIntervalSeconds = barDuration ? barDuration / 1000 : 60;
   const phaseAvailable = !!(lifecycle?.actual_kickoff_utc && lifecycle?.actual_end_utc);
   // Duration comes only from both observed wallclocks; no nominal length is
   // ever substituted for a missing lifecycle row.
@@ -693,6 +698,7 @@ export function WorkspacePage() {
                   positions={positionWindows}
                   phaseFilter={state.phase}
                   showGoals={state.showGoals}
+                  barIntervalSeconds={chartBarIntervalSeconds}
                   stale={stale}
                   dataVersion={dataVersion}
                   resetKey={resetKey}

@@ -5,6 +5,7 @@ import {
   createChart,
   type IChartApi,
   type ISeriesApi,
+  type Logical,
   type MouseEventParams,
   type SeriesMarker,
   type Time,
@@ -62,6 +63,12 @@ interface PriceChartProps {
   phaseFilter?: PhaseFilter;
   /** Show goal markers; halftime and kickoff/end stay visible either way. */
   showGoals?: boolean;
+  /**
+   * Duration of one bar in seconds, from the selected bar type. Used to decide
+   * which bar covers a goal; never inferred from the first two bar timestamps,
+   * because a missing bar would stretch the interval.
+   */
+  barIntervalSeconds?: number;
   stale?: boolean;
   height?: number;
   /** Data version shown in the footer; absent renders "not available". */
@@ -121,11 +128,53 @@ export function goalCoveredByBar(
   return goalTime < barTimes[candidate] + intervalSeconds;
 }
 
-/** The bar interval from the candle series; default 60 s. */
-function barIntervalSeconds(barTimes: number[]): number {
-  if (barTimes.length < 2) return 60;
-  const interval = barTimes[1] - barTimes[0];
-  return interval > 0 ? interval : 60;
+/** The subset of the time scale the goal positioning needs. */
+interface GoalCoordinateScale {
+  timeToCoordinate: (time: UTCTimestamp) => number | null;
+  logicalToCoordinate: (logical: Logical) => number | null;
+}
+
+/**
+ * Resolve a goal wallclock to an x coordinate using coordinates the time scale
+ * can actually produce. Lightweight-charts only resolves a time that is a data
+ * point, and goal times carry seconds while bars are bucket aligned, so:
+ *
+ * - a goal inside a bar interval takes that bar's coordinate;
+ * - a goal in a gap is interpolated in logical (bar-index) space between the
+ *   previous and next bars;
+ * - a goal with no bracketing bar, or no resolvable coordinate, is skipped.
+ *
+ * Returns the raw coordinate; the caller clips it against the plot width.
+ */
+export function goalCoordinate(
+  goalTime: number,
+  barTimes: number[],
+  intervalSeconds: number,
+  scale: GoalCoordinateScale,
+): number | null {
+  let low = 0;
+  let high = barTimes.length - 1;
+  let candidate = -1;
+  while (low <= high) {
+    const mid = (low + high) >> 1;
+    if (barTimes[mid] <= goalTime) {
+      candidate = mid;
+      low = mid + 1;
+    } else {
+      high = mid - 1;
+    }
+  }
+  if (candidate < 0) return null;
+  const barTime = barTimes[candidate];
+  if (goalTime < barTime + intervalSeconds) {
+    const raw = scale.timeToCoordinate(barTime as UTCTimestamp);
+    return raw === null ? null : Number(raw);
+  }
+  const nextTime = barTimes[candidate + 1];
+  if (nextTime === undefined || nextTime <= barTime) return null;
+  const logical = candidate + (goalTime - barTime) / (nextTime - barTime);
+  const raw = scale.logicalToCoordinate(logical as Logical);
+  return raw === null ? null : Number(raw);
 }
 
 const PHASE_LABELS: Record<string, string> = {
@@ -180,6 +229,7 @@ export function PriceChart({
   positions = [],
   phaseFilter = "all",
   showGoals = true,
+  barIntervalSeconds = 60,
   stale = false,
   height = 460,
   dataVersion = null,
@@ -337,11 +387,12 @@ export function PriceChart({
   const legendCandle = hovered ?? last;
   const legendBar = hovered ?? lastBar;
 
-  // Goals and corners observed up to the hovered bar (or the last bar). A null
-  // list stays "n/a": an uncovered source is never reported as zero.
+  // Goals and corners observed up to the end of the hovered bar's interval (or
+  // the last bar's). A null list stays "n/a": an uncovered source is never
+  // reported as zero.
   const matchCounts = useMemo(() => {
     if (!matchState || !legendBar) return null;
-    const cutoff = Date.parse(legendBar.ts_event);
+    const cutoff = Date.parse(legendBar.ts_event) + barIntervalSeconds * 1000;
     const countUpTo = (events: Array<{ ts: string }> | null): number | null => {
       if (events === null) return null;
       if (Number.isNaN(cutoff)) return null;
@@ -351,7 +402,7 @@ export function PriceChart({
       }).length;
     };
     return { goals: countUpTo(matchState.goals), corners: countUpTo(matchState.corners) };
-  }, [matchState, legendBar]);
+  }, [matchState, legendBar, barIntervalSeconds]);
 
   const showGoalPopup = (goal: GoalOverlay) =>
     setGoalPopup({ key: goal.key, x: goal.x, ts: goal.ts, team: goal.team });
@@ -527,19 +578,24 @@ export function PriceChart({
         return;
       }
       const barTimes = candle.data.map((point) => point.time);
-      const interval = barIntervalSeconds(barTimes);
       const goals: GoalOverlay[] = [];
       goalEventsRef.current.forEach((event, index) => {
         const goalTime = Math.floor(Date.parse(event.ts) / 1000);
         if (!Number.isFinite(goalTime)) return;
-        const rawX = chart.timeScale().timeToCoordinate(goalTime as UTCTimestamp);
-        if (rawX === null) return;
+        const x = goalCoordinate(
+          goalTime,
+          barTimes,
+          barIntervalSeconds,
+          chart.timeScale(),
+        );
+        // Never draw or hit-test outside the plot.
+        if (x === null || x < 0 || x > width) return;
         goals.push({
           key: `goal:${index}:${goalTime}`,
-          x: Number(rawX),
+          x,
           ts: event.ts,
           team: event.team ?? null,
-          gapped: !goalCoveredByBar(goalTime, barTimes, interval),
+          gapped: !goalCoveredByBar(goalTime, barTimes, barIntervalSeconds),
         });
       });
       setGoalOverlays(goals);
@@ -697,6 +753,7 @@ export function PriceChart({
     theme,
     height,
     phaseFilter,
+    barIntervalSeconds,
   ]);
 
   // Marker updates ride on the existing candle series: toggling goals must not
@@ -877,45 +934,48 @@ export function PriceChart({
                 <div
                   key={goal.key}
                   data-testid="goal-line"
-                  className="absolute border-l border-dashed"
+                  className="pointer-events-none absolute border-l border-dashed"
                   style={{
                     left: goal.x,
                     top: 0,
                     bottom: 0,
                     borderColor: CHART_COLORS.goal,
                   }}
-                >
-                  <span
-                    className="absolute left-0 top-0 whitespace-nowrap rounded-sm px-1 text-[9px] font-semibold leading-4 text-white"
-                    style={{ background: CHART_COLORS.goal }}
-                  >
-                    GOAL
-                  </span>
-                </div>
+                />
               ))}
           </div>
+          {/* Only the little GOAL flag is interactive: the dashed line must not
+              swallow pan or crosshair events over the plot. */}
           {goalOverlays.map((goal) => (
             <div
               key={`hit:${goal.key}`}
               data-testid="goal-hit"
-              role="button"
+              role="note"
               tabIndex={0}
               aria-label={`Goal · ${goal.team ?? "team not available"} · ${fmtTimestamp(goal.ts)}`}
-              className="pointer-events-auto absolute cursor-pointer"
-              style={{ left: Math.max(0, goal.x - 6), width: 12, top: 0, bottom: 22 }}
+              className="pointer-events-auto absolute flex cursor-pointer items-start justify-center focus-visible:ring-1 focus-visible:ring-accent focus-visible:outline-none"
+              style={{ left: Math.max(0, goal.x - 7), width: 14, height: 16, top: 0 }}
               onMouseEnter={() => showGoalPopup(goal)}
               onFocus={() => showGoalPopup(goal)}
               onMouseLeave={() => setGoalPopup(null)}
               onBlur={() => setGoalPopup(null)}
-            />
+            >
+              <span
+                aria-hidden="true"
+                className="whitespace-nowrap rounded-sm px-1 text-[9px] font-semibold leading-4 text-white"
+                style={{ background: CHART_COLORS.goal }}
+              >
+                GOAL
+              </span>
+            </div>
           ))}
           {goalPopup ? (
             <div
               data-testid="goal-popup"
               className="pointer-events-none absolute z-10 rounded border border-line bg-surface px-2 py-1 text-[10px] text-ink shadow"
               style={{
-                left: Math.max(0, Math.min(goalPopup.x + 8, Math.max(0, overlayWidth - 230))),
-                top: 22,
+                left: Math.max(0, Math.min(goalPopup.x + 8, Math.max(0, overlayWidth - 240))),
+                top: 20,
                 maxWidth: 220,
               }}
             >

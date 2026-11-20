@@ -46,6 +46,7 @@ const chartProps = vi.hoisted(() => ({
   showGoals: null as boolean | null,
   dataVersion: null as string | null | undefined,
   resetKey: null as number | null,
+  barIntervalSeconds: null as number | null,
   renders: 0,
 }));
 
@@ -54,10 +55,12 @@ vi.mock("../components/PriceChart", () => ({
     showGoals?: boolean;
     dataVersion?: string | null;
     resetKey?: number;
+    barIntervalSeconds?: number;
   }) => {
     chartProps.showGoals = props.showGoals ?? true;
     chartProps.dataVersion = props.dataVersion;
     chartProps.resetKey = props.resetKey ?? null;
+    chartProps.barIntervalSeconds = props.barIntervalSeconds ?? 60;
     chartProps.renders += 1;
     return (
       <div
@@ -65,6 +68,7 @@ vi.mock("../components/PriceChart", () => ({
         data-show-goals={String(props.showGoals ?? true)}
         data-data-version={String(props.dataVersion ?? "")}
         data-reset-key={String(props.resetKey ?? 0)}
+        data-bar-interval={String(props.barIntervalSeconds ?? 60)}
       />
     );
   },
@@ -96,7 +100,27 @@ const indicators = [
   },
 ];
 
-function stubApi(lifecycle: unknown) {
+function stubApi(lifecycle: unknown, barsOverride?: unknown[]) {
+  const barRows = barsOverride ?? [
+    {
+      ts_event: "2024-10-19T13:55:00Z",
+      open: 0.4,
+      high: 0.42,
+      low: 0.39,
+      close: 0.41,
+      volume_usd: 120,
+      trade_count: 4,
+    },
+    {
+      ts_event: "2024-10-19T14:00:00Z",
+      open: 0.41,
+      high: 0.43,
+      low: 0.4,
+      close: 0.42,
+      volume_usd: 90,
+      trade_count: 3,
+    },
+  ];
   vi.stubGlobal(
     "fetch",
     vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -147,26 +171,7 @@ function stubApi(lifecycle: unknown) {
           instrument_id: instrumentId,
           bar_type: "...-5-MINUTE-LAST-INTERNAL@1-MINUTE-LAST-EXTERNAL",
           data_version: "sha256:abc123def4567890",
-          bars: [
-            {
-              ts_event: "2024-10-19T13:55:00Z",
-              open: 0.4,
-              high: 0.42,
-              low: 0.39,
-              close: 0.41,
-              volume_usd: 120,
-              trade_count: 4,
-            },
-            {
-              ts_event: "2024-10-19T14:00:00Z",
-              open: 0.41,
-              high: 0.43,
-              low: 0.4,
-              close: 0.42,
-              volume_usd: 90,
-              trade_count: 3,
-            },
-          ],
+          bars: barRows,
         });
       }
       if (url.endsWith("/api/indicators")) {
@@ -360,6 +365,8 @@ describe("workspace wiring", () => {
       expect(chartProps.dataVersion).toBe("sha256:abc123def4567890");
     });
     expect(chartProps.resetKey).toBe(0);
+    // The 5-minute bar type is threaded to the chart for goal coverage.
+    expect(chartProps.barIntervalSeconds).toBe(300);
 
     // Facts move from the chart footer into the panel header.
     expect(screen.getByText(/Kickoff 2024-10-19 14:00:00 UTC/)).toBeInTheDocument();
@@ -375,5 +382,29 @@ describe("workspace wiring", () => {
       expect(chartProps.resetKey).toBe(1);
     });
     expect(screen.getByTestId("price-chart")).toHaveAttribute("data-reset-key", "1");
+  });
+
+  it("reports header totals as not available, never zero, when no bars load", async () => {
+    stubApi(defaultLifecycle, []);
+
+    render(
+      <MemoryRouter initialEntries={[`/?instrument=${encodeURIComponent(instrumentId)}&bar=5m`]}>
+        <ThemeProvider>
+          <MetaProvider>
+            <Routes>
+              <Route path="/" element={<WorkspacePage />} />
+            </Routes>
+          </MetaProvider>
+        </ThemeProvider>
+      </MemoryRouter>,
+    );
+
+    await screen.findByText(/No bars in this range/i);
+    const header = screen.getByRole("region", { name: "Price chart" });
+    expect(header.textContent).toContain("Fills not available");
+    expect(header.textContent).toContain("Volume not available");
+    expect(header.textContent).not.toMatch(/Fills 0\b/);
+    expect(header.textContent).not.toMatch(/Volume \$0\.00/);
+    expect(screen.queryByTestId("price-chart")).toBeNull();
   });
 });

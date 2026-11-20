@@ -776,6 +776,38 @@ describe("price chart markers", () => {
     expect(line.className).toContain("pointer-events-none");
   });
 
+  it("paints the goal hit area above the chart canvas", async () => {
+    render(
+      <ThemeProvider>
+        <PriceChart
+          bars={bars}
+          lifecycle={lifecycleGoalGap}
+          trades={[]}
+          signals={[]}
+          barIntervalSeconds={300}
+        />
+      </ThemeProvider>,
+    );
+    const [hit] = await screen.findAllByTestId("goal-hit");
+    // The lightweight-charts canvases sit in the sibling above; without an
+    // explicit stacking position the overlay paints underneath them and the
+    // flag can never be hovered or focused in a real browser.
+    const overlay = screen.getByTestId("chart-overlay");
+    expect(overlay.className).toContain("z-10");
+    expect(overlay.className).toContain("pointer-events-none");
+    expect(hit.className).toContain("z-20");
+    expect(hit.className).toContain("pointer-events-auto");
+
+    fireEvent.mouseEnter(hit);
+    const popup = screen.getByTestId("goal-popup");
+    expect(popup.className).toContain("pointer-events-none");
+    // The popup is clamped inside the plot: never left of 0 and never past
+    // the plot width minus its own max width.
+    const left = Number.parseFloat(popup.style.left);
+    expect(left).toBeGreaterThanOrEqual(0);
+    expect(left).toBeLessThanOrEqual(600 - 220);
+  });
+
   it("shows the goal team and formatted time on hover or focus and hides on leave", async () => {
     render(
       <ThemeProvider>

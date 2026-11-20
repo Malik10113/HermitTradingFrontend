@@ -911,7 +911,11 @@ export function PriceChart({
             lifecyclePhaseAvailable(lifecycle) ? ", lifecycle phases shaded" : ""
           }`}
         />
-        <div ref={overlayRef} className="pointer-events-none absolute inset-0">
+        {/* The chart library paints its canvases inside the sibling above; the
+            overlay needs an explicit stacking position or the canvas covers it.
+            Keep the layer itself non-interactive so pan and crosshair still
+            reach the chart. */}
+        <div ref={overlayRef} data-testid="chart-overlay" className="pointer-events-none absolute inset-0 z-10">
           <div aria-hidden="true" className="pointer-events-none absolute inset-0">
             {overlay.map((band) => (
               <div
@@ -953,7 +957,7 @@ export function PriceChart({
               role="note"
               tabIndex={0}
               aria-label={`Goal · ${goal.team ?? "team not available"} · ${fmtTimestamp(goal.ts)}`}
-              className="pointer-events-auto absolute flex cursor-pointer items-start justify-center focus-visible:ring-1 focus-visible:ring-accent focus-visible:outline-none"
+              className="pointer-events-auto absolute z-20 flex cursor-pointer items-start justify-center focus-visible:ring-1 focus-visible:ring-accent focus-visible:outline-none"
               style={{ left: Math.max(0, goal.x - 7), width: 14, height: 16, top: 0 }}
               onMouseEnter={() => showGoalPopup(goal)}
               onFocus={() => showGoalPopup(goal)}
@@ -972,7 +976,7 @@ export function PriceChart({
           {goalPopup ? (
             <div
               data-testid="goal-popup"
-              className="pointer-events-none absolute z-10 rounded border border-line bg-surface px-2 py-1 text-[10px] text-ink shadow"
+              className="pointer-events-none absolute z-30 rounded border border-line bg-surface px-2 py-1 text-[10px] text-ink shadow"
               style={{
                 left: Math.max(0, Math.min(goalPopup.x + 8, Math.max(0, overlayWidth - 240))),
                 top: 20,

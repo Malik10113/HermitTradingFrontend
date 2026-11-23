@@ -41,6 +41,25 @@ def _date_ns(value: str, end: bool = False) -> int:
     return base + (86_400_000_000_000 - 1 if end else 0)
 
 
+def _effective_expiration_ns(
+    row: dict[str, Any],
+    lifecycle: Any | None,
+) -> tuple[int | None, str]:
+    """Expiry the simulation must honour, and where it came from.
+
+    Polymarket's market ``end_date`` is the scheduled kickoff for a match
+    market, so using it as the Nautilus expiry stops the engine before the
+    match starts. The observed lifecycle end is later and is the correct
+    simulation cutoff; keep the market end when it is already later (e.g. an
+    outright market).
+    """
+    market = _ns(row.get("expiration_ns") or row.get("end_date_utc") or row.get("end_date"))
+    observed = _ns(getattr(lifecycle, "actual_end_utc", None)) if lifecycle is not None else None
+    if observed is not None and (market is None or observed > market):
+        return observed, "observed_match_end"
+    return market, "market_end_date" if market is not None else "unknown"
+
+
 def _instrument_row(instrument_id: str) -> dict[str, Any]:
     from backend.data.instruments import get_instrument
 
@@ -207,6 +226,14 @@ def execute_run(config_dict: dict[str, Any], prepared: dict[str, Any] | None = N
         primary_row["outcome"] = "NO"
     if str(complement_row.get("instrument_id", "")).endswith("-YES.POLYMARKET"):
         complement_row["outcome"] = "YES"
+
+    # A match market's ``end_date`` is its scheduled kickoff. Use the observed
+    # lifecycle end when it is later so in-play bars reach the engine.
+    lc_row = lifecycle_for(primary_row.get("match_key"))
+    expiration_ns, expiration_source = _effective_expiration_ns(primary_row, lc_row)
+    if expiration_ns is not None:
+        primary_row["expiration_ns"] = expiration_ns
+        complement_row["expiration_ns"] = expiration_ns
     primary = build_binary_option(primary_row)
     complement = build_binary_option(complement_row)
     alias = config.strategy.bar_type
@@ -296,14 +323,15 @@ def execute_run(config_dict: dict[str, Any], prepared: dict[str, Any] | None = N
     bars_p, quotes_p = build_bars(bars_primary, primary)
     bars_c, quotes_c = build_bars(bars_complement, complement)
 
-    lc_row = lifecycle_for(primary_row.get("match_key"))
-
     settlement_row = get_settlement(primary_row["condition_id"])
-    # The brief defines expiry as the market's end_date. Prefer it for the
-    # settlement timestamp; markets.updated_at is a metadata timestamp, not a
-    # verified resolution time, and would inflate holding periods.
+    # The market end is the scheduled kickoff for a match market, not a
+    # settlement wallclock. When the observed match end is the effective
+    # expiry, settle there; otherwise keep the market end.
     settled_ts = primary_row.get("end_date_utc") or primary_row.get("end_date")
     settlement_ts_source = "market_end_date"
+    if expiration_source == "observed_match_end" and lc_row is not None:
+        settled_ts = lc_row.actual_end_utc
+        settlement_ts_source = "observed_match_end"
     if settled_ts is None and settlement_row is not None:
         settled_ts = getattr(settlement_row, "settled_ts_utc", None)
         settlement_ts_source = "markets_updated_at"
@@ -488,6 +516,12 @@ def execute_run(config_dict: dict[str, Any], prepared: dict[str, Any] | None = N
 
     manifest = {
         "run_id": None,
+        "effective_expiration_utc": (
+            datetime.fromtimestamp(expiration_ns / 1_000_000_000, timezone.utc).isoformat().replace("+00:00", "Z")
+            if expiration_ns is not None
+            else None
+        ),
+        "expiration_source": expiration_source,
         "strategy_hash": prepared["strategy_hash"],
         "run_hash": prepared["run_hash"],
         "data_version": prepared["data_version"],

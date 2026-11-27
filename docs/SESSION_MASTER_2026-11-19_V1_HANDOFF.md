@@ -1,5 +1,8 @@
 # Session master — v1 handoff (2026-11-19)
 
+> Superseded for current state by
+> `SESSION_MASTER_2026-11-27_V1_FRONTEND_DATA.md`; kept as history.
+
 > Supersedes `SESSION_MASTER_2026-11-18_V1.md` for current state. The brief
 > remains authoritative for design. This file tells the next agent what is
 > deployed, what is verified, what is still open, and which worktrees are stale.

@@ -16,6 +16,32 @@ measured. Keep entries short enough to scan; link the commit or PR.
 
 ---
 
+## 2026-11-27  Frontend clarity, 2026 coverage and in-play backtests
+
+- **Changed:** Cursor-following OHLC legend; per-output indicator colours,
+  labels and one pane per separate indicator (no overlay dependency); market
+  labels with match context; all-column data-table sorting; selectable page
+  size (100–5,000); lifecycle/totals in the chart header with the data hash in
+  the footer; Reset view restores zoom; pinned application footer; halftime,
+  goal gap lines and team/time popups with a goals toggle; live goals metric
+  next to OHLC; a Match range preset and a five-minute time ruler; registered
+  match events, ESPN goal clocks and corners; and a backtest fix that expires
+  match markets at the observed end instead of the scheduled kickoff. A 2026
+  bar pre-build covers all 5,874 instruments.
+- **Why:** user-reported frontend/data gaps; the Racing 19 Sep record showed a
+  real no-second-half-trade market, not a construction bug; the match-market
+  `end_date` is kickoff, which made every backtest pre-match.
+- **Measured:** full domain suite green (frontend 212 tests); 2,439,296 1m bars
+  for 5,874 2026 instruments; 2,977 goals with 0 outside their match window;
+  rerun of the West Ham–Arsenal config has 2 in-play entries and 3 exits;
+  production healthy at `891d87c`.
+- **Notes:** 80 lifecycle rows remain unknown and 50 late-2026 matches have no
+  in-play fills because the tape stops at 2026-10-05. Racing YES/NO will still
+  backtest pre-match by data. The full writeup is
+  `docs/SESSION_MASTER_2026-11-27_V1_FRONTEND_DATA.md`.
+
+---
+
 ## 2026-11-19  Production/build split and v1 handoff
 
 - **Changed:** Production now runs from `/opt/hermit/prod` with

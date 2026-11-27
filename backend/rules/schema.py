@@ -150,6 +150,7 @@ class RiskConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     sizing: SizingConfig = Field(default_factory=SizingConfig)
+    max_position: int = Field(default=1, ge=1, le=1)
     max_trades: int = Field(default=10_000, ge=1, le=100_000)
 
 

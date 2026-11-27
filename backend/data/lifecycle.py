@@ -525,6 +525,15 @@ def time_to_settlement_minutes(
     return _minutes((as_utc(settlement_ts) - as_utc(ts)).total_seconds())
 
 
+def market_status_at(
+    row: LifecycleRow | dict[str, Any] | None,
+    ts: datetime,
+    settlement_ts: datetime | None = None,
+) -> str | None:
+    """Return market status ('open' | 'closed' | 'settled') or None when unknown."""
+    raise NotImplementedError
+
+
 def lifecycle_rows(rows: Iterable[LifecycleRow]) -> list[dict[str, Any]]:
     """Serialise rows for diagnostics without inventing fields."""
     return [row.as_dict() for row in rows]

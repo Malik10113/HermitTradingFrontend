@@ -1,7 +1,22 @@
 import "@testing-library/jest-dom/vitest";
 import { afterEach, vi } from "vitest";
 import { cleanup } from "@testing-library/react";
-import { clearMemoryStorage } from "../lib/storage";
+import { clearMemoryStorage, getMemoryStorage } from "../lib/storage";
+
+// Install an in-memory localStorage before any module accesses Node's experimental
+// globalThis.localStorage getter (which warns when --localstorage-file is unset).
+Object.defineProperty(globalThis, "localStorage", {
+  configurable: true,
+  writable: true,
+  value: getMemoryStorage(),
+});
+if (typeof window !== "undefined") {
+  Object.defineProperty(window, "localStorage", {
+    configurable: true,
+    writable: true,
+    value: getMemoryStorage(),
+  });
+}
 
 afterEach(() => {
   cleanup();
@@ -9,11 +24,6 @@ afterEach(() => {
   vi.unstubAllGlobals();
   installFetchGuard();
   clearMemoryStorage();
-  try {
-    window.localStorage?.clear();
-  } catch {
-    // Some runtimes expose no localStorage.
-  }
 });
 
 // jsdom has no ResizeObserver; lightweight-charts and the chart shell use it.

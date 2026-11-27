@@ -170,14 +170,14 @@ export function KeyValue({
   items,
   columns = 2,
 }: {
-  items: Array<{ label: string; value: ReactNode; title?: string }>;
+  items: Array<{ key?: string; label: string; value: ReactNode; title?: string }>;
   columns?: 1 | 2 | 3;
 }) {
   const grid = columns === 1 ? "grid-cols-1" : columns === 3 ? "grid-cols-3" : "grid-cols-2";
   return (
     <dl className={`grid ${grid} gap-x-4 gap-y-2`}>
-      {items.map((item) => (
-        <div key={item.label} className="min-w-0">
+      {items.map((item, index) => (
+        <div key={item.key ?? `${item.label}-${index}`} className="min-w-0">
           <dt className="label">{item.label}</dt>
           <dd className="numeric mt-0.5 break-words text-[12px] text-ink" title={item.title}>
             {item.value ?? "not available"}

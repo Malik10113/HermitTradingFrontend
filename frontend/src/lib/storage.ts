@@ -29,11 +29,15 @@ export function getStorage(): Storage {
   if (typeof window !== "undefined") {
     try {
       const storage = window.localStorage;
-      if (storage) return storage;
+      if (storage && typeof storage.getItem === "function") return storage;
     } catch {
       // Fall through to memory.
     }
   }
+  return memoryStorage;
+}
+
+export function getMemoryStorage(): Storage {
   return memoryStorage;
 }
 

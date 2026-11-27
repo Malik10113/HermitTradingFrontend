@@ -112,7 +112,7 @@ class QueueManager:
                         )
                         state.append_event(run_id, "error", f"worker exited with code {code}")
                 elif current and current["status"] == "cancelled":
-                    state.append_event(run_id, "info", "worker stopped after cancellation")
+                    pass
         finally:
             with self._lock:
                 self._procs.pop(run_id, None)
@@ -137,6 +137,7 @@ class QueueManager:
         grace = self._cancel_grace_s if grace_s is None else grace_s
         with self._lock:
             proc = self._procs.get(run_id)
+            thread = self._threads.get(run_id)
         if proc is None or proc.poll() is not None:
             return
         state.terminate_worker(proc.pid, grace)
@@ -144,6 +145,8 @@ class QueueManager:
             proc.wait(timeout=1.0)
         except subprocess.TimeoutExpired:
             pass
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=1.0)
         state.append_event(run_id, "warning", "worker terminated after cancellation")
 
     def cancel(self, run_id: str, grace_s: float | None = None) -> bool:

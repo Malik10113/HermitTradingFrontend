@@ -47,7 +47,11 @@ describe("workspace keyboard access", () => {
     all.focus();
     expect(all).toHaveFocus();
     await userEvent.keyboard("{ArrowRight}");
+    expect(screen.getByRole("button", { name: /set chart range to match/i })).toHaveFocus();
+    await userEvent.keyboard("{ArrowRight}");
     expect(screen.getByRole("button", { name: /set chart range to 1M/i })).toHaveFocus();
+    await userEvent.keyboard("{ArrowLeft}");
+    expect(screen.getByRole("button", { name: /set chart range to match/i })).toHaveFocus();
     await userEvent.keyboard("{ArrowLeft}");
     expect(all).toHaveFocus();
   });

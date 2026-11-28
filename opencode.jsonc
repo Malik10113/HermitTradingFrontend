@@ -31,6 +31,18 @@
         { "action": "*", "resource": "*", "effect": "allow" },
         { "action": "edit", "resource": "*", "effect": "deny" }
       ]
+    },
+
+    // Stands in for `explore` inside the skill, which is why it is read-only:
+    // search and read before a dispatch, never write.
+    "recon": {
+      "mode": "subagent",
+      "description": "Parallel-skill recon: read-only search and reading before dispatch",
+      "model": "opencode-go/deepseek-v4.1-flash#high",
+      "permissions": [
+        { "action": "*", "resource": "*", "effect": "allow" },
+        { "action": "edit", "resource": "*", "effect": "deny" }
+      ]
     }
   }
 }

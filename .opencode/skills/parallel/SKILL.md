@@ -35,9 +35,10 @@ A feature agent is a hat the master wears, not a session. Owning a change, atomi
 accepting reports, and deciding blocker routing are performed by the master *as* that feature.
 If `subagent_depth` ever becomes `2`, this protocol maps 1:1 onto real feature sessions.
 
-Use `implementer` for executors and `reviewer` for reviewers, both pinned to the same cheaper
-model for this skill only; `explore` for read-only recon. Every other subagent call in the
-session keeps the master's model.
+Use `implementer` for executors, `reviewer` for reviewers and `recon` for read-only recon. All
+three are pinned to the same cheaper model for this skill only, so a parallel run never spends
+the master's model on a child. `explore` and `general` are not used here; every subagent call
+made outside this skill keeps the master's model.
 
 ## Ownership and ledger
 

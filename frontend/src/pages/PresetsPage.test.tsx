@@ -191,40 +191,39 @@ const railSizing: NonNullable<PreflightResponse["sizing"]> = {
 };
 
 function stubRailApi(sizing: PreflightResponse["sizing"] = railSizing) {
-  vi.stubGlobal(
-    "fetch",
-    vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
-      if (url.endsWith("/api/strategies")) {
-        return jsonResponse({
-          builtins: [
-            {
-              id: "nautilus_ema_cross",
-              label: "EMA cross",
-              description: "EMA cross",
-              direction: "long",
-              parameters: [],
-            },
-          ],
-        });
-      }
-      if (url.endsWith("/api/execution/preflight") && init?.method === "POST") {
-        return jsonResponse({
-          requested: "conservative",
-          effective: "conservative",
-          cost_source: "fixed",
-          fee_bps: 0,
-          slippage_bps: 10,
-          min_abs_slippage: 0.001,
-          cost_estimate: { fee_bps: 0, slippage_bps: 10, per_side_bps: 10 },
-          book_coverage: null,
-          warnings: [],
-          sizing,
-        });
-      }
-      throw new Error(`Unexpected request in test: ${url}`);
-    }),
-  );
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url.endsWith("/api/strategies")) {
+      return jsonResponse({
+        builtins: [
+          {
+            id: "nautilus_ema_cross",
+            label: "EMA cross",
+            description: "EMA cross",
+            direction: "long",
+            parameters: [],
+          },
+        ],
+      });
+    }
+    if (url.endsWith("/api/execution/preflight") && init?.method === "POST") {
+      return jsonResponse({
+        requested: "conservative",
+        effective: "conservative",
+        cost_source: "fixed",
+        fee_bps: 0,
+        slippage_bps: 10,
+        min_abs_slippage: 0.001,
+        cost_estimate: { fee_bps: 0, slippage_bps: 10, per_side_bps: 10 },
+        book_coverage: null,
+        warnings: [],
+        sizing,
+      });
+    }
+    throw new Error(`Unexpected request in test: ${url}`);
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  return fetchMock;
 }
 
 function railProps(overrides: Partial<ComponentProps<typeof StrategyRail>> = {}) {
@@ -292,5 +291,47 @@ describe("StrategyRail warnings and sizing", () => {
     expect(screen.getAllByText("$100.00")).toHaveLength(2);
     expect(screen.getByText("$142.86")).toBeInTheDocument();
     expect(screen.getByText("$42.86")).toBeInTheDocument();
+  });
+
+  it("sends the selected indicators to the preflight endpoint", async () => {
+    const fetchMock = stubRailApi();
+    window.localStorage.clear();
+    const indicators = [{ instance_id: "ema_fast", type: "ema", params: { period: 12 } }];
+    render(<StrategyRail {...railProps({ indicators })} />);
+
+    await waitFor(() => {
+      expect(
+        fetchMock.mock.calls.some(([input]) => String(input).endsWith("/api/execution/preflight")),
+      ).toBe(true);
+    });
+    const call = fetchMock.mock.calls.find(([input]) =>
+      String(input).endsWith("/api/execution/preflight"),
+    );
+    const body = JSON.parse(String((call?.[1] as RequestInit | undefined)?.body)) as {
+      indicators?: unknown;
+    };
+    expect(body.indicators).toEqual(indicators);
+  });
+
+  it("requires a fresh acknowledgement when a new warning appears", async () => {
+    stubRailApi();
+    window.localStorage.clear();
+    const user = userEvent.setup();
+    const { rerender } = render(<StrategyRail {...railProps()} />);
+
+    const acknowledge = (await screen.findByLabelText(
+      /I acknowledge these data warnings/,
+    )) as HTMLInputElement;
+    await user.click(acknowledge);
+    expect(acknowledge).toBeChecked();
+
+    rerender(
+      <StrategyRail
+        {...railProps({
+          quality: { ...railQuality, warnings: [...railQuality.warnings, "insufficient warmup"] },
+        })}
+      />,
+    );
+    await waitFor(() => expect(acknowledge).not.toBeChecked());
   });
 });

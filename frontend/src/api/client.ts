@@ -34,20 +34,20 @@ const API_BASE = "/api";
 const APP_TOKEN_STORAGE_KEY = "htf.app_token";
 
 /**
- * The optional shared secret from `docs/BRIEF.md` §13. A value in local
- * storage wins over the build-time env so a host can be re-keyed without a
- * rebuild; an empty or missing value means the request is unauthenticated.
+ * The optional shared secret from `docs/BRIEF.md` §13, read only from runtime
+ * storage. It is deliberately never read from `import.meta.env`: Vite embeds
+ * `VITE_*` values into the public JS bundle, and `/assets` is served without
+ * authentication. An empty or missing value means the request is
+ * unauthenticated.
  */
 export function getAppToken(): string | null {
   let stored: string | null = null;
   try {
     stored = window.localStorage?.getItem(APP_TOKEN_STORAGE_KEY) ?? null;
   } catch {
-    // Private mode or a blocked storage partition: fall through to the env.
+    // Private mode or a blocked storage partition: stay unauthenticated.
   }
-  const candidate =
-    stored ?? (import.meta as unknown as { env?: Record<string, string> }).env?.VITE_APP_TOKEN;
-  return candidate && candidate.trim() ? candidate.trim() : null;
+  return stored && stored.trim() ? stored.trim() : null;
 }
 
 /** Store or clear the token used for `Authorization: Bearer <token>`. */
@@ -56,7 +56,7 @@ export function setAppToken(token: string | null): void {
     if (token && token.trim()) window.localStorage?.setItem(APP_TOKEN_STORAGE_KEY, token.trim());
     else window.localStorage?.removeItem(APP_TOKEN_STORAGE_KEY);
   } catch {
-    // Storage unavailable; the token can still come from the build env.
+    // Storage unavailable; the request stays unauthenticated.
   }
 }
 

@@ -341,11 +341,13 @@ export function StrategyRail(props: StrategyRailProps) {
   // user acknowledges them, so declaring the list further down would put it in
   // the temporal dead zone on the render that flips `acknowledged`.
   const warnings = useMemo(() => qualityWarnings(quality), [quality]);
+  const warningKey = warnings.join("|");
 
   useEffect(() => {
-    // An acknowledgement belongs to the instrument whose warnings were shown.
+    // An acknowledgement belongs to the instrument and the exact warning set
+    // shown, so a newly appearing warning needs a fresh acknowledgement.
     setAcknowledged(false);
-  }, [instrumentId]);
+  }, [instrumentId, warningKey]);
 
   const config: BacktestConfig = useMemo(
     () =>
@@ -413,6 +415,7 @@ export function StrategyRail(props: StrategyRailProps) {
             to: to || undefined,
             execution: defaultExecution(profile, feeBps),
             risk: config.risk,
+            indicators: config.strategy.indicators,
           },
           controller.signal,
         )
@@ -443,6 +446,7 @@ export function StrategyRail(props: StrategyRailProps) {
     sizing.value,
     sizing.bankroll,
     maxTrades,
+    indicators,
   ]);
 
   const startAdvanced = () => {

@@ -44,8 +44,12 @@ const ADVANCED_EXECUTION_KEYS = [
   "fallback",
 ] as const;
 
-/** True when a quick-mode URL would drop risk or execution settings. */
+/** True when a quick-mode URL would drop risk, execution or evaluation settings. */
 export function presetNeedsFullConfig(config: Preset["config"] | null | undefined): boolean {
+  // The workspace URL has no split parameter, so a configured train/test split
+  // would be lost on reopen unless the full config travels in `strategyJson`.
+  if (config?.evaluation?.split != null) return true;
+
   const risk = config?.risk;
   const sizing = risk?.sizing;
   if (sizing) {

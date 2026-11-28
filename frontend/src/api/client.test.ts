@@ -131,6 +131,19 @@ describe("api client", () => {
     }
   });
 
+  it("ignores a build-time VITE_APP_TOKEN", async () => {
+    const fetchMock = mockFetch(response(200, { status: "ok" }));
+    try {
+      setAppToken(null);
+      vi.stubEnv("VITE_APP_TOKEN", "bundle-secret");
+      await api.meta();
+      const init = fetchMock.mock.calls[0][1] as RequestInit;
+      expect((init.headers as Record<string, string>).Authorization).toBeUndefined();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("exposes an SSE events url", () => {
     expect(api.eventsUrl("run 1")).toBe("/api/backtests/run%201/events");
   });

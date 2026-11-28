@@ -73,6 +73,26 @@ describe("presetWorkspaceSearch", () => {
     expect(state.to).toBe("2026-09-19");
   });
 
+  it("preserves an evaluation split that a quick-mode URL cannot express", () => {
+    const splitPreset: Preset = {
+      ...quickPreset,
+      config: {
+        ...quickPreset.config,
+        evaluation: {
+          date_range: { from: "2026-09-18", to: "2026-09-19" },
+          split: { train_end: "2026-09-18", test_start: "2026-09-19" },
+        },
+      },
+    };
+    const { state } = parseWorkspaceSearch(presetWorkspaceSearch(splitPreset));
+    expect(state.strategyJson).not.toBeNull();
+    const restored = JSON.parse(state.strategyJson as string) as BacktestConfig;
+    expect(restored.evaluation.split).toEqual({
+      train_end: "2026-09-18",
+      test_start: "2026-09-19",
+    });
+  });
+
   it("keeps an explicit rule tree instead of reducing it to the builtin", () => {
     const advanced: Preset = {
       ...quickPreset,

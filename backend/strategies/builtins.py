@@ -1,6 +1,6 @@
 """The built-in strategy catalogue (BRIEF §8.1).
 
-Ten curated, versioned strategies.  Each builder returns a
+Fifteen curated, versioned strategies.  Each builder returns a
 ``StrategySection``-compatible dict built only from registry indicators and
 declarative rules; nothing here generates code, calls ``eval`` or draws a
 random number at runtime.
@@ -427,6 +427,219 @@ def random_entry(
     )
 
 
+FLOW_MOMENTUM_PARAMS = (
+    ParamDef("mom_period", "Momentum period", "int", 15, 2, 300, 1),
+    ParamDef("flow_period", "Flow lookback", "int", 15, 2, 300, 1),
+    ParamDef("min_move", "Min probability move", "float", 0.02, 0.001, 0.40, 0.005),
+    ParamDef("min_imbalance", "Min flow imbalance", "float", 0.15, 0.01, 0.95, 0.05),
+)
+
+
+def flow_momentum(
+    instrument_id: str, bar_type: str = REFERENCE_BAR_TYPE, params: Mapping[str, Any] | None = None
+) -> dict[str, Any]:
+    """Probability momentum confirmed by signed dollar flow imbalance."""
+    p = _params(FLOW_MOMENTUM_PARAMS, params)
+    return _section(
+        instrument_id,
+        bar_type,
+        indicators=[
+            _indicator("dp", "prob_change", {"period": p["mom_period"]}),
+            _indicator("flow", "flow_imbalance", {"period": p["flow_period"]}),
+        ],
+        long_entry={
+            "all": [
+                {"gte": ["indicator:dp:value", p["min_move"]]},
+                {"gte": ["indicator:flow:value", p["min_imbalance"]]},
+            ]
+        },
+        long_exit={
+            "any": [
+                {"lte": ["indicator:dp:value", 0.0]},
+                {"lte": ["indicator:flow:value", 0.0]},
+            ]
+        },
+        short_entry={
+            "all": [
+                {"lte": ["indicator:dp:value", -p["min_move"]]},
+                {"lte": ["indicator:flow:value", -p["min_imbalance"]]},
+            ]
+        },
+        short_exit={
+            "any": [
+                {"gte": ["indicator:dp:value", 0.0]},
+                {"gte": ["indicator:flow:value", 0.0]},
+            ]
+        },
+    )
+
+
+LARGE_TRADE_PARAMS = (
+    ParamDef("vol_period", "Volume lookback", "int", 30, 5, 300, 1),
+    ParamDef("flow_period", "Flow window", "int", 5, 2, 120, 1),
+    ParamDef("volume_multiple", "Min volume / mean ratio", "float", 2.5, 1.1, 20.0, 0.1),
+    ParamDef("flow_threshold", "Min signed flow imbalance", "float", 0.25, 0.05, 0.95, 0.05),
+)
+
+
+def large_trade_follow(
+    instrument_id: str, bar_type: str = REFERENCE_BAR_TYPE, params: Mapping[str, Any] | None = None
+) -> dict[str, Any]:
+    """Follow relative volume surges confirmed by aggressor-signed flow."""
+    p = _params(LARGE_TRADE_PARAMS, params)
+    return _section(
+        instrument_id,
+        bar_type,
+        indicators=[
+            _indicator("rvol", "rolling_volume", {"period": p["vol_period"]}),
+            _indicator("flow", "flow_imbalance", {"period": p["flow_period"]}),
+            _indicator("sma_exit", "sma", {"period": p["vol_period"]}),
+        ],
+        long_entry={
+            "all": [
+                {"gte": ["indicator:rvol:ratio", p["volume_multiple"]]},
+                {"gte": ["indicator:flow:value", p["flow_threshold"]]},
+            ]
+        },
+        long_exit={
+            "any": [
+                {"lt": ["close", "indicator:sma_exit:value"]},
+                {"lte": ["indicator:flow:value", -p["flow_threshold"]]},
+            ]
+        },
+        short_entry={
+            "all": [
+                {"gte": ["indicator:rvol:ratio", p["volume_multiple"]]},
+                {"lte": ["indicator:flow:value", -p["flow_threshold"]]},
+            ]
+        },
+        short_exit={
+            "any": [
+                {"gt": ["close", "indicator:sma_exit:value"]},
+                {"gte": ["indicator:flow:value", p["flow_threshold"]]},
+            ]
+        },
+    )
+
+
+SHORT_HORIZON_REVERSION_PARAMS = (
+    ParamDef("period", "Lookback period", "int", 15, 3, 240, 1),
+    ParamDef("shock_move", "Min shock move", "float", 0.03, 0.005, 0.40, 0.005),
+    ParamDef("low_zone", "Lower range zone", "float", 0.20, 0.05, 0.45, 0.05),
+    ParamDef("high_zone", "Upper range zone", "float", 0.80, 0.55, 0.95, 0.05),
+)
+
+
+def short_horizon_reversion(
+    instrument_id: str, bar_type: str = REFERENCE_BAR_TYPE, params: Mapping[str, Any] | None = None
+) -> dict[str, Any]:
+    """Fade a sharp probability dislocation at a recent range extreme."""
+    p = _params(SHORT_HORIZON_REVERSION_PARAMS, params)
+    if p["low_zone"] >= p["high_zone"]:
+        raise ValueError("low_zone must be smaller than high_zone")
+    return _section(
+        instrument_id,
+        bar_type,
+        indicators=[
+            _indicator("dp", "prob_change", {"period": p["period"]}),
+            _indicator("ext", "extreme_dist", {"period": p["period"]}),
+            _indicator("mid_sma", "sma", {"period": p["period"]}),
+        ],
+        long_entry={
+            "all": [
+                {"lte": ["indicator:dp:value", -p["shock_move"]]},
+                {"lte": ["indicator:ext:position", p["low_zone"]]},
+            ]
+        },
+        long_exit={"gte": ["close", "indicator:mid_sma:value"]},
+        short_entry={
+            "all": [
+                {"gte": ["indicator:dp:value", p["shock_move"]]},
+                {"gte": ["indicator:ext:position", p["high_zone"]]},
+            ]
+        },
+        short_exit={"lte": ["close", "indicator:mid_sma:value"]},
+    )
+
+
+LOGIT_REVERSION_PARAMS = (
+    ParamDef("rsi_period", "RSI period", "int", 14, 2, 200, 1),
+    ParamDef("sma_period", "Mean period", "int", 20, 2, 300, 1),
+    ParamDef("logit_bound", "Abs logit bound", "float", 1.5, 0.2, 5.0, 0.1),
+    ParamDef("eps", "Logit clip eps", "float", 0.001, 0.0001, 0.05, 0.0005),
+)
+
+
+def logit_reversion(
+    instrument_id: str, bar_type: str = REFERENCE_BAR_TYPE, params: Mapping[str, Any] | None = None
+) -> dict[str, Any]:
+    """Fade clipped log-odds excursions with an RSI extreme filter."""
+    p = _params(LOGIT_REVERSION_PARAMS, params)
+    return _section(
+        instrument_id,
+        bar_type,
+        indicators=[
+            _indicator("log_p", "logit", {"eps": p["eps"]}),
+            _indicator("rsi", "rsi", {"period": p["rsi_period"]}),
+            _indicator("mean_p", "sma", {"period": p["sma_period"]}),
+        ],
+        long_entry={
+            "all": [
+                {"lte": ["indicator:log_p:value", -p["logit_bound"]]},
+                {"lt": ["indicator:rsi:value", 35.0]},
+            ]
+        },
+        long_exit={"gte": ["close", "indicator:mean_p:value"]},
+        short_entry={
+            "all": [
+                {"gte": ["indicator:log_p:value", p["logit_bound"]]},
+                {"gt": ["indicator:rsi:value", 65.0]},
+            ]
+        },
+        short_exit={"lte": ["close", "indicator:mean_p:value"]},
+    )
+
+
+PROB_VOL_BREAKOUT_PARAMS = (
+    ParamDef("fast_vol_period", "Fast vol period", "int", 10, 2, 120, 1),
+    ParamDef("slow_vol_period", "Baseline vol period", "int", 40, 5, 400, 1),
+    ParamDef("range_period", "Range period", "int", 20, 3, 300, 1),
+)
+
+
+def prob_vol_breakout(
+    instrument_id: str, bar_type: str = REFERENCE_BAR_TYPE, params: Mapping[str, Any] | None = None
+) -> dict[str, Any]:
+    """Probability volatility expansion with a range breakout."""
+    p = _params(PROB_VOL_BREAKOUT_PARAMS, params)
+    if p["fast_vol_period"] >= p["slow_vol_period"]:
+        raise ValueError("fast_vol_period must be smaller than slow_vol_period")
+    return _section(
+        instrument_id,
+        bar_type,
+        indicators=[
+            _indicator("pvol_fast", "prob_vol", {"period": p["fast_vol_period"]}),
+            _indicator("pvol_slow", "prob_vol", {"period": p["slow_vol_period"]}),
+            _indicator("ext", "extreme_dist", {"period": p["range_period"]}),
+            _indicator("trend_sma", "sma", {"period": p["range_period"]}),
+        ],
+        long_entry={
+            "all": [
+                {"gt": ["indicator:pvol_fast:value", "indicator:pvol_slow:value"]},
+                {"gte": ["indicator:ext:position", 0.90]},
+            ]
+        },
+        long_exit={"lt": ["close", "indicator:trend_sma:value"]},
+        short_entry={
+            "all": [
+                {"gt": ["indicator:pvol_fast:value", "indicator:pvol_slow:value"]},
+                {"lte": ["indicator:ext:position", 0.10]},
+            ]
+        },
+        short_exit={"gt": ["close", "indicator:trend_sma:value"]},
+    )
+
+
 # ---------------------------------------------------------------------------
 # Catalogue
 
@@ -567,6 +780,84 @@ BUILTINS: tuple[Builtin, ...] = (
         null_baseline=True,
         tags=("baseline", "null"),
     ),
+    Builtin(
+        id="flow_momentum",
+        label="Flow-Confirmed Momentum",
+        description=(
+            "Enters when probability change over the lookback exceeds the minimum "
+            "move and signed dollar flow imbalance confirms the direction."
+        ),
+        provenance=(
+            "FundedBetBacktesting/src/polymarket_research/strategies/"
+            "flow_momentum.py (flow_confirmed_momentum)"
+        ),
+        params=FLOW_MOMENTUM_PARAMS,
+        builder=flow_momentum,
+        tags=("prediction_market", "flow", "momentum"),
+    ),
+    Builtin(
+        id="large_trade_follow",
+        label="Large Trade Flow Follow",
+        description=(
+            "Follows relative volume surges when bar volume exceeds a multiple of "
+            "rolling mean volume and signed flow confirms aggressor direction."
+        ),
+        provenance=(
+            "FundedBetBacktesting/src/polymarket_research/strategies/"
+            "large_trade.py (large_trade_signal) & smart_money.py"
+        ),
+        params=LARGE_TRADE_PARAMS,
+        builder=large_trade_follow,
+        tags=("prediction_market", "flow", "microstructure"),
+    ),
+    Builtin(
+        id="short_horizon_reversion",
+        label="Short-Horizon Probability Reversion",
+        description=(
+            "Fades sharp short-horizon probability dislocations when recent range "
+            "position reaches an extreme and signed flow begins reverting."
+        ),
+        provenance=(
+            "FundedBetBacktesting/src/polymarket_research/backtest/"
+            "reversion_optimizer.py & docs/polymarket_strategy_register.md "
+            "(short_horizon_reversion)"
+        ),
+        params=SHORT_HORIZON_REVERSION_PARAMS,
+        builder=short_horizon_reversion,
+        tags=("prediction_market", "mean_reversion", "probability"),
+    ),
+    Builtin(
+        id="logit_reversion",
+        label="Logit Odds Mean Reversion",
+        description=(
+            "Trades log-odds (clipped logit) excursions paired with RSI "
+            "oversold/overbought thresholds so signals scale symmetrically near "
+            "0 and 1."
+        ),
+        provenance=(
+            "FundedBetBacktesting/src/betting_signals/features/probability.py "
+            "(log_edge) & mean_reversion"
+        ),
+        params=LOGIT_REVERSION_PARAMS,
+        builder=logit_reversion,
+        tags=("prediction_market", "mean_reversion", "logit"),
+    ),
+    Builtin(
+        id="prob_vol_breakout",
+        label="Probability Volatility Regime Breakout",
+        description=(
+            "Enters when fast probability volatility expands above baseline "
+            "probability volatility and price breaks out of the recent "
+            "probability range."
+        ),
+        provenance=(
+            "FundedBetBacktesting/src/polymarket_research/backtest/"
+            "breakout_optimizer.py & regime_grid.py"
+        ),
+        params=PROB_VOL_BREAKOUT_PARAMS,
+        builder=prob_vol_breakout,
+        tags=("prediction_market", "volatility", "breakout"),
+    ),
 )
 
 _BY_ID = {builtin.id: builtin for builtin in BUILTINS}
@@ -648,12 +939,17 @@ __all__ = [
     "CATALOGUE_VERSION",
     "DONCHIAN_PARAMS",
     "EMACROSS_PARAMS",
+    "FLOW_MOMENTUM_PARAMS",
+    "LARGE_TRADE_PARAMS",
+    "LOGIT_REVERSION_PARAMS",
     "MACD_PARAMS",
+    "PROB_VOL_BREAKOUT_PARAMS",
     "ParamDef",
     "RANDOM_PARAMS",
     "RSI_PARAMS",
     "REFERENCE_BAR_TYPE",
     "REFERENCE_INSTRUMENT_ID",
+    "SHORT_HORIZON_REVERSION_PARAMS",
     "SMA_TREND_PARAMS",
     "VWAP_PARAMS",
     "atr_vol_breakout",
@@ -662,11 +958,16 @@ __all__ = [
     "buy_and_hold",
     "catalogue",
     "donchian_breakout",
+    "flow_momentum",
     "get_builtin",
+    "large_trade_follow",
+    "logit_reversion",
     "macd_trend",
     "nautilus_ema_cross",
+    "prob_vol_breakout",
     "random_entry",
     "rsi_reversion",
+    "short_horizon_reversion",
     "sma_trend",
     "vwap_reversion",
 ]

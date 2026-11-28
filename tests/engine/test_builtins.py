@@ -27,7 +27,27 @@ EXPECTED_IDS = [
     "vwap_reversion",
     "buy_and_hold",
     "random_entry",
+    "flow_momentum",
+    "large_trade_follow",
+    "short_horizon_reversion",
+    "logit_reversion",
+    "prob_vol_breakout",
 ]
+
+PREDICTION_MARKET_IDS = [
+    "flow_momentum",
+    "large_trade_follow",
+    "short_horizon_reversion",
+    "logit_reversion",
+    "prob_vol_breakout",
+]
+
+
+def wiring(rules: dict) -> dict[str, tuple[str, dict]]:
+    return {
+        indicator["instance_id"]: (indicator["type"], indicator["params"])
+        for indicator in rules["indicators"]
+    }
 
 
 def reference_run(strategy: dict) -> RunConfig:
@@ -39,10 +59,10 @@ def reference_run(strategy: dict) -> RunConfig:
     )
 
 
-def test_catalogue_has_exactly_the_ten_builtins():
+def test_catalogue_has_exactly_the_fifteen_builtins():
     entries = catalogue()
     assert [entry["id"] for entry in entries] == EXPECTED_IDS
-    assert len(BUILTINS) == 10
+    assert len(BUILTINS) == 15
 
 
 def test_every_builtin_validates_through_run_config():
@@ -63,34 +83,37 @@ def test_every_builtin_has_provenance_and_description():
 
 def test_every_builtin_uses_registry_indicators_and_valid_params():
     for entry in catalogue():
+        outputs_by_instance: dict[str, set[str]] = {}
         for instance in entry["rules"]["indicators"]:
             spec = get_spec(instance["type"])
             assert spec.id == instance["type"], entry["id"]
             validated = validate_params(instance["type"], instance["params"])
             assert validated == instance["params"], entry["id"]
-            outputs = {output.key for output in spec.outputs}
-            for field in ("long_entry", "long_exit", "short_entry", "short_exit"):
-                tree = entry["rules"][field]
-                if tree is not None:
-                    _assert_refs_known(tree, entry["rules"]["indicators"], outputs, entry["id"])
+            outputs_by_instance[instance["instance_id"]] = {
+                output.key for output in spec.outputs
+            }
+        for field in ("long_entry", "long_exit", "short_entry", "short_exit"):
+            tree = entry["rules"][field]
+            if tree is not None:
+                _assert_refs_known(tree, outputs_by_instance, entry["id"])
 
 
-def _assert_refs_known(tree, indicators, outputs, builtin_id):
+def _assert_refs_known(tree, outputs_by_instance, builtin_id):
     if not isinstance(tree, dict) or len(tree) != 1:
         raise AssertionError(f"{builtin_id}: malformed node {tree!r}")
     key, value = next(iter(tree.items()))
     if key in ("all", "any"):
         for child in value:
-            _assert_refs_known(child, indicators, outputs, builtin_id)
+            _assert_refs_known(child, outputs_by_instance, builtin_id)
         return
     if key == "not":
-        _assert_refs_known(value, indicators, outputs, builtin_id)
+        _assert_refs_known(value, outputs_by_instance, builtin_id)
         return
     for operand in value:
         if isinstance(operand, str) and operand.startswith("indicator:"):
             _, instance_id, output = operand.split(":")
-            assert instance_id in {i["instance_id"] for i in indicators}, builtin_id
-            assert output in outputs, (builtin_id, operand)
+            assert instance_id in outputs_by_instance, builtin_id
+            assert output in outputs_by_instance[instance_id], (builtin_id, operand)
 
 
 def test_builtins_are_deterministic():
@@ -199,3 +222,205 @@ def test_single_day_evaluation_range_is_valid_but_a_reversed_one_is_not():
     assert same_day.start == same_day.end
     with _pytest.raises(ValueError):
         DateRange(start="2026-09-20", end="2026-09-19")
+
+
+# ---------------------------------------------------------------------------
+# Prediction-market templates ported from FundedBetBacktesting
+
+
+def test_prediction_market_builtins_use_rule_exit_and_carry_provenance():
+    for builtin_id in PREDICTION_MARKET_IDS:
+        builtin = get_builtin(builtin_id)
+        rules = build(builtin_id, "x-YES.POLYMARKET")
+        assert rules["direction"] == "both", builtin_id
+        assert rules["settlement"] == "rule_exit", builtin_id
+        assert "prediction_market" in builtin.tags, builtin_id
+        assert "FundedBetBacktesting" in builtin.provenance, builtin_id
+        for field_name in ("long_entry", "long_exit", "short_entry", "short_exit"):
+            assert rules[field_name] is not None, (builtin_id, field_name)
+
+
+def test_flow_momentum_wiring_and_rules():
+    rules = build("flow_momentum", "x-YES.POLYMARKET")
+    assert wiring(rules) == {
+        "dp": ("prob_change", {"period": 15}),
+        "flow": ("flow_imbalance", {"period": 15}),
+    }
+    assert rules["long_entry"] == {
+        "all": [
+            {"gte": ["indicator:dp:value", 0.02]},
+            {"gte": ["indicator:flow:value", 0.15]},
+        ]
+    }
+    assert rules["long_exit"] == {
+        "any": [
+            {"lte": ["indicator:dp:value", 0.0]},
+            {"lte": ["indicator:flow:value", 0.0]},
+        ]
+    }
+    assert rules["short_entry"] == {
+        "all": [
+            {"lte": ["indicator:dp:value", -0.02]},
+            {"lte": ["indicator:flow:value", -0.15]},
+        ]
+    }
+    assert rules["short_exit"] == {
+        "any": [
+            {"gte": ["indicator:dp:value", 0.0]},
+            {"gte": ["indicator:flow:value", 0.0]},
+        ]
+    }
+
+
+def test_flow_momentum_applies_parameters():
+    rules = build(
+        "flow_momentum",
+        "x-YES.POLYMARKET",
+        params={"mom_period": 5, "flow_period": 9, "min_move": 0.05, "min_imbalance": 0.5},
+    )
+    assert wiring(rules) == {
+        "dp": ("prob_change", {"period": 5}),
+        "flow": ("flow_imbalance", {"period": 9}),
+    }
+    assert rules["long_entry"]["all"][0] == {"gte": ["indicator:dp:value", 0.05]}
+    assert rules["long_entry"]["all"][1] == {"gte": ["indicator:flow:value", 0.5]}
+    assert rules["short_entry"]["all"][0] == {"lte": ["indicator:dp:value", -0.05]}
+
+
+def test_large_trade_follow_wiring_and_rules():
+    rules = build("large_trade_follow", "x-YES.POLYMARKET")
+    assert wiring(rules) == {
+        "rvol": ("rolling_volume", {"period": 30}),
+        "flow": ("flow_imbalance", {"period": 5}),
+        "sma_exit": ("sma", {"period": 30}),
+    }
+    assert rules["long_entry"] == {
+        "all": [
+            {"gte": ["indicator:rvol:ratio", 2.5]},
+            {"gte": ["indicator:flow:value", 0.25]},
+        ]
+    }
+    assert rules["long_exit"] == {
+        "any": [
+            {"lt": ["close", "indicator:sma_exit:value"]},
+            {"lte": ["indicator:flow:value", -0.25]},
+        ]
+    }
+    assert rules["short_entry"] == {
+        "all": [
+            {"gte": ["indicator:rvol:ratio", 2.5]},
+            {"lte": ["indicator:flow:value", -0.25]},
+        ]
+    }
+    assert rules["short_exit"] == {
+        "any": [
+            {"gt": ["close", "indicator:sma_exit:value"]},
+            {"gte": ["indicator:flow:value", 0.25]},
+        ]
+    }
+
+
+def test_short_horizon_reversion_wiring_and_rules():
+    rules = build("short_horizon_reversion", "x-YES.POLYMARKET")
+    assert wiring(rules) == {
+        "dp": ("prob_change", {"period": 15}),
+        "ext": ("extreme_dist", {"period": 15}),
+        "mid_sma": ("sma", {"period": 15}),
+    }
+    assert rules["long_entry"] == {
+        "all": [
+            {"lte": ["indicator:dp:value", -0.03]},
+            {"lte": ["indicator:ext:position", 0.2]},
+        ]
+    }
+    assert rules["long_exit"] == {"gte": ["close", "indicator:mid_sma:value"]}
+    assert rules["short_entry"] == {
+        "all": [
+            {"gte": ["indicator:dp:value", 0.03]},
+            {"gte": ["indicator:ext:position", 0.8]},
+        ]
+    }
+    assert rules["short_exit"] == {"lte": ["close", "indicator:mid_sma:value"]}
+
+
+def test_short_horizon_reversion_rejects_overlapping_zones():
+    with pytest.raises(ValueError, match="low_zone"):
+        build(
+            "short_horizon_reversion",
+            "x-YES.POLYMARKET",
+            params={"low_zone": 0.5, "high_zone": 0.5},
+        )
+    with pytest.raises(ValueError, match="low_zone"):
+        build(
+            "short_horizon_reversion",
+            "x-YES.POLYMARKET",
+            params={"low_zone": 0.7, "high_zone": 0.6},
+        )
+
+
+def test_logit_reversion_wiring_and_rules():
+    rules = build("logit_reversion", "x-YES.POLYMARKET")
+    assert wiring(rules) == {
+        "log_p": ("logit", {"eps": 0.001}),
+        "rsi": ("rsi", {"period": 14}),
+        "mean_p": ("sma", {"period": 20}),
+    }
+    assert rules["long_entry"] == {
+        "all": [
+            {"lte": ["indicator:log_p:value", -1.5]},
+            {"lt": ["indicator:rsi:value", 35.0]},
+        ]
+    }
+    assert rules["long_exit"] == {"gte": ["close", "indicator:mean_p:value"]}
+    assert rules["short_entry"] == {
+        "all": [
+            {"gte": ["indicator:log_p:value", 1.5]},
+            {"gt": ["indicator:rsi:value", 65.0]},
+        ]
+    }
+    assert rules["short_exit"] == {"lte": ["close", "indicator:mean_p:value"]}
+
+
+def test_logit_reversion_clips_logit_with_epsilon():
+    rules = build("logit_reversion", "x-YES.POLYMARKET", params={"eps": 0.01})
+    assert wiring(rules)["log_p"] == ("logit", {"eps": 0.01})
+
+
+def test_prob_vol_breakout_wiring_and_rules():
+    rules = build("prob_vol_breakout", "x-YES.POLYMARKET")
+    assert wiring(rules) == {
+        "pvol_fast": ("prob_vol", {"period": 10}),
+        "pvol_slow": ("prob_vol", {"period": 40}),
+        "ext": ("extreme_dist", {"period": 20}),
+        "trend_sma": ("sma", {"period": 20}),
+    }
+    assert rules["long_entry"] == {
+        "all": [
+            {"gt": ["indicator:pvol_fast:value", "indicator:pvol_slow:value"]},
+            {"gte": ["indicator:ext:position", 0.90]},
+        ]
+    }
+    assert rules["long_exit"] == {"lt": ["close", "indicator:trend_sma:value"]}
+    assert rules["short_entry"] == {
+        "all": [
+            {"gt": ["indicator:pvol_fast:value", "indicator:pvol_slow:value"]},
+            {"lte": ["indicator:ext:position", 0.10]},
+        ]
+    }
+    assert rules["short_exit"] == {"gt": ["close", "indicator:trend_sma:value"]}
+
+
+def test_prob_vol_breakout_requires_fast_vol_below_baseline():
+    with pytest.raises(ValueError, match="fast_vol_period"):
+        build(
+            "prob_vol_breakout",
+            "x-YES.POLYMARKET",
+            params={"fast_vol_period": 40, "slow_vol_period": 40},
+        )
+    with pytest.raises(ValueError, match="fast_vol_period"):
+        build(
+            "prob_vol_breakout",
+            "x-YES.POLYMARKET",
+            params={"fast_vol_period": 60, "slow_vol_period": 40},
+        )
+

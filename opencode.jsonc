@@ -18,6 +18,19 @@
       "mode": "subagent",
       "description": "Parallel-skill executor: implements one scoped atom in its own worktree",
       "model": "opencode-go/deepseek-v4.1-flash#high"
+    },
+
+    // Same pinned model as the executor, but read-only: it reports findings and
+    // never edits, merges or commits. Shell stays allowed because the review
+    // needs `git diff` and the acceptance script.
+    "reviewer": {
+      "mode": "subagent",
+      "description": "Parallel-skill reviewer: read-only findings on an integrated wave",
+      "model": "opencode-go/deepseek-v4.1-flash#high",
+      "permissions": [
+        { "action": "*", "resource": "*", "effect": "allow" },
+        { "action": "edit", "resource": "*", "effect": "deny" }
+      ]
     }
   }
 }

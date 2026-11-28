@@ -29,14 +29,15 @@ tries to launch another has no such tool and the run stalls.
 | Master | This session (primary agent) | `M` |
 | Feature agent | **Persona** held by the master: a brief, a ledger slice, an owner | `F1`, `F2`, … |
 | Executor | Real child session, agent `implementer`, depth 1 | `F1-E1`, `F1-E2`, … |
+| Reviewer | Real child session, agent `reviewer`, depth 1, clean context | `R1`, `R2`, … |
 
 A feature agent is a hat the master wears, not a session. Owning a change, atomizing it,
 accepting reports, and deciding blocker routing are performed by the master *as* that feature.
 If `subagent_depth` ever becomes `2`, this protocol maps 1:1 onto real feature sessions.
 
-Use `implementer` for executors, `general` for reviewers, `explore` for read-only recon. The
-`implementer` agent is pinned to a cheaper model for this skill only; every other subagent
-call in the session keeps the master's model.
+Use `implementer` for executors and `reviewer` for reviewers, both pinned to the same cheaper
+model for this skill only; `explore` for read-only recon. Every other subagent call in the
+session keeps the master's model.
 
 ## Ownership and ledger
 

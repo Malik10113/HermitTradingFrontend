@@ -290,7 +290,8 @@ a batch: the queue only helps when reports stream in.
 
 ## Phase 6 — Review a wave, clean context only
 
-After a wave's integrations are green, dispatch exactly one reviewer.
+After a wave's integrations are green, dispatch exactly one reviewer: a `subagent` call with
+`agent: reviewer`, `description: "<wave> review"`, and a `prompt` naming the base commit.
 
 - Input: `git diff <BASE>..HEAD`, the frozen acceptance script, and the feature intent in one
   line. **Not** the briefs, **not** the executor reports, **not** the ledger.

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import type { Preset } from "../api/types";
+import type { BacktestConfig, Preset } from "../api/types";
 import { parseWorkspaceSearch } from "../lib/urlState";
 import { presetWorkspaceSearch } from "./PresetsPage";
 
@@ -22,9 +22,28 @@ const preset: Preset = {
   },
 };
 
+/** The rail's remembered defaults: nothing here needs extra URL state. */
+const quickPreset: Preset = {
+  id: "pre_quick",
+  name: "EMA quick defaults",
+  config: {
+    strategy: {
+      instrument_id: "m-YES.POLYMARKET",
+      bar_type: "5m",
+      builtin_id: "nautilus_ema_cross",
+      builtin_params: { fast_period: 8, slow_period: 21 },
+      direction: "short",
+      indicators: [],
+    },
+    execution: { profile: "book" },
+    risk: { sizing: { mode: "fixed_stake", value: 100 }, max_trades: 100 },
+    evaluation: { date_range: { from: "2026-09-18", to: "2026-09-19" } },
+  },
+};
+
 describe("presetWorkspaceSearch", () => {
-  it("restores the instrument, range, quick parameters and direction", () => {
-    const search = presetWorkspaceSearch(preset);
+  it("restores a default-cost preset in quick mode", () => {
+    const search = presetWorkspaceSearch(quickPreset);
     const { state, issues } = parseWorkspaceSearch(search);
 
     expect(issues).toEqual([]);
@@ -38,13 +57,29 @@ describe("presetWorkspaceSearch", () => {
     expect(state.quickDirection).toBe("short");
   });
 
+  it("carries non-default risk and execution instead of dropping them", () => {
+    const { state } = parseWorkspaceSearch(presetWorkspaceSearch(preset));
+    expect(state.strategyJson).not.toBeNull();
+    const restored = JSON.parse(state.strategyJson as string) as BacktestConfig;
+
+    expect(restored.risk).toEqual({
+      sizing: { mode: "risk_pct", value: 2, bankroll_usd: 2000 },
+      max_trades: 25,
+    });
+    expect(restored.execution?.fee_bps).toBe(2);
+    expect(state.profile).toBe("book");
+    expect(state.instrument).toBe("m-YES.POLYMARKET");
+    expect(state.from).toBe("2026-09-18");
+    expect(state.to).toBe("2026-09-19");
+  });
+
   it("keeps an explicit rule tree instead of reducing it to the builtin", () => {
     const advanced: Preset = {
-      ...preset,
+      ...quickPreset,
       config: {
-        ...preset.config,
+        ...quickPreset.config,
         strategy: {
-          ...preset.config.strategy,
+          ...quickPreset.config.strategy,
           long_entry: { crosses_above: ["indicator:ema:value", "close"] },
         },
       },

@@ -15,6 +15,18 @@ export interface SizingState {
   bankroll: number;
 }
 
+/**
+ * The strategy rail's remembered defaults. A preset whose sizing, fee and cost
+ * overrides match these needs no extra URL state to reopen faithfully.
+ */
+export const RAIL_DEFAULT_FEE_BPS = 0;
+export const RAIL_DEFAULT_MAX_TRADES = 100;
+export const RAIL_DEFAULT_SIZING: SizingState = {
+  mode: "fixed_stake",
+  value: 100,
+  bankroll: 1000,
+};
+
 export interface BuildConfigArgs {
   instrumentId: string;
   barType: string;
@@ -66,12 +78,24 @@ export function buildBacktestConfig(args: BuildConfigArgs): BacktestConfig {
     params: indicator.params,
   }));
 
+  const advancedDirection = advancedStrategy.direction;
+  const keepAdvancedDirection =
+    args.authoring === "advanced" &&
+    (advancedDirection === "long" ||
+      advancedDirection === "short" ||
+      advancedDirection === "both");
+  // In advanced mode the Direction control is hidden, so the JSON owns it; a
+  // config without an explicit direction falls back to the rail's value.
+  const direction = keepAdvancedDirection
+    ? (advancedDirection as StrategySection["direction"])
+    : args.direction;
+
   const strategy: StrategySection = {
     ...(advancedStrategy as Partial<StrategySection>),
     instrument_id: args.instrumentId,
     bar_type: args.barType,
     indicators: strategyIndicators,
-    direction: args.direction,
+    direction,
   };
 
   if (args.authoring === "quick") {
@@ -87,12 +111,24 @@ export function buildBacktestConfig(args: BuildConfigArgs): BacktestConfig {
   // with no rule tree; it never strips the authoring path into an empty config.
 
   const baseExecution = defaultExecution(args.profile, args.feeBps);
-  const execution: ExecutionSection = {
-    ...(advancedExecution as Partial<ExecutionSection>),
-    ...baseExecution,
-    profile: args.profile,
-    fee_bps: args.profile === "frictionless" ? 0 : args.feeBps,
-  };
+  const execution: ExecutionSection =
+    args.authoring === "advanced"
+      ? {
+          // Advanced JSON owns the cost fields (slippage, minimum absolute
+          // slippage, book staleness/depth, fill timing); the rail still owns
+          // the profile and the fee override so its visible controls stay
+          // truthful. Quick mode re-derives the costs from the profile.
+          ...baseExecution,
+          ...(advancedExecution as Partial<ExecutionSection>),
+          profile: args.profile,
+          fee_bps: args.profile === "frictionless" ? 0 : args.feeBps,
+        }
+      : {
+          ...(advancedExecution as Partial<ExecutionSection>),
+          ...baseExecution,
+          profile: args.profile,
+          fee_bps: args.profile === "frictionless" ? 0 : args.feeBps,
+        };
   if (args.slippageBps !== undefined) execution.slippage_bps = args.slippageBps;
   if (args.minAbsSlippage !== undefined) execution.min_abs_slippage = args.minAbsSlippage;
 

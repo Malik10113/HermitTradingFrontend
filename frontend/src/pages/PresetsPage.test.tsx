@@ -1,9 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
+import type { ComponentProps } from "react";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
-import type { Preset } from "../api/types";
+import type { BacktestConfig, InstrumentQuality, PreflightResponse, Preset } from "../api/types";
 import { parseWorkspaceSearch } from "../lib/urlState";
+import { StrategyRail } from "../components/StrategyRail";
 import { PresetsPage, presetWorkspaceSearch } from "./PresetsPage";
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -157,5 +159,138 @@ describe("PresetsPage", () => {
       },
     });
     expect(await screen.findByText("Preset saved.")).toBeInTheDocument();
+  });
+});
+
+const railQuality: InstrumentQuality = {
+  instrument_id: instrumentId,
+  available_from: "2024-09-01T00:00:00Z",
+  available_to: "2024-12-01T00:00:00Z",
+  trade_count: 1234,
+  bar_count: 900,
+  active_minutes: 600,
+  active_minute_pct: 61.5,
+  longest_gap_s: 900,
+  median_trade_usd: 12.5,
+  quality_grade: "B",
+  warnings: ["one tick wide coverage", "settlement unknown"],
+  gaps: null,
+  settlement_known: false,
+  settlement_value: null,
+  data_version: "dv_test",
+};
+
+const railSizing: NonNullable<PreflightResponse["sizing"]> = {
+  reference_price: 0.7,
+  stake_usd: 100,
+  contracts: 142.86,
+  notional_usd: 100,
+  max_loss_usd: 100,
+  max_payout_usd: 142.86,
+  max_profit_usd: 42.86,
+};
+
+function stubRailApi(sizing: PreflightResponse["sizing"] = railSizing) {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/api/strategies")) {
+        return jsonResponse({
+          builtins: [
+            {
+              id: "nautilus_ema_cross",
+              label: "EMA cross",
+              description: "EMA cross",
+              direction: "long",
+              parameters: [],
+            },
+          ],
+        });
+      }
+      if (url.endsWith("/api/execution/preflight") && init?.method === "POST") {
+        return jsonResponse({
+          requested: "conservative",
+          effective: "conservative",
+          cost_source: "fixed",
+          fee_bps: 0,
+          slippage_bps: 10,
+          min_abs_slippage: 0.001,
+          cost_estimate: { fee_bps: 0, slippage_bps: 10, per_side_bps: 10 },
+          book_coverage: null,
+          warnings: [],
+          sizing,
+        });
+      }
+      throw new Error(`Unexpected request in test: ${url}`);
+    }),
+  );
+}
+
+function railProps(overrides: Partial<ComponentProps<typeof StrategyRail>> = {}) {
+  return {
+    instrumentId,
+    barType: "5m",
+    from: "2024-09-01",
+    to: "2024-12-01",
+    indicators: [],
+    specs: [],
+    builtinId: "nautilus_ema_cross",
+    onBuiltinId: vi.fn(),
+    strategyJson: null,
+    onStrategyJson: vi.fn(),
+    profile: "conservative" as const,
+    onProfile: vi.fn(),
+    quality: railQuality,
+    qualityLoading: false,
+    onRun: vi.fn(),
+    submitting: false,
+    submitError: null,
+    runId: null,
+    ...overrides,
+  };
+}
+
+describe("StrategyRail warnings and sizing", () => {
+  it("acknowledges warnings, then edits a field without a temporal-dead-zone crash", async () => {
+    stubRailApi();
+    window.localStorage.clear();
+    const onRun = vi.fn();
+    const user = userEvent.setup();
+    render(<StrategyRail {...railProps({ onRun })} />);
+
+    const acknowledge = await screen.findByLabelText(/I acknowledge these data warnings/);
+    await user.click(acknowledge);
+    // A fee edit re-runs the config memo, which reads `warnings` only when
+    // they are acknowledged; a late declaration used to throw here.
+    fireEvent.change(screen.getByLabelText("Fee in basis points"), { target: { value: "7" } });
+
+    const run = screen.getByRole("button", { name: "Run backtest" });
+    await waitFor(() => expect(run).toBeEnabled());
+    await user.click(run);
+
+    expect(onRun).toHaveBeenCalledTimes(1);
+    const submitted = onRun.mock.calls[0][0] as BacktestConfig;
+    expect(submitted.acknowledged_warnings).toEqual([
+      "one tick wide coverage",
+      "settlement unknown",
+    ]);
+    expect(submitted.execution.fee_bps).toBe(7);
+  });
+
+  it("shows the preflight sizing preview before the run", async () => {
+    stubRailApi();
+    window.localStorage.clear();
+    render(<StrategyRail {...railProps()} />);
+
+    expect(await screen.findByText("Contracts", {}, { timeout: 3000 })).toBeInTheDocument();
+    expect(screen.getByText("Stake")).toBeInTheDocument();
+    expect(screen.getByText("Max loss")).toBeInTheDocument();
+    expect(screen.getByText("Max payout")).toBeInTheDocument();
+    expect(screen.getByText("Max profit")).toBeInTheDocument();
+    expect(screen.getByText("142.86")).toBeInTheDocument();
+    expect(screen.getAllByText("$100.00")).toHaveLength(2);
+    expect(screen.getByText("$142.86")).toBeInTheDocument();
+    expect(screen.getByText("$42.86")).toBeInTheDocument();
   });
 });

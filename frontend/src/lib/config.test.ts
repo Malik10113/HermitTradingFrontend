@@ -109,4 +109,61 @@ describe("backtest config builder", () => {
       { instance_id: "ema20", type: "ema", params: { period: 20 } },
     ]);
   });
+
+  it("keeps the direction declared in advanced JSON", () => {
+    const config = buildBacktestConfig(
+      args({
+        authoring: "advanced",
+        direction: "long",
+        advancedConfig: {
+          strategy: {
+            instrument_id: "ignored",
+            bar_type: "ignored",
+            direction: "short",
+            builtin_id: "sma_trend",
+          },
+        },
+      }),
+    );
+    expect(config.strategy.direction).toBe("short");
+  });
+
+  it("falls back to the rail direction in advanced mode without one", () => {
+    const config = buildBacktestConfig(
+      args({
+        authoring: "advanced",
+        direction: "both",
+        advancedConfig: {
+          strategy: { instrument_id: "ignored", bar_type: "ignored", builtin_id: "sma_trend" },
+        },
+      }),
+    );
+    expect(config.strategy.direction).toBe("both");
+  });
+
+  it("preserves advanced execution overrides for slippage, book and fill timing", () => {
+    const config = buildBacktestConfig(
+      args({
+        authoring: "advanced",
+        profile: "book",
+        feeBps: 3,
+        advancedConfig: {
+          execution: {
+            slippage_bps: 42,
+            min_abs_slippage: 0.004,
+            book_staleness_s: 15,
+            max_depth_levels: 4,
+            fill_timing: "same_bar_close",
+          },
+        },
+      }),
+    );
+    expect(config.execution.slippage_bps).toBe(42);
+    expect(config.execution.min_abs_slippage).toBe(0.004);
+    expect(config.execution.book_staleness_s).toBe(15);
+    expect(config.execution.max_depth_levels).toBe(4);
+    expect(config.execution.fill_timing).toBe("same_bar_close");
+    expect(config.execution.profile).toBe("book");
+    expect(config.execution.fee_bps).toBe(3);
+  });
 });

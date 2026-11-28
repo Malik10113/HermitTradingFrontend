@@ -11,7 +11,12 @@ import {
   workspaceSearchString,
   type WorkspaceState,
 } from "../lib/urlState";
-import { profileLabel } from "../lib/execution";
+import { profileLabel, defaultExecution } from "../lib/execution";
+import {
+  RAIL_DEFAULT_FEE_BPS,
+  RAIL_DEFAULT_MAX_TRADES,
+  RAIL_DEFAULT_SIZING,
+} from "../lib/config";
 import { fmtTimestamp } from "../lib/format";
 import { isoDateOnly } from "../lib/date";
 import { validateConfigJson } from "../lib/strategyValidation";
@@ -25,8 +30,52 @@ import {
 /**
  * A preset restores the workspace URL. The URL only carries what the workspace
  * can reproduce: instrument, bar type, date range, indicator instances,
- * strategy, and execution profile. Risk/sizing stay in the stored config.
+ * strategy, and execution profile. A preset that changes sizing, max trades or
+ * the advanced cost overrides carries its full config in the `strategy`
+ * parameter instead, because the quick-mode URL cannot express them.
  */
+const ADVANCED_EXECUTION_KEYS = [
+  "fill_timing",
+  "fee_bps",
+  "slippage_bps",
+  "min_abs_slippage",
+  "book_staleness_s",
+  "max_depth_levels",
+  "fallback",
+] as const;
+
+/** True when a quick-mode URL would drop risk or execution settings. */
+export function presetNeedsFullConfig(config: Preset["config"] | null | undefined): boolean {
+  const risk = config?.risk;
+  const sizing = risk?.sizing;
+  if (sizing) {
+    if (sizing.mode === "risk_pct") return true;
+    if (typeof sizing.value === "number" && sizing.value !== RAIL_DEFAULT_SIZING.value) return true;
+    if (typeof sizing.bankroll_usd === "number") return true;
+  }
+  if (typeof risk?.max_trades === "number" && risk.max_trades !== RAIL_DEFAULT_MAX_TRADES) return true;
+  if (typeof risk?.max_position === "number") return true;
+
+  const execution = config?.execution;
+  if (!execution) return false;
+  const profile = isExecutionProfile(execution.profile) ? execution.profile : "conservative";
+  const baseline = defaultExecution(profile, RAIL_DEFAULT_FEE_BPS) as unknown as Record<
+    string,
+    unknown
+  >;
+  const actual = execution as unknown as Record<string, unknown>;
+  for (const key of ADVANCED_EXECUTION_KEYS) {
+    const value = actual[key];
+    if (value === undefined) continue;
+    if (key === "fee_bps") {
+      if (value !== RAIL_DEFAULT_FEE_BPS) return true;
+      continue;
+    }
+    if (value !== baseline[key]) return true;
+  }
+  return false;
+}
+
 export function presetWorkspaceSearch(preset: Preset): string {
   const config = preset.config;
   const strategy = config?.strategy;
@@ -62,7 +111,10 @@ export function presetWorkspaceSearch(preset: Preset): string {
           : !hasRules && strategy?.direction === "both"
             ? "both"
             : "",
-    strategyJson: config && (hasRules || !strategy?.builtin_id) ? JSON.stringify(config) : null,
+    strategyJson:
+      config && (hasRules || !strategy?.builtin_id || presetNeedsFullConfig(config))
+        ? JSON.stringify(config)
+        : null,
     profile,
     runId: "",
     compare: [],

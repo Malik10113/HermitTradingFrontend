@@ -10,7 +10,14 @@ import type {
   PreflightResponse,
   StrategiesResponse,
 } from "../api/types";
-import { buildBacktestConfig, prettyConfig, type SizingState } from "../lib/config";
+import {
+  buildBacktestConfig,
+  prettyConfig,
+  RAIL_DEFAULT_FEE_BPS,
+  RAIL_DEFAULT_MAX_TRADES,
+  RAIL_DEFAULT_SIZING,
+  type SizingState,
+} from "../lib/config";
 import {
   bookCoverageText,
   costEstimateText,
@@ -63,9 +70,9 @@ const RAIL_DEFAULTS_KEY = "htf.strategy.defaults";
 
 function readRailDefaults(): RailDefaults {
   const fallback: RailDefaults = {
-    feeBps: 0,
-    sizing: { mode: "fixed_stake", value: 100, bankroll: 1000 },
-    maxTrades: 100,
+    feeBps: RAIL_DEFAULT_FEE_BPS,
+    sizing: { ...RAIL_DEFAULT_SIZING },
+    maxTrades: RAIL_DEFAULT_MAX_TRADES,
   };
   if (typeof window === "undefined") return fallback;
   try {
@@ -330,6 +337,16 @@ export function StrategyRail(props: StrategyRailProps) {
     setHydratedAdvanced(true);
   }, [advancedValue, hydratedAdvanced]);
 
+  // Resolved before the config memo: the memo reads `warnings` as soon as the
+  // user acknowledges them, so declaring the list further down would put it in
+  // the temporal dead zone on the render that flips `acknowledged`.
+  const warnings = useMemo(() => qualityWarnings(quality), [quality]);
+
+  useEffect(() => {
+    // An acknowledgement belongs to the instrument whose warnings were shown.
+    setAcknowledged(false);
+  }, [instrumentId]);
+
   const config: BacktestConfig = useMemo(
     () =>
       buildBacktestConfig({
@@ -364,6 +381,8 @@ export function StrategyRail(props: StrategyRailProps) {
       maxTrades,
       from,
       to,
+      acknowledged,
+      warnings,
     ],
   );
 
@@ -393,6 +412,7 @@ export function StrategyRail(props: StrategyRailProps) {
             from: from || undefined,
             to: to || undefined,
             execution: defaultExecution(profile, feeBps),
+            risk: config.risk,
           },
           controller.signal,
         )
@@ -412,7 +432,18 @@ export function StrategyRail(props: StrategyRailProps) {
       window.clearTimeout(handle);
       controller.abort();
     };
-  }, [instrumentId, barType, from, to, profile, feeBps]);
+  }, [
+    instrumentId,
+    barType,
+    from,
+    to,
+    profile,
+    feeBps,
+    sizing.mode,
+    sizing.value,
+    sizing.bankroll,
+    maxTrades,
+  ]);
 
   const startAdvanced = () => {
     if (advanced) return;
@@ -428,7 +459,6 @@ export function StrategyRail(props: StrategyRailProps) {
     (advanced && (!advancedValue || advancedIssues.length > 0)) ||
     (!advanced && !builtin);
 
-  const warnings = qualityWarnings(quality);
   const fallback = preflight
     ? fallbackWarning(preflight.requested, preflight.effective, preflight.fallback_reason)
     : null;
@@ -691,6 +721,39 @@ export function StrategyRail(props: StrategyRailProps) {
               : `Risk ${fmtNumber(sizing.value, 2)}% of ${fmtUsd(sizing.bankroll)} bankroll per entry.`}{" "}
             One position per instrument; no pyramiding. Fractional Kelly is not offered in v1.
           </p>
+          {preflight?.sizing ? (
+            <dl
+              className="grid grid-cols-2 gap-x-3 gap-y-1 rounded border border-line px-1.5 py-1 text-[10px]"
+              aria-label="Preflight sizing preview"
+            >
+              <div>
+                <dt className="text-ink-faint">Stake</dt>
+                <dd className="numeric text-ink-muted">{fmtUsd(preflight.sizing.stake_usd)}</dd>
+              </div>
+              <div>
+                <dt className="text-ink-faint">Contracts</dt>
+                <dd className="numeric text-ink-muted">
+                  {fmtNumber(preflight.sizing.contracts, 2)}
+                </dd>
+              </div>
+              <div>
+                <dt className="text-ink-faint">Max loss</dt>
+                <dd className="numeric text-ink-muted">{fmtUsd(preflight.sizing.max_loss_usd)}</dd>
+              </div>
+              <div>
+                <dt className="text-ink-faint">Max payout</dt>
+                <dd className="numeric text-ink-muted">
+                  {fmtUsd(preflight.sizing.max_payout_usd)}
+                </dd>
+              </div>
+              <div>
+                <dt className="text-ink-faint">Max profit</dt>
+                <dd className="numeric text-ink-muted">
+                  {fmtUsd(preflight.sizing.max_profit_usd)}
+                </dd>
+              </div>
+            </dl>
+          ) : null}
         </section>
 
         <section className="space-y-1.5 border-t border-line pt-2" aria-label="Execution profile">

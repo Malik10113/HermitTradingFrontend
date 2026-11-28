@@ -122,7 +122,13 @@ def reconstruct_trades(
         exit_ref: float | None = None,
     ) -> None:
         gross = (exit_price - lot.entry_price) * qty
-        entry_fee_share = lot.entry_fee_usd * (qty / lot.quantity) if lot.quantity else 0.0
+        # An entry fee is paid once, on entry. A partial close allocates only
+        # its proportional share; the rest stays on the lot for later closes,
+        # so the shares always sum back to the fee that was actually charged.
+        if qty >= lot.quantity:
+            entry_fee_share = lot.entry_fee_usd
+        else:
+            entry_fee_share = lot.entry_fee_usd * (qty / lot.quantity) if lot.quantity else 0.0
         fees = entry_fee_share + fee
         direction = "long" if lot.instrument_id == primary_instrument_id else "short"
         fallback_reason = exit_fallback_reason or lot.entry_fallback_reason
@@ -190,6 +196,9 @@ def reconstruct_trades(
                 "exit_slippage_usd": exit_slippage_usd,
             }
         )
+        # Consume the allocated share so a later close of the same lot cannot
+        # charge the same entry fee twice.
+        lot.entry_fee_usd = max(lot.entry_fee_usd - entry_fee_share, 0.0)
 
     for f in sorted(fills, key=lambda x: (x.ts_ns, x.order_id or "")):
         if f.side == "BUY":
@@ -241,46 +250,40 @@ def reconstruct_trades(
             settlement = settlements.get(lot.condition_id)
             direction = "long" if instrument_id == primary_instrument_id else "short"
             intent = "open_long" if direction == "long" else "open_short"
-            if settlement is None:
-                open_positions.append(
-                    {
-                        "instrument_id": instrument_id,
-                        "condition_id": lot.condition_id,
-                        "token": lot.token,
-                        "side": direction,
-                        "intent": intent,
-                        "quantity": lot.quantity,
-                        "entry_price": lot.entry_price,
-                        "entry_ts": _iso(lot.entry_ts_ns),
-                        "entry_ts_ns": lot.entry_ts_ns,
-                        "entry_execution_source": lot.entry_execution_source,
-                        "entry_fallback_reason": lot.entry_fallback_reason,
-                        "status": "unsettled",
-                    }
-                )
+            value: float | None = None
+            ts: int | None = None
+            if (
+                settlement is not None
+                and settlement.yes_settlement is not None
+                and settlement.no_settlement is not None
+            ):
+                value = _settle_value(settlement, lot.token)
+                # A settlement without a recorded timestamp stays unknown: fall
+                # back to the runner's expiry, never to the entry time.
+                ts = settlement.settled_ts_ns or default_settle_ts_ns.get(instrument_id)
+            position = {
+                "instrument_id": instrument_id,
+                "condition_id": lot.condition_id,
+                "token": lot.token,
+                "side": direction,
+                "intent": intent,
+                "quantity": lot.quantity,
+                "entry_price": lot.entry_price,
+                "entry_ts": _iso(lot.entry_ts_ns),
+                "entry_ts_ns": lot.entry_ts_ns,
+                "entry_execution_source": lot.entry_execution_source,
+                "entry_fallback_reason": lot.entry_fallback_reason,
+            }
+            if value is None or ts is None:
+                position["status"] = "unsettled"
+                open_positions.append(position)
                 continue
-            value = _settle_value(settlement, lot.token)
-            ts = settlement.settled_ts_ns or default_settle_ts_ns.get(instrument_id) or lot.entry_ts_ns
             # Settlement is not a fill: there is no exit execution source.
             close_lot(lot, lot.quantity, value, ts, 0.0, "settlement", "settled", exit_source=None)
-            open_positions.append(
-                {
-                    "instrument_id": instrument_id,
-                    "condition_id": lot.condition_id,
-                    "token": lot.token,
-                    "side": direction,
-                    "intent": intent,
-                    "quantity": lot.quantity,
-                    "entry_price": lot.entry_price,
-                    "entry_ts": _iso(lot.entry_ts_ns),
-                    "entry_ts_ns": lot.entry_ts_ns,
-                    "entry_execution_source": lot.entry_execution_source,
-                    "entry_fallback_reason": lot.entry_fallback_reason,
-                    "settlement_value": value,
-                    "settled_ts": _iso(ts),
-                    "status": "settled",
-                }
-            )
+            position["settlement_value"] = value
+            position["settled_ts"] = _iso(ts)
+            position["status"] = "settled"
+            open_positions.append(position)
 
     trades.sort(key=lambda t: (t["exit_ts_ns"], t["entry_ts_ns"]))
     return trades, open_positions
@@ -308,6 +311,24 @@ def build_equity(
     timestamps.sort()
     if not timestamps and fills:
         timestamps = sorted({f.ts_ns for f in fills})
+        seen.update(timestamps)
+    if fills:
+        # A position held to expiry settles at the resolution timestamp, which
+        # is normally *after* the last stored bar. Without that timestamp the
+        # settlement cash flow would never reach the curve, and final equity
+        # would disagree with the sum of trade P&L.
+        for s in settlements.values():
+            if (
+                s.settled_ts_ns is None
+                or s.yes_settlement is None
+                or s.no_settlement is None
+            ):
+                continue
+            ts = int(s.settled_ts_ns)
+            if ts not in seen:
+                seen.add(ts)
+                timestamps.append(ts)
+        timestamps.sort()
     if not timestamps:
         return [
             {

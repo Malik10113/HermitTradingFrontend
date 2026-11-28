@@ -458,7 +458,7 @@ def _risk_parity_raw(
         return raw
 
     tail = {
-        identifier: _finite_tail(returns_by_id[identifier], vol_window)
+        identifier: list(returns_by_id[identifier][-vol_window:])
         for identifier in usable
     }
     sigma = _psd_project(_covariance_matrix(tail, usable))
@@ -533,7 +533,7 @@ def _shrunk_mean_variance_raw(
         return raw
 
     tail = {
-        identifier: _finite_tail(returns_by_id[identifier], vol_window)
+        identifier: list(returns_by_id[identifier][-vol_window:])
         for identifier in usable
     }
     means = np.array(

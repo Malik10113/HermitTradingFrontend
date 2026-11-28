@@ -290,12 +290,20 @@ export function PriceChart({
 
   // Stable signatures avoid rebuilding the canvas when the parent re-renders
   // for an unrelated reason (a keystroke, a rail toggle, a poll tick).
-  const dataSignature = useMemo(() => {
-    const first = candle.data[0];
-    const end = candle.data[candle.data.length - 1];
-    const checksum = candle.data.reduce((sum, point) => sum + point.close, 0);
-    return `${candle.data.length}|${first?.time ?? 0}|${end?.time ?? 0}|${checksum.toFixed(4)}|${volume.length}`;
-  }, [candle.data, volume.length]);
+  const dataSignature = useMemo(
+    () =>
+      JSON.stringify({
+        candles: candle.data.map(({ time, open, high, low, close }) => [
+          time,
+          open,
+          high,
+          low,
+          close,
+        ]),
+        volume: volume.map(({ time, value, color }) => [time, value, color]),
+      }),
+    [candle.data, volume],
+  );
 
   const indicatorSignature = useMemo(
     () =>

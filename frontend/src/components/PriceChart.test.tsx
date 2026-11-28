@@ -366,6 +366,22 @@ describe("price chart markers", () => {
     expect(chartState.volumeTimes).toEqual(chartState.candleTimes);
   });
 
+  it("rebuilds when OHLC or volume changes without changing closes or timestamps", () => {
+    const view = renderChart(null);
+    expect(chartState.createChartCount).toBe(1);
+
+    const updatedBars = bars.map((bar, index) =>
+      index === 1 ? { ...bar, open: 0.415, high: 0.46, volume_usd: 125 } : bar,
+    );
+    view.rerender(
+      <ThemeProvider>
+        <PriceChart bars={updatedBars} lifecycle={null} trades={[trade]} signals={[]} />
+      </ThemeProvider>,
+    );
+
+    expect(chartState.createChartCount).toBe(2);
+  });
+
   it("shows a clear unknown-phase badge and no lifecycle markers", () => {
     renderChart(null);
     expect(screen.getByText(/Phase unknown/i)).toBeInTheDocument();

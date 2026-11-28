@@ -850,7 +850,7 @@ def portfolio_optimize(body: dict[str, Any]) -> dict[str, Any]:
 
     run_ids = list(
         dict.fromkeys(
-            run_id
+            run_id.strip()
             for run_id in (body.get("run_ids") or [])
             if isinstance(run_id, str) and run_id.strip()
         )
@@ -862,8 +862,10 @@ def portfolio_optimize(body: dict[str, Any]) -> dict[str, Any]:
             {"count": len(run_ids)},
         )
 
+    current_data_version = run_data_version()
     sleeves: list[dict[str, Any]] = []
     extra_warnings: list[str] = []
+    data_versions: set[str] = set()
     for run_id in run_ids:
         run = state.get_run(run_id)
         if run is None:
@@ -876,7 +878,22 @@ def portfolio_optimize(body: dict[str, Any]) -> dict[str, Any]:
                 "only completed runs can be optimised",
                 {"run_id": run_id, "status": status},
             )
+        data_version = run.get("data_version")
+        if data_version:
+            data_versions.add(data_version)
+            if current_data_version and data_version != current_data_version:
+                extra_warnings.append(
+                    f"Run {run_id} was produced with data version {data_version}, "
+                    f"which differs from the current data version "
+                    f"{current_data_version}; its stored metrics are historical."
+                )
         equity = parquet_rows(run_id, "equity.parquet", 200_000)
+        if len(equity) == 200_000:
+            extra_warnings.append(
+                f"Run {run_id} has an equity curve that reached the 200,000-row "
+                "read cap; later points were not read and the in-sample window "
+                "may be truncated."
+            )
         summary = read_json_artifact(run_id, "summary.json") or {}
         config = run.get("config") or {}
         split = (config.get("evaluation") or {}).get("split")
@@ -887,14 +904,47 @@ def portfolio_optimize(body: dict[str, Any]) -> dict[str, Any]:
         )
         if unrevealed:
             train_end = split.get("train_end")
-            train_end_ns = _parse_date(train_end, end=True) if train_end else None
-            if train_end_ns is not None:
-                equity = [
-                    point
-                    for point in equity
-                    if (point.get("ts_ns") or _ns(point.get("ts")) or 0) < train_end_ns
-                ]
-            summary = summary.get("in_sample") or {}
+            train_end_ns = None
+            if isinstance(train_end, str) and train_end:
+                try:
+                    train_end_ns = _parse_date(train_end, end=True)
+                except ApiError:
+                    # A malformed boundary cannot exclude the holdout either.
+                    train_end_ns = None
+            if train_end_ns is None:
+                # Fail closed: without a usable boundary the holdout cannot be
+                # excluded, so the sleeve must not be optimised at all.
+                raise bad_request(
+                    "invalid_split",
+                    f"run '{run_id}' has an unrevealed split without a valid "
+                    "train_end",
+                    {"run_id": run_id},
+                )
+            in_sample_points: list[dict[str, Any]] = []
+            for point in equity:
+                pt_ns = (
+                    point.get("ts_ns")
+                    if point.get("ts_ns") is not None
+                    else _ns(point.get("ts"))
+                )
+                # An unparseable timestamp is not 1970; it cannot be shown to
+                # precede train_end, so it is excluded rather than leaking.
+                if pt_ns is None:
+                    continue
+                if pt_ns < train_end_ns:
+                    in_sample_points.append(point)
+            equity = in_sample_points
+            in_sample_metrics = dict(summary.get("in_sample") or {})
+            # The member's net P&L is measured on the same truncated in-sample
+            # curve the optimiser sees, so a post-train_end exit cannot leak in.
+            in_sample_net_pnl: float | None = None
+            if len(equity) >= 2:
+                first = equity[0].get("equity_usd")
+                last = equity[-1].get("equity_usd")
+                if first is not None and last is not None:
+                    in_sample_net_pnl = float(last) - float(first)
+            in_sample_metrics["net_pnl_usd"] = in_sample_net_pnl
+            summary = in_sample_metrics
             extra_warnings.append(
                 f"Run {run_id[:8]} has an unrevealed holdout split; "
                 f"restricted to in-sample window through {train_end}."
@@ -905,11 +955,20 @@ def portfolio_optimize(body: dict[str, Any]) -> dict[str, Any]:
                 "run_id": run_id,
                 "instrument_id": strategy_cfg.get("instrument_id"),
                 "strategy_hash": run.get("strategy_hash"),
+                "data_version": data_version,
+                "run_hash": run.get("run_hash"),
                 "requested_profile": run.get("requested_profile"),
                 "effective_profile": run.get("effective_profile"),
                 "equity": equity,
                 "metrics": summary,
             }
+        )
+
+    if len(data_versions) > 1:
+        extra_warnings.append(
+            "Selected runs span multiple data versions "
+            f"({', '.join(sorted(data_versions))}); their weights combine "
+            "results measured against different data."
         )
 
     try:

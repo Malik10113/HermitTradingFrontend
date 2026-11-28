@@ -533,7 +533,7 @@ def _shrunk_mean_variance_raw(
         return raw
 
     tail = {
-        identifier: returns_by_id[identifier][-vol_window:]
+        identifier: _finite_tail(returns_by_id[identifier], vol_window)
         for identifier in usable
     }
     means = np.array(
@@ -719,12 +719,13 @@ def three_stage_allocate(
 ) -> dict[str, Any]:
     """Correlation-penalised allocation in the sibling's three stages.
 
-    Stage 1 is inverse volatility over sleeves with at least two return
-    observations.  Stage 2 collapses near-duplicates: sleeves are visited by
-    ascending volatility (then run id) and a sleeve correlated at or above
-    ``max_pair_correlation`` with an already-kept sleeve is dropped, keeping
-    the calmer one.  Stage 3 reallocates the survivors by inverse volatility
-    penalised by ``1 / (1 + correlation_penalty * mean_positive_correlation)``
+    Stage 1 is inverse volatility over sleeves with at least ``min_periods``
+    return observations (never fewer than two).  Stage 2 collapses
+    near-duplicates: sleeves are visited by ascending volatility (then run id)
+    and a sleeve correlated at or above ``max_pair_correlation`` with an
+    already-kept sleeve is dropped, keeping the calmer one.  Stage 3 reallocates
+    the survivors by inverse volatility penalised by
+    ``1 / (1 + correlation_penalty * mean_positive_correlation)``
     and applies the shared water-filling cap.
 
     Returns the weights over every input id plus the audit trail: ``dropped``,
@@ -762,18 +763,26 @@ def three_stage_allocate(
     dropped: list[str] = []
 
     # --- Stage 1: inverse-vol first pass over sleeves with evidence ----------
+    # The same evidence floor the other variance-based rules use: a sleeve with
+    # fewer than ``min_periods`` finite observations (never fewer than two) is
+    # not funded here either.
+    eff_min = max(int(min_periods), 2)
     eligible: list[str] = []
     stds: dict[str, float] = {}
     for identifier in all_ids:
         window = _finite_tail(returns_by_id[identifier], vol_window)
-        if len(window) < 2:
+        if len(window) < eff_min:
             dropped.append(identifier)
-            reasons[identifier] = "fewer than 2 return observations"
+            reasons[identifier] = (
+                f"insufficient return observations ({len(window)} < {eff_min})"
+            )
             continue
         std = _sample_std(window)
         if std is None:
             dropped.append(identifier)
-            reasons[identifier] = "fewer than 2 return observations"
+            reasons[identifier] = (
+                f"insufficient return observations ({len(window)} < {eff_min})"
+            )
             continue
         eligible.append(identifier)
         stds[identifier] = max(std, vol_floor)
@@ -1021,6 +1030,8 @@ def optimize_runs(
         metadata[run_id] = {
             "instrument_id": run.get("instrument_id"),
             "strategy_hash": run.get("strategy_hash"),
+            "data_version": run.get("data_version"),
+            "run_hash": run.get("run_hash"),
             "requested_profile": run.get("requested_profile"),
             "effective_profile": run.get("effective_profile"),
             "metrics": run.get("metrics"),
@@ -1246,6 +1257,8 @@ def optimize_runs(
                 "run_id": run_id,
                 "instrument_id": info["instrument_id"],
                 "strategy_hash": info["strategy_hash"],
+                "data_version": info["data_version"],
+                "run_hash": info["run_hash"],
                 "requested_profile": info["requested_profile"],
                 "effective_profile": info["effective_profile"],
                 "weight": weight,

@@ -308,7 +308,22 @@ def test_three_stage_marks_sleeves_without_history() -> None:
         {"thin": [0.01], "low": LOW_VOL}, max_weight=1.0
     )
     assert allocation["weights"]["thin"] == 0.0
-    assert allocation["reasons"]["thin"] == "fewer than 2 return observations"
+    assert allocation["reasons"]["thin"] == "insufficient return observations (1 < 2)"
+
+
+def test_three_stage_drops_sleeves_below_min_periods() -> None:
+    # Two observations clear the hard floor but not the caller's evidence
+    # floor, so three_stage must reject the sleeve exactly like the other
+    # variance-based rules do -- never admitting it on a two-point estimate.
+    series = {"thin": [0.01, -0.02], "low": LOW_VOL}
+    allocation = three_stage_allocate(series, max_weight=1.0, min_periods=5)
+
+    assert allocation["weights"]["thin"] == 0.0
+    assert "thin" in allocation["dropped"]
+    assert "thin" not in allocation["kept"]
+    assert allocation["reasons"]["thin"] == "insufficient return observations (2 < 5)"
+    assert allocation["weights"]["low"] > 0.0
+    assert allocation["reallocated"] == 0.0
 
 
 # ---------------------------------------------------------------------------

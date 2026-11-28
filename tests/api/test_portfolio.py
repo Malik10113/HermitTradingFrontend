@@ -15,7 +15,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from backend import config
-from backend.api import routes
+from backend.api import routes, services
 from backend.engine import artifacts
 from backend.main import app
 
@@ -61,6 +61,7 @@ def _create_run(
     *,
     status: str = "complete",
     split: dict[str, str] | None = None,
+    data_version: str = "sha256:test",
 ) -> None:
     from backend.jobs import state
 
@@ -72,7 +73,7 @@ def _create_run(
         {"strategy": {"instrument_id": YES}, "evaluation": evaluation},
         "sha256:strategy",
         "sha256:run",
-        "sha256:test",
+        data_version,
         "conservative",
         "conservative",
     )
@@ -103,6 +104,7 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(artifacts, "RUNS_DIR", runs)
     monkeypatch.setattr(routes, "RUNS_DIR", runs)
     monkeypatch.setattr(routes, "run_data_version", lambda: "sha256:test")
+    monkeypatch.setattr(services, "run_data_version", lambda: "sha256:test")
     with TestClient(app) as client:
         yield client, runs
 
@@ -267,10 +269,11 @@ def test_optimize_restricts_unrevealed_holdout_to_in_sample(env):
     warnings = " ".join(payload["warnings"])
     assert "unrevealed holdout split" in warnings
     assert "2026-01-03" in warnings
-    # Metrics come from the in-sample summary, never the full-run numbers.
+    # The member's net P&L is measured on the same truncated in-sample curve,
+    # so the full-run summary numbers cannot leak through the member row.
     members = {member["run_id"]: member for member in payload["members"]}
-    assert members[first]["net_pnl_usd"] == 42.0
-    assert members[second]["net_pnl_usd"] == 17.0
+    assert members[first]["net_pnl_usd"] == pytest.approx(5.0)
+    assert members[second]["net_pnl_usd"] == pytest.approx(5.0)
 
 
 def test_optimize_allows_revealed_holdout(env):
@@ -298,3 +301,121 @@ def test_optimize_allows_revealed_holdout(env):
     payload = response.json()
     assert payload["equity_index"][-1]["ts"].startswith("2026-01-05")
     assert "unrevealed holdout split" not in " ".join(payload["warnings"])
+
+
+def test_optimize_strips_run_ids_and_reports_run_provenance(env):
+    client, runs = env
+    first, second = _two_runs(runs)
+
+    response = client.post(
+        "/api/portfolio/optimize",
+        json={"run_ids": [f"  {first} ", f"\t{second}\n"], "min_periods": 2},
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    # Whitespace is stripped before dedupe, so both ids resolve to stored runs.
+    assert [member["run_id"] for member in payload["members"]] == [first, second]
+    for member in payload["members"]:
+        assert member["data_version"] == "sha256:test"
+        assert member["run_hash"] == "sha256:run"
+    # All sleeves share the current data version, so no staleness is claimed.
+    assert "differs from the current data version" not in " ".join(payload["warnings"])
+
+
+def test_optimize_warns_when_run_data_versions_differ(env, monkeypatch):
+    client, runs = env
+    monkeypatch.setattr(services, "run_data_version", lambda: "sha256:current")
+    first, second = "run-old-a", "run-old-b"
+    _create_run(first, data_version="sha256:old-a")
+    _write_run(
+        runs,
+        first,
+        equity=_equity([(0, 1000.0), (1, 1010.0), (2, 1005.0)]),
+    )
+    _create_run(second, data_version="sha256:old-b")
+    _write_run(
+        runs,
+        second,
+        equity=_equity([(0, 500.0), (1, 505.0), (2, 495.0)]),
+    )
+
+    response = client.post(
+        "/api/portfolio/optimize",
+        json={"run_ids": [first, second], "min_periods": 2},
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    warnings = " ".join(payload["warnings"])
+    assert first in warnings and second in warnings
+    assert "differs from the current data version" in warnings
+    assert "multiple data versions" in warnings
+    assert "sha256:old-a" in warnings and "sha256:old-b" in warnings
+    members = {member["run_id"]: member for member in payload["members"]}
+    assert members[first]["data_version"] == "sha256:old-a"
+    assert members[second]["data_version"] == "sha256:old-b"
+
+
+def test_optimize_unrevealed_split_fails_closed_on_untimestamped_points(env):
+    client, runs = env
+    split = {"train_end": "2026-01-03", "test_start": "2026-01-04"}
+    first, second = "run-ts-a", "run-ts-b"
+    first_equity: list[dict[str, object]] = _equity(
+        [(0, 1000.0), (1, 1010.0), (2, 1005.0), (3, 1200.0), (4, 1300.0)]
+    )
+    # Neither point can be shown to precede train_end; both must be excluded
+    # rather than treated as the epoch (inside the in-sample window).
+    first_equity.append({"equity_usd": 99_999.0})
+    first_equity.append({"ts": "not-a-timestamp", "equity_usd": 88_888.0})
+    second_equity: list[dict[str, object]] = _equity(
+        [(0, 500.0), (1, 505.0), (2, 495.0), (3, 900.0)]
+    )
+    second_equity.append({"ts_ns": None, "equity_usd": 77_777.0})
+
+    for run_id, equity in ((first, first_equity), (second, second_equity)):
+        _create_run(run_id, split=split)
+        _write_run(
+            runs,
+            run_id,
+            equity=equity,
+            summary={"net_pnl_usd": 999.0, "in_sample": {"net_pnl_usd": 999.0}},
+        )
+
+    response = client.post(
+        "/api/portfolio/optimize",
+        json={"run_ids": [first, second], "min_periods": 2},
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["equity_index"][-1]["ts"].startswith("2026-01-03")
+    members = {member["run_id"]: member for member in payload["members"]}
+    # The reported P&L is the truncated in-sample curve change, not the
+    # post-train_end bounce (or the full-run summary number).
+    assert members[first]["net_pnl_usd"] == pytest.approx(5.0)
+    assert members[second]["net_pnl_usd"] == pytest.approx(-5.0)
+
+
+@pytest.mark.parametrize(
+    "split",
+    [
+        {"test_start": "2026-01-04"},
+        {"train_end": "not-a-date", "test_start": "2026-01-04"},
+    ],
+)
+def test_optimize_rejects_unrevealed_split_without_valid_train_end(env, split):
+    client, runs = env
+    first, second = "run-no-train-a", "run-no-train-b"
+    for run_id in (first, second):
+        _create_run(run_id, split=split)
+        _write_run(runs, run_id, equity=_equity([(0, 1000.0), (1, 1010.0)]))
+
+    response = client.post(
+        "/api/portfolio/optimize", json={"run_ids": [first, second]}
+    )
+
+    assert response.status_code == 422, response.text
+    body = response.json()
+    assert body["code"] == "invalid_split"
+    assert body["details"] == {"run_id": first}

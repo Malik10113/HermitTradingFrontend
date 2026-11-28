@@ -29,6 +29,10 @@ while (($#)); do
       MODE=domain
       shift
       [[ $# -gt 0 ]] || usage
+      case "$1" in
+        data|indicators|engine|api|frontend|e2e|tooling) ;;
+        *) echo "unknown domain: $1" >&2; usage ;;
+      esac
       SELECTED+=("$1")
       ;;
     --fast) FAST=1 ;;
@@ -105,6 +109,7 @@ map_changed() {
 run_domain() {
   local domain="$1"
   local failed=0
+  local skipped=0
   echo "== domain: $domain"
   case "$domain" in
     frontend)
@@ -115,14 +120,16 @@ run_domain() {
           (cd frontend && npm test -- --run) || failed=1
         fi
       else
-        echo "   skip: frontend/node_modules absent (run npm install)"
+        echo "   BLOCKED: frontend/node_modules absent (run npm install)"
+        skipped=1
       fi
       ;;
     e2e)
       if [[ -n "${HTF_E2E:-}" ]]; then
         (cd frontend && npx playwright test) || failed=1
       else
-        echo "   skip: set HTF_E2E=1 to run Playwright"
+        echo "   BLOCKED: set HTF_E2E=1 to run Playwright"
+        skipped=1
       fi
       ;;
     *)
@@ -133,11 +140,18 @@ run_domain() {
           (uv run pytest "tests/$domain" -q) || failed=1
         fi
       else
-        echo "   nothing to run"
+        echo "   BLOCKED: no tests found for domain '$domain'"
+        skipped=1
       fi
       ;;
   esac
-  return $failed
+  if [[ $failed -ne 0 ]]; then
+    return 1
+  fi
+  if [[ $skipped -ne 0 ]]; then
+    return 2
+  fi
+  return 0
 }
 
 case "$MODE" in
@@ -153,7 +167,17 @@ esac
 [[ ${#SELECTED[@]} -gt 0 ]] || { echo "nothing to run"; exit 0; }
 
 STATUS=0
+PASSED=()
+BLOCKED=()
+FAILED=()
 for d in "${SELECTED[@]}"; do
-  run_domain "$d" || STATUS=1
+  run_domain "$d"
+  result=$?
+  case "$result" in
+    0) PASSED+=("$d") ;;
+    1) FAILED+=("$d"); STATUS=1 ;;
+    2) BLOCKED+=("$d"); [[ $STATUS -eq 0 ]] && STATUS=2 ;;
+  esac
 done
+echo "== summary: passed=${PASSED[*]:-none}; blocked=${BLOCKED[*]:-none}; failed=${FAILED[*]:-none}"
 exit $STATUS

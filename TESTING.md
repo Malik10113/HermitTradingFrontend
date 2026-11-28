@@ -3,9 +3,9 @@
 How the suite is organized, which tests a change must run, and how to run them.
 
 > The runner has landed. Use `scripts/test_domains.sh` for domain-scoped runs;
-> `--changed` prints the mapping it used, and a domain with no tests exits 0
-> with "nothing to run". `frontend` skips with a reason when `node_modules` is
-> absent; `e2e` runs only when `HTF_E2E=1`.
+> `--changed` prints the mapping it used. Missing prerequisites and domains
+> without tests are reported as blocked, not passed; e2e runs only when
+> `HTF_E2E=1`.
 
 ## The protocol, in one rule
 
@@ -25,8 +25,9 @@ scripts/test_domains.sh --all
 ```
 
 `--changed` prints the mapping it used, so a surprising selection is visible
-before the tests start. It exits 0 (nothing to run), 1 (tests failed) or 2 (bad
-usage) — it never silently skips a domain it cannot attribute.
+before the tests start. Exit codes are 0 (selected checks passed or no changed
+paths), 1 (a test failed), and 2 (invalid usage or a selected check is blocked).
+The final summary lists passed, blocked and failed domains separately.
 
 ## Domains
 
@@ -45,7 +46,7 @@ Rules for the runner:
 - Map every changed path to the most specific owning glob.
 - Add every transitive dependent domain.
 - Unknown paths go to `tooling` and are printed, never dropped.
-- A domain with no tests exits 0 with "nothing to run".
+- A selected domain with no tests is blocked; it cannot count as a passing check.
 
 ## Conventions
 
@@ -61,7 +62,8 @@ Rules for the runner:
   ```
 
   Without a reachable app the spec skips with a reason; it never silently
-  passes.
+  passes. The runner marks e2e blocked unless `HTF_E2E=1`, and requires a
+  reachable app for the Playwright suite to execute.
 - Golden fixtures: one indicator fixture per indicator, one deterministic
   backtest fixture with a known equity curve and trade count, and one fixture per
   execution profile (Frictionless = zero cost, Optimistic/Conservative/Stress =

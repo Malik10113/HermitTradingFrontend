@@ -1,0 +1,22 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+
+  // No root `model` is set on purpose: the orchestrator runs on whatever model
+  // the session has selected via /models. Pinning a root model would override
+  // that default for new sessions.
+  "default_agent": "orchestrator",
+
+  "agents": {
+    "orchestrator": {
+      "mode": "primary",
+      "description": "Plans the work and dispatches one implementer per task"
+    },
+
+    // Pinned regardless of the orchestrator's model.
+    "implementer": {
+      "mode": "subagent",
+      "description": "Implements one scoped task in its own worktree",
+      "model": "opencode-go/deepseek-v4.1-flash#high"
+    }
+  }
+}

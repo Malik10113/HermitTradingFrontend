@@ -6,6 +6,7 @@ import { useApiResource } from "../hooks/useApi";
 import { resolveExecution } from "../lib/execution";
 import { fmtDate, fmtInteger, fmtTimestamp, fmtUsd } from "../lib/format";
 import { netMetric } from "../components/results/MetricsGrid";
+import { MAX_PORTFOLIO_RUNS, PortfolioPanel } from "../components/results/PortfolioPanel";
 import { SweepsPanel } from "../components/results/SweepsPanel";
 import {
   EmptyState,
@@ -17,6 +18,9 @@ import {
 } from "../components/ui";
 
 const STATUSES = ["all", "queued", "running", "complete", "failed", "cancelled", "orphaned"] as const;
+
+/** The workspace comparison overlay renders at most three runs side by side. */
+const MAX_COMPARE_RUNS = 3;
 
 /** Compact, copy-safe run identifier for accessible labels and titles. */
 function shortHash(value: string, length = 8): string {
@@ -66,14 +70,14 @@ export function RunsPage() {
     setSelected((current) =>
       current.includes(runId)
         ? current.filter((id) => id !== runId)
-        : current.length >= 3
+        : current.length >= MAX_PORTFOLIO_RUNS
           ? current
           : [...current, runId],
     );
   };
 
   const openComparison = () => {
-    if (selected.length < 2) return;
+    if (selected.length < 2 || selected.length > MAX_COMPARE_RUNS) return;
     const params = new URLSearchParams();
     params.set("run", selected[0]);
     params.set("compare", selected.join(","));
@@ -140,16 +144,23 @@ export function RunsPage() {
           type="button"
           className="btn"
           onClick={openComparison}
-          disabled={selected.length < 2}
-          title="Open the workspace with these runs selected for comparison"
+          disabled={selected.length < 2 || selected.length > MAX_COMPARE_RUNS}
+          title={
+            selected.length > MAX_COMPARE_RUNS
+              ? `The comparison overlay takes at most ${MAX_COMPARE_RUNS} runs`
+              : "Open the workspace with these runs selected for comparison"
+          }
         >
-          Compare {selected.length > 0 ? `(${selected.length})` : ""}
+          Compare {selected.length > 0 && selected.length <= MAX_COMPARE_RUNS ? `(${selected.length})` : ""}
         </button>
-        {selected.length >= 3 ? (
-          <span className="text-[10px] text-ink-faint">Maximum three runs in a comparison.</span>
+        {selected.length > MAX_COMPARE_RUNS ? (
+          <span className="text-[10px] text-warn" role="status">
+            Maximum three runs in a comparison; {selected.length} are selected for portfolio
+            optimisation.
+          </span>
         ) : null}
         <span className="ml-auto text-[10px] text-ink-faint">
-          Select 2–3 runs, then open the comparison overlay.
+          Select 2–3 runs to compare, or 2–{MAX_PORTFOLIO_RUNS} to optimise a portfolio.
         </span>
       </div>
 
@@ -158,6 +169,8 @@ export function RunsPage() {
           Run was not cancelled or deleted: {errorMessage(actionError)}
         </p>
       ) : null}
+
+      <PortfolioPanel selectedRunIds={selected} runs={runs} />
 
       <SweepsPanel />
 
@@ -177,7 +190,7 @@ export function RunsPage() {
               <caption className="sr-only">Backtest run history</caption>
               <thead className="sticky top-0 bg-surface-raised">
                 <tr className="border-b border-line">
-                  <th scope="col" className="table-head px-2 py-1">Compare</th>
+                  <th scope="col" className="table-head px-2 py-1">Select</th>
                   <th scope="col" className="table-head px-2 py-1">Run</th>
                   <th scope="col" className="table-head px-2 py-1">Status</th>
                   <th scope="col" className="table-head px-2 py-1">Created</th>
@@ -201,8 +214,8 @@ export function RunsPage() {
                           type="checkbox"
                           checked={selected.includes(run.run_id)}
                           onChange={() => toggle(run.run_id)}
-                          disabled={!selected.includes(run.run_id) && selected.length >= 3}
-                          aria-label={`Select run ${run.run_id} for comparison`}
+                          disabled={!selected.includes(run.run_id) && selected.length >= MAX_PORTFOLIO_RUNS}
+                          aria-label={`Select run ${run.run_id} for comparison or portfolio optimisation`}
                         />
                       </td>
                       <td className="px-2 py-1">

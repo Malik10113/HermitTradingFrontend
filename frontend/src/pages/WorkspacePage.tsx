@@ -290,7 +290,8 @@ export function WorkspacePage() {
     !!state.instrument && previewInstances.length > 0,
   );
 
-  const bars: Bar[] = barsResource.data?.bars ?? [];  const chartIndicators = useMemo(
+  const bars: Bar[] = barsResource.data?.bars ?? [];
+  const chartIndicators = useMemo(
     () =>
       buildChartIndicators({
         bars,
@@ -713,7 +714,11 @@ export function WorkspacePage() {
                   dataVersion={dataVersion}
                   resetKey={resetKey}
                   onSelectTrade={(tradeId) => {
-                    setFocusTradeId(tradeId);
+                    // Clearing first means a second click on the same marker is
+                    // a state change again, so the drawer re-opens and focuses
+                    // it after the inspector was closed.
+                    setFocusTradeId(null);
+                    queueMicrotask(() => setFocusTradeId(tradeId));
                     setDrawerOpen(true);
                   }}
                 />

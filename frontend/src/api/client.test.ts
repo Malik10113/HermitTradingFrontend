@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { IndicatorSpec } from "../api/types";
-import { api, ApiError, indicatorList } from "../api/client";
+import { api, ApiError, indicatorList, setAppToken } from "../api/client";
 
 function response(
   status: number,
@@ -112,6 +112,23 @@ describe("api client", () => {
     const result = await api.strategies();
     expect(result.builtins).toHaveLength(1);
     expect(result.saved).toEqual([]);
+  });
+
+  it("attaches a bearer token only while an APP_TOKEN is configured", async () => {
+    const fetchMock = mockFetch(response(200, { status: "ok" }));
+    try {
+      setAppToken("secret-token");
+      await api.meta();
+      const withToken = fetchMock.mock.calls[0][1] as RequestInit;
+      expect(withToken.headers).toMatchObject({ Authorization: "Bearer secret-token" });
+
+      setAppToken(null);
+      await api.meta();
+      const withoutToken = fetchMock.mock.calls[1][1] as RequestInit;
+      expect((withoutToken.headers as Record<string, string>).Authorization).toBeUndefined();
+    } finally {
+      setAppToken(null);
+    }
   });
 
   it("exposes an SSE events url", () => {

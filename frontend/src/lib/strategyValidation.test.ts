@@ -158,6 +158,25 @@ describe("strategy validation", () => {
     expect(result.issues.some((issue) => issue.path === "risk.max_trades")).toBe(true);
   });
 
+  it("accepts a single-day range and rejects a reversed one", () => {
+    const singleDay = validConfig();
+    singleDay.evaluation.date_range = { from: "2026-05-10", to: "2026-05-10" };
+    const accepted = validateBacktestConfig(singleDay, specs);
+    expect(accepted.issues).toEqual([]);
+    expect(accepted.ok).toBe(true);
+
+    const reversed = validConfig();
+    reversed.evaluation.date_range = { from: "2026-05-11", to: "2026-05-10" };
+    const rejected = validateBacktestConfig(reversed, specs);
+    expect(rejected.ok).toBe(false);
+    expect(rejected.issues).toContainEqual(
+      expect.objectContaining({
+        path: "evaluation.date_range",
+        message: "start must not be after end",
+      }),
+    );
+  });
+
   it("rejects missing sections and JSON parse errors with a path", () => {
     expect(validateBacktestConfig({}, specs).issues[0].path).toBe("strategy");
     const parsed = validateConfigJson("{not json", specs);

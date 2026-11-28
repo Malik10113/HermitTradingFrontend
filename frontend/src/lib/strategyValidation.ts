@@ -358,10 +358,12 @@ export function validateBacktestConfig(
         } else if (typeof end === "string" && !/^\d{4}-\d{2}-\d{2}$/.test(end)) {
           issues.push({ path: "evaluation.date_range.to", message: "must be YYYY-MM-DD" });
         }
-        if (typeof start === "string" && typeof end === "string" && start >= end) {
+        // A single UTC day is a valid range (one match day); only a reversed
+        // range is a request error.
+        if (typeof start === "string" && typeof end === "string" && start > end) {
           issues.push({
             path: "evaluation.date_range",
-            message: "start must be before end",
+            message: "start must not be after end",
           });
         }
       }

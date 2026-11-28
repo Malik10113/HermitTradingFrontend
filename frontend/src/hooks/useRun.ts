@@ -32,11 +32,15 @@ export function useRun(runId: string | null): RunState {
   statusRef.current = run?.status ?? null;
 
   const load = useCallback(
-    async (signal?: AbortSignal) => {
-      if (!runId) return;
+    async (signal?: AbortSignal): Promise<RunDetail | null> => {
+      if (!runId) return null;
       const next = await api.run(runId, signal);
+      // Keep the ref in step synchronously: schedule() runs in the same tick as
+      // the initial load's finally and must not read the pre-render status.
+      statusRef.current = next.status ?? null;
       setRun((previous) => ({ ...(previous ?? {}), ...next }) as RunDetail);
       setError(null);
+      return next;
     },
     [runId],
   );
@@ -51,6 +55,7 @@ export function useRun(runId: string | null): RunState {
     setLoading(true);
     let cancelled = false;
     let timer: number | undefined;
+    let pollPending = false;
     let source: EventSource | null = null;
     const controller = new AbortController();
 
@@ -60,8 +65,12 @@ export function useRun(runId: string | null): RunState {
         setLoading(false);
         return;
       }
+      if (pollPending) return;
+      pollPending = true;
       const delay = statusRef.current === "queued" ? 5000 : 2500;
       timer = window.setTimeout(() => {
+        pollPending = false;
+        timer = undefined;
         load(controller.signal)
           .catch((caught: unknown) => {
             if (!cancelled) setError(caught);
@@ -94,6 +103,8 @@ export function useRun(runId: string | null): RunState {
             if (isTerminal(raw.status)) {
               source?.close();
               if (timer) window.clearTimeout(timer);
+              timer = undefined;
+              pollPending = false;
               // The status frame is small; fetch the detail that carries
               // metrics, equity and trades once the run is terminal.
               void load();
@@ -105,6 +116,8 @@ export function useRun(runId: string | null): RunState {
         source.onerror = () => {
           source?.close();
           source = null;
+          // SSE dropped: keep the slow poll alive instead of freezing the view.
+          if (!pollPending) schedule();
         };
       } catch {
         source = null;
@@ -149,7 +162,10 @@ export function useRun(runId: string | null): RunState {
             }
           : previous,
       );
-      await load();
+      await load().catch(() => {
+        // The reveal itself succeeded; a failed refresh must not mark it as an
+        // error. The next poll or manual refresh will pick the detail up.
+      });
     } catch (caught) {
       setRevealError(caught);
     } finally {

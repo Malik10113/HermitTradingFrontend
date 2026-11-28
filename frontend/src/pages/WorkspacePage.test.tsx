@@ -121,9 +121,7 @@ function stubApi(lifecycle: unknown, barsOverride?: unknown[]) {
       trade_count: 3,
     },
   ];
-  vi.stubGlobal(
-    "fetch",
-    vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url.endsWith("/api/meta")) {
         return jsonResponse({
@@ -219,9 +217,21 @@ function stubApi(lifecycle: unknown, barsOverride?: unknown[]) {
           cost_estimate: { fee_bps: 0, slippage_bps: 10, per_side_bps: 10 },
         });
       }
+      if (init?.method === "POST" && url.endsWith("/api/backtests")) {
+        return jsonResponse({ run_id: "run-f3-e2", status: "queued" });
+      }
+      if (url.includes("/api/backtests/")) {
+        return jsonResponse({
+          run_id: "run-f3-e2",
+          status: "queued",
+          requested_profile: "conservative",
+          effective_profile: "conservative",
+        });
+      }
       throw new Error(`Unexpected request ${url} ${init?.method ?? "GET"}`);
-    }),
-  );
+    });
+  vi.stubGlobal("fetch", fetchMock);
+  return fetchMock;
 }
 
 const defaultLifecycle = {
@@ -406,5 +416,57 @@ describe("workspace wiring", () => {
     expect(header.textContent).not.toMatch(/Fills 0\b/);
     expect(header.textContent).not.toMatch(/Volume \$0\.00/);
     expect(screen.queryByTestId("price-chart")).toBeNull();
+  });
+
+  it("submits a backtest with the selected instrument, bar type, profile and sizing", async () => {
+    const fetchMock = stubApi(defaultLifecycle);
+    const user = userEvent.setup();
+
+    render(
+      <MemoryRouter initialEntries={[`/?instrument=${encodeURIComponent(instrumentId)}&bar=5m`]}>
+        <ThemeProvider>
+          <MetaProvider>
+            <Routes>
+              <Route path="/" element={<WorkspacePage />} />
+            </Routes>
+          </MetaProvider>
+        </ThemeProvider>
+      </MemoryRouter>,
+    );
+
+    const runButton = await screen.findByRole("button", { name: /run backtest/i });
+    await waitFor(() => {
+      expect(runButton).toBeEnabled();
+    });
+    await user.click(runButton);
+
+    const isCreate = (call: unknown[]) =>
+      String(call[0]).endsWith("/api/backtests") &&
+      (call[1] as RequestInit | undefined)?.method === "POST";
+    await waitFor(() => {
+      expect(fetchMock.mock.calls.some(isCreate)).toBe(true);
+    });
+    const createCall = fetchMock.mock.calls.find(isCreate);
+    const body = JSON.parse(String((createCall?.[1] as RequestInit).body)) as {
+      strategy: Record<string, unknown>;
+      execution: Record<string, unknown>;
+      risk: Record<string, unknown>;
+      evaluation: Record<string, unknown>;
+    };
+
+    expect(String(createCall?.[0])).toBe("/api/backtests");
+    expect(body.strategy).toMatchObject({
+      instrument_id: instrumentId,
+      bar_type: "5m",
+      builtin_id: "nautilus_ema_cross",
+    });
+    expect(body.execution).toMatchObject({ profile: "conservative" });
+    expect(body.risk).toMatchObject({
+      sizing: { mode: "fixed_stake", value: 100 },
+      max_trades: 100,
+    });
+    expect(body.evaluation).toMatchObject({
+      date_range: { from: "2024-10-01", to: "2024-12-01" },
+    });
   });
 });

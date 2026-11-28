@@ -25,6 +25,11 @@ export function useApiResource<T>(
 
   useEffect(() => {
     if (!enabled) {
+      // A disabled resource must not keep presenting the previous result: the
+      // consumer would show stale preview data after the last indicator is
+      // removed, or another instrument's data after the selection changes.
+      setData(null);
+      setError(null);
       setLoading(false);
       return;
     }
@@ -42,6 +47,9 @@ export function useApiResource<T>(
       .catch((caught: unknown) => {
         if (controller.signal.aborted) return;
         if (caught instanceof DOMException && caught.name === "AbortError") return;
+        // A failed fetch for the current deps must not sit next to a previous
+        // resource's payload.
+        setData(null);
         setError(caught);
         setLoading(false);
       });

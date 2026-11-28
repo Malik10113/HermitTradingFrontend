@@ -235,7 +235,7 @@ def execute_run(config_dict: dict[str, Any], prepared: dict[str, Any] | None = N
     from backend.data.settlement import get_settlement
     from backend.engine.analytics import FillRecord, SettlementRecord, SignalRecord, analyse
     from backend.engine.execution import ProfiledFeeModel, ProfiledFillModel, resolve_profile
-    from backend.engine.instruments import build_binary_option
+    from backend.engine.instruments import build_binary_option, validate_settlement_value
     from backend.engine.rule_strategy import RuleStrategy, RuleStrategyConfig, bar_to_dict
     from backend.engine.signals import signal_plan_for_config
 
@@ -267,9 +267,19 @@ def execute_run(config_dict: dict[str, Any], prepared: dict[str, Any] | None = N
     end_ns = _date_ns(config.evaluation.date_range.end, end=True)
 
     def load(iid: str) -> list[dict[str, Any]]:
-        got = load_bars(iid, alias, start_ns, end_ns, 200_000)
-        rows = got.get("bars") if isinstance(got, dict) else got
-        return [_bar_dict(r) for r in rows]
+        out: list[dict[str, Any]] = []
+        cursor_ns = start_ns
+        while True:
+            got = load_bars(iid, alias, cursor_ns, end_ns, 200_000)
+            raw_rows = got.get("bars") if isinstance(got, dict) else got
+            rows = [_bar_dict(r) for r in (raw_rows or [])]
+            out.extend(rows)
+            if not (isinstance(got, dict) and got.get("has_more") and rows):
+                break
+            cursor_ns = int(rows[-1].get("ts_event_ns") or _ns(rows[-1].get("ts_event")) or 0) + 1
+            if end_ns is not None and cursor_ns >= end_ns:
+                break
+        return out
 
     bars_primary = load(primary.id.value)
     bars_complement = load(complement.id.value)
@@ -376,12 +386,18 @@ def execute_run(config_dict: dict[str, Any], prepared: dict[str, Any] | None = N
     full_bar_type = str(replay_bar_type(primary))
     lifecycle_version = _lifecycle_version()
     # Signals are execution-independent: the plan is computed from exactly the
-    # bars Nautilus will dispatch (bar_to_dict round-trips the instrument's
-    # price precision), so plan and runtime truths are identical.  The default
-    # cache is two-tier, so a worker reads a plan persisted by an earlier one.
+    # bars Nautilus will dispatch.  The bar objects round-trip prices at the
+    # instrument's precision but quantise volume to the size increment and drop
+    # trade_count, so the exact tape values are restored from the raw rows.
+    plan_bars: list[dict[str, Any]] = []
+    for bar, raw_row in zip(bars_p, bars_primary):
+        d = bar_to_dict(bar)
+        d["volume"] = float(raw_row["volume"])
+        d["trade_count"] = raw_row.get("trade_count")
+        plan_bars.append(d)
     signal_cache_hit = signal_plan_for_config(
         config,
-        [bar_to_dict(bar) for bar in bars_p],
+        plan_bars,
         lifecycle_at,
         data_version=prepared["data_version"],
         lifecycle_version=lifecycle_version,
@@ -487,22 +503,33 @@ def execute_run(config_dict: dict[str, Any], prepared: dict[str, Any] | None = N
         )
     settlements: dict[str, SettlementRecord] = {}
     if settlement_row is not None:
-        settled_ns = _ns(settled_ts)
-        settlements[primary_row["condition_id"]] = SettlementRecord(
-            condition_id=primary_row["condition_id"],
-            yes_settlement=float(
-                getattr(settlement_row, "yes_settlement", None)
-                if not isinstance(settlement_row, dict)
-                else settlement_row.get("yes_settlement")
-            ),
-            no_settlement=float(
-                getattr(settlement_row, "no_settlement", None)
-                if not isinstance(settlement_row, dict)
-                else settlement_row.get("no_settlement")
-            ),
-            settled_ts_ns=settled_ns,
-            source=settlement_ts_source,
+        raw_yes = (
+            settlement_row.get("yes_settlement")
+            if isinstance(settlement_row, dict)
+            else getattr(settlement_row, "yes_settlement", None)
         )
+        raw_no = (
+            settlement_row.get("no_settlement")
+            if isinstance(settlement_row, dict)
+            else getattr(settlement_row, "no_settlement", None)
+        )
+        if raw_yes is not None and raw_no is not None:
+            # Settlement is exactly 0 or 1; an invalid row leaves the position
+            # unsettled rather than inventing a payout.
+            try:
+                yes_settlement = float(validate_settlement_value(float(raw_yes)))
+                no_settlement = float(validate_settlement_value(float(raw_no)))
+            except (TypeError, ValueError):
+                yes_settlement = None
+                no_settlement = None
+            if yes_settlement is not None and no_settlement is not None:
+                settlements[primary_row["condition_id"]] = SettlementRecord(
+                    condition_id=primary_row["condition_id"],
+                    yes_settlement=yes_settlement,
+                    no_settlement=no_settlement,
+                    settled_ts_ns=_ns(settled_ts),
+                    source=settlement_ts_source,
+                )
 
     evaluation_days = (date.fromisoformat(config.evaluation.date_range.end) - date.fromisoformat(config.evaluation.date_range.start)).days
     result = analyse(
@@ -520,12 +547,15 @@ def execute_run(config_dict: dict[str, Any], prepared: dict[str, Any] | None = N
         condition_by_instrument={primary.id.value: primary_row["condition_id"], complement.id.value: primary_row["condition_id"]},
     )
 
-    # In-sample / out-of-sample slices, when a split exists.
+    # In-sample / out-of-sample slices, when a split exists.  Trades entered in
+    # the embargo gap between ``train_end`` and ``test_start`` belong to neither
+    # slice; leaking them into in-sample overstates the fitted performance.
     split = config.evaluation.split
     if split is not None:
+        train_end_ns = _date_ns(split.train_end, end=True)
         test_ns = _date_ns(split.test_start)
         oos_trades = [t for t in result["trades"] if (t.get("entry_ts_ns") or 0) >= test_ns]
-        is_trades = [t for t in result["trades"] if (t.get("entry_ts_ns") or 0) < test_ns]
+        is_trades = [t for t in result["trades"] if (t.get("entry_ts_ns") or 0) <= train_end_ns]
         result["in_sample"] = _subset_metrics(is_trades, config, execution)
         result["out_of_sample"] = _subset_metrics(oos_trades, config, execution)
         result["oos_trades"] = oos_trades

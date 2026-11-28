@@ -683,8 +683,19 @@ class ProfiledFillModel(FillModel):
             self.last_fallback_reason = "no_book_provider"
             return None
         condition_id = self.condition_id or str(getattr(instrument, "id", ""))
+        if decision_ts <= 0:
+            # Without a decision timestamp the snapshot cannot be proven to
+            # precede the fill; fail closed instead of leaking the future.
+            self.last_fallback_reason = "missing_decision_timestamp"
+            return None
+        instrument_id = str(getattr(instrument, "id", ""))
         try:
-            snapshot = provider.get_snapshot(condition_id, decision_ts)
+            try:
+                # Token-aware providers select the YES/NO book side by
+                # instrument; older two-argument providers keep working.
+                snapshot = provider.get_snapshot(condition_id, decision_ts, instrument_id)
+            except TypeError:
+                snapshot = provider.get_snapshot(condition_id, decision_ts)
         except Exception:  # noqa: BLE001 - provider failure is a fallback, not a crash
             self.last_fallback_reason = "book_snapshot_error"
             return None

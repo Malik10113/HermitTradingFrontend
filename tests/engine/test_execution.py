@@ -450,6 +450,72 @@ def test_future_snapshot_never_prices_a_fill(primary):
     assert float(book.best_ask_price()) == pytest.approx(0.421)
 
 
+def test_book_fill_fails_closed_when_decision_timestamp_is_zero(primary):
+    # Without a decision timestamp the guard cannot prove the snapshot is in
+    # the past, so even a snapshot that looks future-dated must not price it.
+    snapshot = BookSnapshot(
+        condition_id="0xabc",
+        ts_ns=TS + 1,
+        bids=[(0.400, 5.0)],
+        asks=[(0.420, 5.0)],
+    )
+    provider = Provider(snapshot)
+    resolved = resolve_profile(cfg(profile="book"), has_book_coverage=True)
+    model = ProfiledFillModel(resolved, provider, "0xabc")
+    book = model.get_orderbook_for_fill_simulation(
+        primary, FakeOrder(is_buy=True, ts=0), Price.from_str("0.400"), Price.from_str("0.420")
+    )
+    assert book is not None
+    assert model.last_fill_source == "conservative_fallback"
+    assert model.last_fallback_reason == "missing_decision_timestamp"
+    assert provider.calls == []
+    assert float(book.best_ask_price()) == pytest.approx(0.421)
+
+
+def test_book_fill_passes_instrument_id_to_token_aware_provider(primary, complement):
+    class TokenAwareProvider:
+        def __init__(self, snapshot):
+            self.snapshot = snapshot
+            self.calls = []
+
+        def get_snapshot(self, condition_id, ts_ns, instrument_id=None):
+            self.calls.append((condition_id, ts_ns, instrument_id))
+            return self.snapshot
+
+    snapshot = BookSnapshot(
+        condition_id="0xabc",
+        ts_ns=TS - 1,
+        bids=[(0.590, 5.0)],
+        asks=[(0.600, 5.0)],
+    )
+    provider = TokenAwareProvider(snapshot)
+    resolved = resolve_profile(cfg(profile="book"), has_book_coverage=True)
+    model = ProfiledFillModel(resolved, provider, "0xabc")
+    book = model.get_orderbook_for_fill_simulation(
+        complement, FakeOrder(is_buy=True), Price.from_str("0.590"), Price.from_str("0.600")
+    )
+    assert model.last_fill_source == "book"
+    assert provider.calls == [("0xabc", TS, complement.id.value)]
+    assert float(book.best_ask_price()) == pytest.approx(0.600)
+
+
+def test_two_argument_provider_still_works(primary):
+    snapshot = BookSnapshot(
+        condition_id="0xabc",
+        ts_ns=TS - 1,
+        bids=[(0.400, 5.0)],
+        asks=[(0.420, 5.0)],
+    )
+    provider = Provider(snapshot)
+    resolved = resolve_profile(cfg(profile="book"), has_book_coverage=True)
+    model = ProfiledFillModel(resolved, provider, "0xabc")
+    model.get_orderbook_for_fill_simulation(
+        primary, FakeOrder(is_buy=True), Price.from_str("0.400"), Price.from_str("0.420")
+    )
+    assert model.last_fill_source == "book"
+    assert provider.calls == [("0xabc", TS)]
+
+
 def test_provider_error_falls_back_without_raising(primary):
     class Exploding:
         def get_snapshot(self, condition_id, ts_ns):

@@ -12,10 +12,11 @@
       "description": "Plans the work and dispatches one implementer per task"
     },
 
-    // Pinned regardless of the orchestrator's model.
+    // Used only by the parallel skill's executors, so cheap work stays cheap
+    // without changing the model for any other subagent call.
     "implementer": {
       "mode": "subagent",
-      "description": "Implements one scoped task in its own worktree",
+      "description": "Parallel-skill executor: implements one scoped atom in its own worktree",
       "model": "opencode-go/deepseek-v4.1-flash#high"
     }
   }

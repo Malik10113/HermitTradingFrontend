@@ -28,13 +28,15 @@ tries to launch another has no such tool and the run stalls.
 | --- | --- | --- |
 | Master | This session (primary agent) | `M` |
 | Feature agent | **Persona** held by the master: a brief, a ledger slice, an owner | `F1`, `F2`, … |
-| Executor | Real child session, agent `general`, depth 1 | `F1-E1`, `F1-E2`, … |
+| Executor | Real child session, agent `implementer`, depth 1 | `F1-E1`, `F1-E2`, … |
 
 A feature agent is a hat the master wears, not a session. Owning a change, atomizing it,
 accepting reports, and deciding blocker routing are performed by the master *as* that feature.
 If `subagent_depth` ever becomes `2`, this protocol maps 1:1 onto real feature sessions.
 
-Use `general` for executors and reviewers, `explore` for read-only recon.
+Use `implementer` for executors, `general` for reviewers, `explore` for read-only recon. The
+`implementer` agent is pinned to a cheaper model for this skill only; every other subagent
+call in the session keeps the master's model.
 
 ## Ownership and ledger
 
@@ -126,7 +128,7 @@ rule violation. Fix the plan, not the linter.
 
 ```text
 gate first: ≥2 mergeable atoms, spine < 40%, two atoms start together, harness frozen
-M → F persona → general subagent (depth 1) — never deeper
+M → F persona → implementer subagent (depth 1) — never deeper
 skeleton F1-S: signatures + fixtures, ≤80 lines, merged before wave 1, then frozen
 atomic = 1 intent + exclusive write set + 1 check + clean cherry-pick + 1 revert
 worktree per writer; bootstrap fixtures/ports/DBs; detached ⇒ git switch -c

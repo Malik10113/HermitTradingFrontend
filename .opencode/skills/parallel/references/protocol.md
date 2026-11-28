@@ -183,7 +183,7 @@ Other notes that matter:
 1. Run the plan check (`node scripts/plan_check.mjs <plan.tsv>`). A plan that fails R1–R4 is
    not dispatched.
 2. Launch executors in parallel in one assistant turn. Each launch is one `subagent` call:
-   `agent: general`, `description: "<task id> <3 words>"`, `prompt` = pointer to the brief.
+   `agent: implementer`, `description: "<task id> <3 words>"`, `prompt` = pointer to the brief.
 
 Write the brief to `/tmp/opencode/parallel/<run>/briefs/<task>.md` first, then send:
 

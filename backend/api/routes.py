@@ -79,6 +79,7 @@ class PreflightRequest(BaseModel):
     start: str | None = Field(default=None, alias="from")
     end: str | None = Field(default=None, alias="to")
     execution: ExecutionConfig = Field(default_factory=ExecutionConfig)
+    risk: RiskConfig | None = None
 
     model_config = {"populate_by_name": True}
 

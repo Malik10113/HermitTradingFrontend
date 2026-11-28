@@ -268,6 +268,16 @@ export interface EffectiveExecution {
   cost_estimate?: CostEstimate | null;
 }
 
+export interface PreflightSizing {
+  reference_price?: number | null;
+  stake_usd?: number | null;
+  contracts?: number | null;
+  notional_usd?: number | null;
+  max_loss_usd?: number | null;
+  max_payout_usd?: number | null;
+  max_profit_usd?: number | null;
+}
+
 export interface PreflightRequest {
   instrument_id: string;
   bar_type?: string;
@@ -278,7 +288,8 @@ export interface PreflightRequest {
 }
 
 export interface PreflightResponse extends EffectiveExecution {
-  warnings?: string[];
+  warnings?: Array<string | { code?: string; message?: string }>;
+  sizing?: PreflightSizing | null;
 }
 
 export type Comparator =

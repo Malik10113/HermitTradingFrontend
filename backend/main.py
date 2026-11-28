@@ -13,6 +13,7 @@ from fastapi.staticfiles import StaticFiles
 
 from backend.api.routes import token_authorized, router
 from backend.config import ROOT, SETTINGS, ensure_dirs
+from backend.data.sources import MissingDatasetError
 from backend.jobs.queue import QUEUE
 from backend.jobs.state import init_db
 
@@ -75,6 +76,22 @@ def create_app() -> FastAPI:
             },
         )
 
+    @app.exception_handler(MissingDatasetError)
+    async def missing_dataset_handler(request: Request, exc: MissingDatasetError):
+        """A registered dataset is absent: fail loudly with the register entry."""
+        return JSONResponse(
+            status_code=503,
+            content={
+                "code": "dataset_missing",
+                "message": str(exc),
+                "details": {
+                    "dataset": getattr(exc, "dataset", None),
+                    "path": str(getattr(exc, "path", "")),
+                    "register_entry": getattr(exc, "register_entry", None),
+                },
+            },
+        )
+
     @app.exception_handler(Exception)
     async def unhandled_exception_handler(request: Request, exc: Exception):
         return JSONResponse(
@@ -102,15 +119,20 @@ def create_app() -> FastAPI:
         return await call_next(request)
 
     if DIST.exists():
-        app.mount("/assets", StaticFiles(directory=DIST / "assets"), name="assets")
+        if (DIST / "assets").is_dir():
+            app.mount("/assets", StaticFiles(directory=DIST / "assets"), name="assets")
+        dist_root = DIST.resolve()
 
         @app.get("/{full_path:path}", include_in_schema=False)
         async def spa(full_path: str):
             if full_path.startswith("api/"):
                 return JSONResponse(status_code=404, content={"code": "not_found", "message": "route not found", "details": None})
-            candidate = DIST / full_path
-            if candidate.is_file():
-                return FileResponse(candidate)
+            try:
+                resolved = (DIST / full_path).resolve()
+            except Exception:  # noqa: BLE001 - malformed path; fall through to index
+                resolved = dist_root
+            if full_path and resolved.is_relative_to(dist_root) and resolved.is_file():
+                return FileResponse(resolved)
             index = DIST / "index.html"
             if index.exists():
                 return FileResponse(index)

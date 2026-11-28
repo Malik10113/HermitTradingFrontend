@@ -178,8 +178,16 @@ def update_run(run_id: str, **fields: Any) -> None:
         fields["manifest_json"] = json.dumps(fields["manifest_json"], sort_keys=True)
     fields["updated_at"] = utcnow()
     cols = ", ".join(f"{k}=?" for k in fields)
+    # Terminal statuses are final. A worker that finishes after a cancellation
+    # (or a duplicate queue claim) must not resurrect the run.
+    guard = ""
+    status = fields.get("status")
+    if status in ("queued", "running"):
+        guard = " AND status NOT IN ('complete','failed','cancelled','orphaned')"
+    elif status == "complete":
+        guard = " AND status NOT IN ('failed','cancelled','orphaned')"
     with _LOCK, _conn() as conn:
-        conn.execute(f"UPDATE runs SET {cols} WHERE run_id=?", (*fields.values(), run_id))
+        conn.execute(f"UPDATE runs SET {cols} WHERE run_id=?{guard}", (*fields.values(), run_id))
 
 
 def get_run(run_id: str) -> dict[str, Any] | None:
@@ -365,15 +373,17 @@ def record_reveal(universe: str, strategy_hash: str, split_hash: str, run_id: st
             "SELECT count(*) FROM holdout_ledger WHERE universe=? AND strategy_hash=? AND split_hash=?",
             (universe, strategy_hash, split_hash),
         ).fetchone()[0]
-        has_variant = conn.execute(
-            "SELECT count(*) FROM holdout_ledger WHERE universe=? AND split_hash=? AND strategy_hash=?",
-            (universe, split_hash, strategy_hash),
-        ).fetchone()[0]
         seen_variants = conn.execute(
             "SELECT count(DISTINCT strategy_hash) FROM holdout_ledger WHERE universe=? AND split_hash=?",
             (universe, split_hash),
         ).fetchone()[0]
-        variant = seen_variants if has_variant else seen_variants + 1
+        existing_variant = conn.execute(
+            "SELECT min(variant_index) FROM holdout_ledger WHERE universe=? AND split_hash=? AND strategy_hash=?",
+            (universe, split_hash, strategy_hash),
+        ).fetchone()[0]
+        # A reveal keeps the variant index it was first assigned, even after
+        # other strategies were revealed in between.
+        variant = int(existing_variant) if existing_variant is not None else int(seen_variants) + 1
         conn.execute(
             "INSERT INTO holdout_ledger (universe,strategy_hash,split_hash,run_id,revealed_at,variant_index) "
             "VALUES (?,?,?,?,?,?)",

@@ -50,6 +50,41 @@ def test_reveal_ledger_warns_on_second_reveal(tmp_path, monkeypatch):
     }
 
 
+def test_update_run_never_leaves_a_terminal_status(tmp_path, monkeypatch):
+    _init(tmp_path, monkeypatch)
+    state.create_run("run_cancelled", {}, "sha256:s", "sha256:r", "sha256:d", "conservative", "conservative")
+    assert state.mark_cancelled("run_cancelled")
+    state.update_run("run_cancelled", status="running", pid=4242)
+    assert state.get_run("run_cancelled")["status"] == "cancelled"
+    state.update_run("run_cancelled", status="complete")
+    assert state.get_run("run_cancelled")["status"] == "cancelled"
+
+    state.create_run("run_complete", {}, "sha256:s", "sha256:r", "sha256:d", "conservative", "conservative")
+    state.update_run("run_complete", status="complete")
+    state.update_run("run_complete", status="running")
+    assert state.get_run("run_complete")["status"] == "complete"
+    # Fields other than status still update on a terminal run.
+    state.update_run("run_complete", error="late")
+    run = state.get_run("run_complete")
+    assert run["status"] == "complete"
+    assert run["error"] == "late"
+
+
+def test_reveal_variant_index_survives_interleaved_strategies(tmp_path, monkeypatch):
+    _init(tmp_path, monkeypatch)
+    state.create_run("run_a", {}, "sha256:a", "sha256:r1", "sha256:d", "conservative", "conservative")
+    state.create_run("run_b", {}, "sha256:b", "sha256:r2", "sha256:d", "conservative", "conservative")
+    first_a = state.record_reveal("x-YES.POLYMARKET", "sha256:a", "sha256:split", "run_a")
+    first_b = state.record_reveal("x-YES.POLYMARKET", "sha256:b", "sha256:split", "run_b")
+    again_a = state.record_reveal("x-YES.POLYMARKET", "sha256:a", "sha256:split", "run_a")
+    assert first_a["variant_index"] == 1
+    assert first_b["variant_index"] == 2
+    # A re-reveal keeps the index it was first assigned, not the current count.
+    assert again_a["variant_index"] == 1
+    assert again_a["reveal_count"] == 2
+    assert again_a["warning"] is True
+
+
 def test_presets_and_saved_strategies(tmp_path, monkeypatch):
     _init(tmp_path, monkeypatch)
     state.create_preset("p1", "Demo", {"a": 1})

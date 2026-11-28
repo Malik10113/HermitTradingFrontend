@@ -360,6 +360,142 @@ def test_run_payload_encodes_gross_and_net_basis(client, monkeypatch):
     assert body["metrics"]["net_pnl_usd"] == 8.0
 
 
+# ------------------------------------------------- indicator preview & sizing
+
+
+def _preview_bars() -> list[dict]:
+    """Ten minute bars: six on 2024-10-19, four on 2024-10-20."""
+    bars = []
+    for index in range(10):
+        day = 19 if index < 6 else 20
+        minute = index if index < 6 else index - 6
+        stamp = datetime(2024, 10, day, 12, minute, tzinfo=timezone.utc)
+        bars.append(
+            {
+                "instrument_id": "x-YES.POLYMARKET",
+                "bar_type": "1m",
+                "ts_event_ns": int(stamp.timestamp() * 1_000_000_000),
+                "open": 0.50,
+                "high": 0.60,
+                "low": 0.40,
+                "close": 0.50 + index / 100.0,
+                "volume": 10.0,
+                "trade_count": 1,
+            }
+        )
+    return bars
+
+
+def _loader_for(bars: list[dict]):
+    """A ``load_bars`` stand-in that honours the requested window."""
+
+    def load(instrument_id, alias="1m", start_ns=None, end_ns=None, limit=None):
+        rows = [
+            bar
+            for bar in bars
+            if (start_ns is None or bar["ts_event_ns"] >= start_ns)
+            and (end_ns is None or bar["ts_event_ns"] < end_ns)
+        ]
+        if limit is not None:
+            rows = rows[:limit]
+        return {
+            "instrument_id": instrument_id,
+            "bar_type": alias,
+            "data_version": "sha256:bars",
+            "bars": rows,
+            "has_more": False,
+        }
+
+    return load
+
+
+def test_indicator_preview_series_match_each_window(client, monkeypatch):
+    from backend.data import readmodel
+    from backend.indicators.cache import DEFAULT_CACHE
+
+    DEFAULT_CACHE.clear()
+    bars = _preview_bars()
+    monkeypatch.setattr(services, "ensure_bars", lambda *args, **kwargs: None)
+    monkeypatch.setattr(readmodel, "load_bars", _loader_for(bars))
+
+    body = {
+        "instrument_id": "x-YES.POLYMARKET",
+        "bar_type": "1m",
+        "indicators": [{"instance_id": "sma3", "type": "sma", "params": {"period": 3}}],
+    }
+
+    first = client.post(
+        "/api/indicators/preview",
+        json={**body, "from": "2024-10-19", "to": "2024-10-19"},
+    )
+    assert first.status_code == 200, first.text
+    first_body = first.json()
+    assert first_body["bars"] == 6
+    assert first_body["data_version"] == "sha256:bars"
+    assert len(first_body["series"]["sma3"]["value"]) == 6
+    assert len(first_body["timestamps"]) == 6
+
+    # A second window on the same instrument/spec must not inherit the first
+    # window's series length; the full series is sliced per request.
+    second = client.post(
+        "/api/indicators/preview",
+        json={**body, "from": "2024-10-20", "to": "2024-10-20"},
+    )
+    assert second.status_code == 200, second.text
+    second_body = second.json()
+    assert second_body["bars"] == 4
+    assert len(second_body["series"]["sma3"]["value"]) == 4
+    assert len(second_body["timestamps"]) == 4
+    # The first value is warmed by the six preceding bars, not null.
+    assert second_body["series"]["sma3"]["value"][0] is not None
+
+
+def test_preflight_returns_a_sizing_block(client, monkeypatch):
+    monkeypatch.setattr(
+        services, "bars", lambda *args, **kwargs: {"bars": [{"close": 0.5}]}
+    )
+    response = client.post(
+        "/api/execution/preflight",
+        json={
+            "instrument_id": "alpha-beta-2024-10-19-alpha-YES.POLYMARKET",
+            "from": "2024-10-19",
+            "to": "2024-10-19",
+            "execution": {"profile": "frictionless"},
+            "risk": {"sizing": {"mode": "fixed_stake", "value": 100.0}},
+        },
+    )
+    assert response.status_code == 200, response.text
+    sizing = response.json()["sizing"]
+    assert sizing is not None
+    assert sizing["reference_price"] == pytest.approx(0.5)
+    assert sizing["stake_usd"] == pytest.approx(100.0)
+    assert sizing["contracts"] == pytest.approx(200.0)
+    assert sizing["max_loss_usd"] == pytest.approx(100.0)
+    assert sizing["max_payout_usd"] == pytest.approx(200.0)
+    assert sizing["max_profit_usd"] == pytest.approx(100.0)
+
+
+def test_spa_fallback_cannot_escape_the_dist_directory(tmp_path, monkeypatch):
+    from backend import main as main_module
+
+    dist = tmp_path / "dist"
+    (dist / "assets").mkdir(parents=True)
+    (dist / "index.html").write_text("<!doctype html><title>htf</title>", encoding="utf-8")
+    (tmp_path / "secret.txt").write_text("TOP-SECRET", encoding="utf-8")
+    monkeypatch.setattr(main_module, "DIST", dist)
+
+    local_app = main_module.create_app()
+    client = TestClient(local_app)
+    # The SPA route is live: the index page is served.
+    index = client.get("/")
+    assert index.status_code == 200 and "htf" in index.text
+
+    for path in ("/..%2fsecret.txt", "/%2e%2e/secret.txt"):
+        response = client.get(path)
+        assert "TOP-SECRET" not in response.text, f"{path} leaked a file outside dist/"
+        assert "htf" in response.text
+
+
 # ---------------------------------------------------------------------- meta
 
 

@@ -13,6 +13,7 @@ from typing import Any
 
 from backend.api.errors import ApiError, bad_request, not_found, unavailable
 from backend.config import code_version, nautilus_version
+from backend.data.sources import MissingDatasetError
 from backend.data.versions import run_data_version
 
 
@@ -411,8 +412,14 @@ def ensure_bars(instrument_id: str, alias: str, start_ns: int | None = None, end
     except TypeError:
         try:
             build(instrument_id, alias)
+        except MissingDatasetError:
+            raise
         except Exception as exc:  # noqa: BLE001
             raise bad_request("bars_build_failed", str(exc), {"instrument_id": instrument_id, "bar_type": alias}) from exc
+    except MissingDatasetError:
+        # A registered dataset is absent: 503 from the app handler, never a
+        # silent fallback to another source (AGENTS.md section 4).
+        raise
     except FileNotFoundError as exc:
         raise not_found("instrument data", instrument_id) from exc
 
@@ -479,13 +486,23 @@ def indicator_preview(body: dict[str, Any]) -> dict[str, Any]:
     start_ns, end_ns = _parse_date(body.get("from")), _parse_date(body.get("to"), end=True)
     try:
         ensure_bars(instrument_id, alias, start_ns, end_ns)
-        page = readmodel.load_bars(instrument_id, alias, start_ns, end_ns, 100_000)
+        # Compute over the whole series so the cache key (data version, bar
+        # type, spec) is window-independent and warm-up precedes ``from``.
+        page = readmodel.load_bars(instrument_id, alias, None, None, 200_000)
     except ApiError:
         raise
     except KeyError as exc:
         # The bar builder names an unknown instrument; that is a lookup miss.
         raise not_found("instrument", instrument_id) from exc
-    except (FileNotFoundError, ValueError) as exc:
+    except MissingDatasetError:
+        # Absent registered dataset: 503 from the app handler, never a
+        # different source (AGENTS.md section 4).
+        raise
+    except FileNotFoundError as exc:
+        raise bad_request(
+            "bars_unavailable", str(exc), {"instrument_id": instrument_id, "bar_type": alias}
+        ) from exc
+    except ValueError as exc:
         raise bad_request(
             "bars_unavailable", str(exc), {"instrument_id": instrument_id, "bar_type": alias}
         ) from exc
@@ -520,24 +537,41 @@ def indicator_preview(body: dict[str, Any]) -> dict[str, Any]:
             lambda: compute_series(rows, instances),
         )
     )
+    if start_ns is not None or end_ns is not None:
+        keep = [
+            index
+            for index, row in enumerate(rows)
+            if (start_ns is None or int(row.get("ts_event_ns") or 0) >= start_ns)
+            and (end_ns is None or int(row.get("ts_event_ns") or 0) < end_ns)
+        ]
+        rows = [rows[index] for index in keep]
+        series = {
+            instance_id: {
+                output: [values[index] for index in keep] for output, values in by_output.items()
+            }
+            for instance_id, by_output in series.items()
+        }
     warmup = build_indicators(instances).warmup()
+    timestamps = [_iso(r.get("ts_event_ns") or _ns(r.get("ts_event"))) for r in rows]
     return {
         "instrument_id": instrument_id,
         "bar_type": alias,
-        "data_version": data_version,
+        "data_version": key_data_version or data_version,
         "bars": len(rows),
         "series": series,
         "warmup": warmup,
-        "ts_events": [_iso(r.get("ts_event_ns") or _ns(r.get("ts_event"))) for r in rows],
-        "ts_event": [_iso(r.get("ts_event_ns") or _ns(r.get("ts_event"))) for r in rows],
-        "timestamps": [_iso(r.get("ts_event_ns") or _ns(r.get("ts_event"))) for r in rows],
+        "ts_events": timestamps,
+        "ts_event": timestamps,
+        "timestamps": timestamps,
     }
 
 
 # ------------------------------------------------------------------ quality/meta
 
 
-def quality(instrument_id: str, start: str | None, end: str | None) -> dict[str, Any]:
+def quality(
+    instrument_id: str, start: str | None, end: str | None, warmup_bars: int | None = None
+) -> dict[str, Any]:
     from backend.data import quality as q
 
     inst = get_instrument(instrument_id)
@@ -545,9 +579,17 @@ def quality(instrument_id: str, start: str | None, end: str | None) -> dict[str,
     if fn is None:
         return {"instrument_id": instrument_id, "not_available": "quality module not available"}
     try:
-        out = fn(instrument_id, _parse_date(start), _parse_date(end, end=True))
+        out = fn(
+            instrument_id,
+            _parse_date(start),
+            _parse_date(end, end=True),
+            warmup_bars=warmup_bars,
+        )
     except TypeError:
-        out = fn(instrument_id)
+        try:
+            out = fn(instrument_id, _parse_date(start), _parse_date(end, end=True))
+        except TypeError:
+            out = fn(instrument_id)
     if not isinstance(out, dict):
         return {"instrument_id": instrument_id, "quality": out}
     out.setdefault("available_from", out.get("available_from_utc"))
@@ -603,9 +645,10 @@ def settlement_for(instrument_id: str) -> dict[str, Any] | None:
 
 def preflight(body: dict[str, Any]) -> dict[str, Any]:
     from backend.engine.execution import calculate_cost_estimate, resolve_profile
-    from backend.rules.schema import ExecutionConfig
+    from backend.rules.schema import ExecutionConfig, RiskConfig
 
     cfg = ExecutionConfig.model_validate(body.get("execution", {}))
+    risk_cfg = RiskConfig.model_validate(body.get("risk") or {})
     instrument_id = body.get("instrument_id")
     if not instrument_id:
         raise bad_request("missing_instrument", "instrument_id is required")
@@ -651,11 +694,41 @@ def preflight(body: dict[str, Any]) -> dict[str, Any]:
             estimate["per_side_bps"] = round(float(estimate.get("fee_bps") or 0) + float(estimate["slippage_bps"]), 4)
             estimate["per_side_price_points"] = estimate.get("slip_price_points")
         estimate.setdefault("note", "Per-side estimate; not a profitability claim.")
+    sizing = None
+    if row is not None and ref is not None and 0.0 < ref < 1.0:
+        # Pre-run size and exposure, from the same sizing function the engine
+        # uses; stake/contracts/max loss/max payout/max profit (BRIEF §7).
+        from backend.engine.instruments import build_binary_option
+        from backend.engine.rule_strategy import position_sizing
+
+        option_row = dict(row)
+        option_id = str(option_row.get("instrument_id") or "")
+        option_row.setdefault("outcome", "NO" if option_id.endswith("-NO.POLYMARKET") else "YES")
+        option_row.setdefault("raw_symbol", option_row.get("token_symbol") or option_id)
+        if not option_row.get("expiration_ns") and not option_row.get("end_date_utc"):
+            observed = option_row.get("last_ts_utc") or option_row.get("first_ts_utc")
+            if observed is not None:
+                option_row["end_date_utc"] = observed
+        try:
+            instrument = build_binary_option(option_row)
+            sizing = position_sizing(risk_cfg.sizing, ref, instrument)
+            sizing["reference_price"] = ref
+        except (KeyError, TypeError, ValueError):
+            # No expiry or malformed row: report no size rather than a guess.
+            sizing = None
     report = None
     warnings: list[Any] = []
     if body.get("include_quality", True):
+        warmup_bars = body.get("warmup_bars")
+        if warmup_bars is not None:
+            try:
+                warmup_bars = int(warmup_bars)
+            except (TypeError, ValueError):
+                warmup_bars = None
         try:
-            report = quality(instrument_id, body.get("from"), body.get("to"))
+            report = quality(
+                instrument_id, body.get("from"), body.get("to"), warmup_bars=warmup_bars
+            )
             warnings.extend(report.get("warnings") or [])
         except Exception:  # noqa: BLE001
             report = None
@@ -676,4 +749,5 @@ def preflight(body: dict[str, Any]) -> dict[str, Any]:
         "fallback_reason": effective.fallback_reason,
         "book_coverage": coverage,
         "cost_estimate": estimate,
+        "sizing": sizing,
     }

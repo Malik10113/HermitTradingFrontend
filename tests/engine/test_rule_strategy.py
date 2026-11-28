@@ -3,11 +3,13 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
+from pydantic import ValidationError
 
 from backend.engine.rule_strategy import (
     OperandResolver,
     OrderIntent,
     RuleStrategy,
+    bar_to_dict,
     collect_cross_operands,
     compute_sizing,
     evaluate_condition,
@@ -22,7 +24,9 @@ from backend.rules.schema import (
     RiskConfig,
     RunConfig,
     SizingConfig,
+    SplitConfig,
     StrategySection,
+    strategy_hash,
 )
 
 from .conftest import COMPLEMENT_ID, PRIMARY_ID, make_bar, make_quote
@@ -92,6 +96,7 @@ def make_config(
     settlement="rule_exit",
     sizing=None,
     lifecycle_filters=None,
+    max_trades=None,
 ) -> RunConfig:
     section = StrategySection(
         instrument_id=PRIMARY_ID,
@@ -105,9 +110,12 @@ def make_config(
         settlement=settlement,
         lifecycle_filters=lifecycle_filters,
     )
+    risk = RiskConfig(sizing=sizing or SizingConfig())
+    if max_trades is not None:
+        risk = RiskConfig(sizing=sizing or SizingConfig(), max_trades=max_trades)
     return RunConfig(
         strategy=section,
-        risk=RiskConfig(sizing=sizing or SizingConfig()),
+        risk=risk,
         evaluation=EvaluationConfig(date_range=DateRange(start="2024-10-01", end="2026-10-01")),
     )
 
@@ -186,6 +194,22 @@ def test_evaluate_crosses_uses_the_previous_bar():
     )
 
 
+def test_not_is_never_true_during_indicator_warmup():
+    values: dict[str, float | None] = {"indicator:ma:value": None}
+    resolve = lambda operand: values.get(operand) if isinstance(operand, str) else operand  # noqa: E731
+    tree = {"not": {"gt": ["indicator:ma:value", 0.5]}}
+
+    assert evaluate_condition(tree, resolve) is False
+    # Nulls also propagate through the boolean combinators.
+    assert evaluate_condition({"all": [{"gt": ["indicator:ma:value", 0.5]}]}, resolve) is False
+    assert evaluate_condition({"any": [{"gt": ["indicator:ma:value", 0.5]}]}, resolve) is False
+
+    values["indicator:ma:value"] = 0.4
+    assert evaluate_condition(tree, resolve) is True
+    assert evaluate_condition({"all": [tree]}, resolve) is True
+    assert evaluate_condition({"any": [tree]}, resolve) is True
+
+
 def test_collect_cross_operands():
     out: set[str] = set()
     collect_cross_operands(
@@ -204,6 +228,100 @@ def test_collect_cross_operands():
 def test_operand_resolver_rejects_unknown_operand():
     with pytest.raises(ValueError):
         OperandResolver().value("indicator:oops")
+
+
+# ---------------------------------------------------------------------------
+# Schema: splits, built-ins and canonical hashes
+
+
+def test_split_accepts_the_brief_example_and_rejects_a_short_embargo():
+    split = SplitConfig(train_end="2026-04-01", test_start="2026-04-02", embargo_days=1)
+    assert split.embargo_days == 1
+
+    with pytest.raises(ValidationError):
+        # (2026-04-02 - 2026-04-01).days == 1 < 2
+        SplitConfig(train_end="2026-04-01", test_start="2026-04-02", embargo_days=2)
+
+    with pytest.raises(ValidationError):
+        SplitConfig(train_end="2026-04-01", test_start="2026-04-01", embargo_days=0)
+
+
+def test_builtin_without_rules_is_still_valid():
+    section = StrategySection(instrument_id=PRIMARY_ID, builtin_id="buy_and_hold")
+    assert section.long_entry is None
+
+
+def test_builtin_with_rules_is_validated_like_regular_rules():
+    with pytest.raises(ValidationError):
+        StrategySection(
+            instrument_id=PRIMARY_ID,
+            builtin_id="sma_trend",
+            direction="long",
+            long_entry={"gt": ["indicator:missing:value", 0.5]},
+        )
+
+    with pytest.raises(ValidationError):
+        StrategySection(
+            instrument_id=PRIMARY_ID,
+            builtin_id="sma_trend",
+            direction="long",
+            long_entry={"nonsense": ["close", 1]},
+        )
+
+    with pytest.raises(ValidationError):
+        # A built-in hint must not bypass the indicator registry either.
+        StrategySection(
+            instrument_id=PRIMARY_ID,
+            builtin_id="sma_trend",
+            indicators=[IndicatorInstance(instance_id="ma", type="not_an_indicator")],
+        )
+
+    with pytest.raises(ValidationError):
+        StrategySection(
+            instrument_id=PRIMARY_ID,
+            builtin_id="sma_trend",
+            indicators=[IndicatorInstance(instance_id="ma", type="sma", params={"period": 1})],
+        )
+
+
+def _hash_config(section: StrategySection) -> RunConfig:
+    return RunConfig(
+        strategy=section,
+        evaluation=EvaluationConfig(date_range=DateRange(start="2024-10-01", end="2026-10-01")),
+    )
+
+
+def test_strategy_hash_ignores_builtin_hints_and_indicator_order():
+    first = IndicatorInstance(instance_id="a", type="sma", params={"period": 5})
+    second = IndicatorInstance(instance_id="b", type="ema", params={"period": 5})
+    rules = {"gt": ["indicator:a:value", 0.5]}
+
+    expanded = _hash_config(
+        StrategySection(
+            instrument_id=PRIMARY_ID,
+            bar_type=FULL_BAR_TYPE,
+            indicators=[second, first],
+            long_entry=rules,
+            direction="long",
+            builtin_id="sma_trend",
+            builtin_params={"period": 5},
+        )
+    )
+    plain = _hash_config(
+        StrategySection(
+            instrument_id=PRIMARY_ID,
+            bar_type=FULL_BAR_TYPE,
+            indicators=[first, second],
+            long_entry=rules,
+            direction="long",
+        )
+    )
+
+    assert strategy_hash(expanded) == strategy_hash(plain)
+    canonical = expanded.canonical_strategy()
+    assert "builtin_id" not in canonical
+    assert "builtin_params" not in canonical
+    assert [indicator["instance_id"] for indicator in canonical["indicators"]] == ["a", "b"]
 
 
 # ---------------------------------------------------------------------------
@@ -515,6 +633,38 @@ def test_direction_long_ignores_short_entry(primary, complement):
     assert strategy.pending_intent is None
 
 
+def test_max_trades_blocks_new_entries_after_the_cap(primary, complement):
+    config = make_config(
+        long_entry={"gt": ["close", 0]},
+        long_exit={"lt": ["close", 0]},
+        direction="long",
+        max_trades=1,
+    )
+    strategy = make_strategy(config, primary, complement)
+
+    strategy.on_bar(make_bar(TS0, 0.50))
+    assert strategy.pending_intent is not None  # the cap is not reached yet
+    assert len(strategy.signals) == 1
+
+    strategy.on_order_filled(
+        fill_event(instrument_id=PRIMARY_ID, is_buy=True, quantity="10.00", price="0.50", ts=TS0)
+    )
+    strategy.on_order_filled(
+        fill_event(
+            instrument_id=PRIMARY_ID,
+            is_buy=False,
+            quantity="10.00",
+            price="0.60",
+            ts=TS0 + BAR,
+        )
+    )
+    assert len(strategy.trades) == 1
+
+    strategy.on_bar(make_bar(TS0 + 2 * BAR, 0.50))
+    assert strategy.pending_intent is None
+    assert len(strategy.signals) == 1  # no new signal after the cap
+
+
 def test_quote_before_the_next_bar_open_is_not_used(primary, complement):
     strategy = make_strategy(
         make_config(long_entry={"gt": ["close", 0]}, direction="long"), primary, complement
@@ -601,6 +751,13 @@ def test_partial_exit_records_the_original_quantity(primary, complement):
     # Weighted exit: (4 * 0.60 + 6 * 0.40) / 10 = 0.48
     assert trade["exit_price"] == pytest.approx(0.48)
     assert trade["pnl_usd"] == pytest.approx((0.48 - 0.50) * 10.0)
+
+
+def test_bar_to_dict_keeps_an_explicit_trade_count():
+    bar = make_bar(TS0, 0.50)
+    assert bar_to_dict(bar)["trade_count"] is None
+    assert bar_to_dict(bar, trade_count=17)["trade_count"] == 17
+    assert bar_to_dict(bar)["close"] == pytest.approx(0.50)
 
 
 def test_with_the_real_indicator_set(primary, complement):

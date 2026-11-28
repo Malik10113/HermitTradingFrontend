@@ -95,9 +95,15 @@ class StrategySection(BaseModel):
         ids = [i.instance_id for i in self.indicators]
         if len(ids) != len(set(ids)):
             raise ValueError("indicator instance_id values must be unique")
-        if self.builtin_id is not None:
+        from backend.indicators.registry import get_spec, validate_params
+
+        for indicator in self.indicators:
+            get_spec(indicator.type)
+            validate_params(indicator.type, indicator.params)
+        trees = (self.long_entry, self.long_exit, self.short_entry, self.short_exit)
+        if self.builtin_id is not None and all(tree is None for tree in trees):
             # Quick authoring: the API expands the catalogue entry into rules
-            # before a job exists; there is nothing to validate yet.
+            # before a job exists; there is nothing else to validate yet.
             return self
         if self.direction in ("long", "both") and self.long_entry is None and self.short_entry is None:
             raise ValueError("at least one entry rule is required")
@@ -194,7 +200,7 @@ class SplitConfig(BaseModel):
             raise ValueError("split dates must be ISO-8601 (YYYY-MM-DD)") from exc
         if test_start <= train_end:
             raise ValueError("test_start must be after train_end")
-        if (test_start - train_end).days <= self.embargo_days:
+        if (test_start - train_end).days < self.embargo_days:
             raise ValueError("embargo_days leaves no gap between train and test")
         _ = timedelta  # keeps the import explicit for future range checks
         return self
@@ -218,7 +224,23 @@ class RunConfig(BaseModel):
     acknowledged_warnings: list[str] = Field(default_factory=list)
 
     def canonical_strategy(self) -> dict[str, Any]:
-        return self.strategy.model_dump(mode="json", exclude_none=True)
+        data = self.strategy.model_dump(mode="json", exclude_none=True)
+        trees = (
+            self.strategy.long_entry,
+            self.strategy.long_exit,
+            self.strategy.short_entry,
+            self.strategy.short_exit,
+        )
+        if any(tree is not None for tree in trees):
+            # Expanded rules define the strategy; the quick-authoring hints are
+            # provenance, not identity, and never enter the hashed section.
+            data.pop("builtin_id", None)
+            data.pop("builtin_params", None)
+        if "indicators" in data:
+            data["indicators"] = sorted(
+                data["indicators"], key=lambda indicator: indicator["instance_id"]
+            )
+        return data
 
     def canonical(self) -> dict[str, Any]:
         return self.model_dump(mode="json", exclude_none=True)

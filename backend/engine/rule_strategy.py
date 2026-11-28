@@ -114,23 +114,41 @@ def evaluate_condition(
     ``resolve`` is an :class:`OperandResolver` or a callable.  ``previous`` maps
     operand -> value from the prior bar for ``crosses_*``; a missing value makes
     the cross false (never a silent zero).
+
+    Internally the tree is evaluated with three-valued logic: an operand that is
+    ``None`` (indicator warm-up, unknown lifecycle phase) makes its node
+    ``None`` rather than ``False``, so ``not`` cannot turn "not ready" into a
+    signal.  Only the top-level result is coerced to ``bool``.
     """
     get = resolve.value if isinstance(resolve, OperandResolver) else resolve
     prev = previous or {}
 
-    def walk(node: Any) -> bool:
+    def walk(node: Any) -> bool | None:
         key, value = _single(node)
         if key == "all":
-            return all(walk(child) for child in value)
+            children = [walk(child) for child in value]
+            if any(child is False for child in children):
+                return False
+            if any(child is None for child in children):
+                return None
+            return True
         if key == "any":
-            return any(walk(child) for child in value)
+            children = [walk(child) for child in value]
+            if any(child is True for child in children):
+                return True
+            if any(child is None for child in children):
+                return None
+            return False
         if key == "not":
-            return not walk(value)
+            child = walk(value)
+            if child is None:
+                return None
+            return not child
         if key in _COMPARATORS:
             left = _as_number(get(value[0]))
             right = _as_number(get(value[1]))
             if left is None or right is None:
-                return False
+                return None
             if key == "gt":
                 return left > right
             if key == "gte":
@@ -145,13 +163,13 @@ def evaluate_condition(
             prev_left = _as_number(prev.get(left_operand))
             prev_right = _as_number(prev.get(right_operand))
             if None in (left, right, prev_left, prev_right):
-                return False
+                return None
             if key == "crosses_above":
                 return prev_left <= prev_right and left > right
             return prev_left >= prev_right and left < right
         raise ValueError(f"unknown condition key {key!r}")
 
-    return walk(tree)
+    return bool(walk(tree))
 
 
 def _as_number(value: Any) -> float | None:
@@ -766,6 +784,10 @@ class RuleStrategy(Strategy):
             self._diagnostics["lifecycle_blocked_bars"] += 1
             return None
 
+        max_trades = getattr(self.run_config.risk, "max_trades", None)
+        if max_trades is not None and len(self.trades) >= int(max_trades):
+            return None
+
         long_tree = self._trees["long_entry"]
         short_tree = self._trees["short_entry"]
         long_ok = (
@@ -1014,8 +1036,12 @@ def _bar_type(value: str) -> Any:
     return BarType.from_str(value)
 
 
-def bar_to_dict(bar: Any) -> dict[str, Any]:
-    """Canonical bar mapping used by the indicator set and the rule operands."""
+def bar_to_dict(bar: Any, trade_count: int | None = None) -> dict[str, Any]:
+    """Canonical bar mapping used by the indicator set and the rule operands.
+
+    Nautilus bars carry no ``trade_count``; callers that know it (the bar
+    builders) pass it explicitly so the canonical field is never invented.
+    """
     return {
         "instrument_id": str(bar.bar_type.instrument_id),
         "bar_type": str(bar.bar_type),
@@ -1026,7 +1052,9 @@ def bar_to_dict(bar: Any) -> dict[str, Any]:
         "low": float(bar.low),
         "close": float(bar.close),
         "volume": float(bar.volume),
-        "trade_count": getattr(bar, "trade_count", None),
+        "trade_count": (
+            trade_count if trade_count is not None else getattr(bar, "trade_count", None)
+        ),
     }
 
 

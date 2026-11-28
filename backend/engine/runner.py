@@ -60,6 +60,32 @@ def _effective_expiration_ns(
     return market, "market_end_date" if market is not None else "unknown"
 
 
+def _lifecycle_values(
+    ts_ns: int,
+    lifecycle: Any | None,
+    settlement_ts: Any | None,
+) -> dict[str, Any]:
+    from backend.data.lifecycle import (
+        market_status_at,
+        phase_at,
+        time_since_kickoff_minutes,
+        time_to_kickoff_minutes,
+        time_to_settlement_minutes,
+    )
+    from backend.data.timeutil import from_ns
+
+    when = from_ns(ts_ns)
+    return {
+        "phase": phase_at(lifecycle, when, settlement_ts),
+        "time_to_kickoff_minutes": time_to_kickoff_minutes(lifecycle, when),
+        "time_since_kickoff_minutes": time_since_kickoff_minutes(lifecycle, when),
+        "time_to_settlement_minutes": time_to_settlement_minutes(
+            lifecycle, when, settlement_ts
+        ),
+        "market_status": market_status_at(lifecycle, when, settlement_ts),
+    }
+
+
 def _instrument_row(instrument_id: str) -> dict[str, Any]:
     from backend.data.instruments import get_instrument
 
@@ -204,7 +230,7 @@ def execute_run(config_dict: dict[str, Any], prepared: dict[str, Any] | None = N
     from nautilus_trader.common import LoggerConfig
     from nautilus_trader.model import AggregationSource, AccountType, Bar, BarType, BookType, Currency, Money, OmsType, QuoteTick, Venue
 
-    from backend.data.lifecycle import lifecycle_for, phase_at
+    from backend.data.lifecycle import lifecycle_for
     from backend.data.readmodel import load_bars
     from backend.data.settlement import get_settlement
     from backend.engine.analytics import FillRecord, SettlementRecord, SignalRecord, analyse
@@ -337,9 +363,6 @@ def execute_run(config_dict: dict[str, Any], prepared: dict[str, Any] | None = N
         settlement_ts_source = "markets_updated_at"
 
     def lifecycle_at(ts_ns: int) -> dict[str, Any]:
-        from backend.data.lifecycle import time_since_kickoff_minutes, time_to_kickoff_minutes, time_to_settlement_minutes
-        from backend.data.timeutil import from_ns
-
         if lc_row is None:
             return {
                 "phase": "unknown",
@@ -348,14 +371,7 @@ def execute_run(config_dict: dict[str, Any], prepared: dict[str, Any] | None = N
                 "time_to_settlement_minutes": None,
                 "market_status": None,
             }
-        when = from_ns(ts_ns)
-        return {
-            "phase": phase_at(lc_row, when, settled_ts),
-            "time_to_kickoff_minutes": time_to_kickoff_minutes(lc_row, when),
-            "time_since_kickoff_minutes": time_since_kickoff_minutes(lc_row, when),
-            "time_to_settlement_minutes": time_to_settlement_minutes(lc_row, when, settled_ts),
-            "market_status": None,
-        }
+        return _lifecycle_values(ts_ns, lc_row, settled_ts)
 
     full_bar_type = str(replay_bar_type(primary))
     lifecycle_version = _lifecycle_version()

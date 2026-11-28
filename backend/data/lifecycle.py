@@ -531,7 +531,16 @@ def market_status_at(
     settlement_ts: datetime | None = None,
 ) -> str | None:
     """Return market status ('open' | 'closed' | 'settled') or None when unknown."""
-    raise NotImplementedError
+    parts = _row_parts(row)
+    if parts is None:
+        return None
+    _, actual_end = parts
+    when = as_utc(ts)
+    if settlement_ts is not None and when >= as_utc(settlement_ts):
+        return "settled"
+    if when >= actual_end:
+        return "closed"
+    return "open"
 
 
 def lifecycle_rows(rows: Iterable[LifecycleRow]) -> list[dict[str, Any]]:

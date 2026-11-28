@@ -47,6 +47,21 @@ def test_phase_boundaries_use_observed_timestamps(dataset):
     assert lifecycle.phase_at(None, kickoff) == "unknown"
 
 
+def test_market_status_uses_observed_end_and_settlement_boundaries(dataset):
+    lifecycle.build_match_lifecycle()
+    row = lifecycle.lifecycle_for("epl-aaa-bbb-2024-10-19")
+    kickoff = _utc("2024-10-19T14:00:00Z")
+    end = _utc("2024-10-19T15:50:00Z")
+    settled = _utc("2024-10-19T16:05:00Z")
+
+    assert lifecycle.market_status_at(row, kickoff) == "open"
+    assert lifecycle.market_status_at(row, end - timedelta(seconds=1)) == "open"
+    assert lifecycle.market_status_at(row, end) == "closed"
+    assert lifecycle.market_status_at(row, settled - timedelta(seconds=1), settled) == "closed"
+    assert lifecycle.market_status_at(row, settled, settled) == "settled"
+    assert lifecycle.market_status_at(None, settled, settled) is None
+
+
 def test_unknown_phase_disables_duration_helpers(dataset):
     lifecycle.build_match_lifecycle()
     row = lifecycle.lifecycle_for("epl-incomplete-2024-10-21")
@@ -76,6 +91,8 @@ def test_naive_timestamps_are_rejected(dataset):
     row = lifecycle.lifecycle_for("epl-aaa-bbb-2024-10-19")
     with pytest.raises(NaiveTimestampError):
         lifecycle.phase_at(row, datetime(2024, 10, 19, 14, 0))
+    with pytest.raises(NaiveTimestampError):
+        lifecycle.market_status_at(row, datetime(2024, 10, 19, 14, 0))
 
 
 def test_lifecycle_can_build_with_limit_and_no_backfill(dataset):

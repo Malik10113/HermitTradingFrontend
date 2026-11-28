@@ -45,8 +45,8 @@ short buys the sibling token. Closing always sells the held token.
 `results/polymarket_events.parquet` supplies the match spine (`match_key`,
 league, event date, home/away names) used to join tape conditions to markets
 and results. `backend/data/instruments.py` reads it and
-`instrument_index_version` includes it. It is **not** one of the eight entries
-in `docs/DATA_REGISTER.md`; that register gap is real and must be closed before
+`instrument_index_version` includes it. It is not registered in
+`docs/DATA_REGISTER.md`; that register gap is real and must be closed before
 the next restore (see the session master's known gaps).
 
 ### Settlement
@@ -78,6 +78,10 @@ match_key, actual_kickoff_utc, actual_end_utc, source, precision
 `source = espn_keyevents`, `precision = observed`. Rows without a `wallclock`
 are omitted. `backend/data/lifecycle.py` computes phases from that file only;
 a missing row yields `phase = unknown` and no nominal duration.
+The rule operand `market_status` uses the observed match end: it is `open`
+before that timestamp, `closed` from match end until the indexed settlement
+timestamp, and `settled` at or after settlement. A missing lifecycle row yields
+`null`; settlement data alone does not infer a market lifecycle.
 
 The default run is offline. `python scripts/build_match_lifecycle.py --backfill`
 adds missing fixtures by reading `results/polymarket_events.parquet` as the
@@ -259,8 +263,8 @@ Frictionless.
 200 as a hard cap (`backend/config.py`). Each variant is a standard child run
 tagged with `experiment_id`; every variant is retained and none is
 auto-promoted. Cancelling the parent cancels its non-terminal children. The
-workspace sweep panel exposes a single axis and a progress table; a two-axis
-heatmap is not implemented.
+workspace sweep panel exposes one- or two-axis sweeps, a progress table, and a
+two-axis heatmap.
 
 ## Run artifacts
 

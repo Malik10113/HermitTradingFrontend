@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
-from backend.engine.runner import _effective_expiration_ns
+from backend.engine.runner import _effective_expiration_ns, _lifecycle_values
 
 
 def utc(year, month, day, hour=0, minute=0, second=0):
@@ -45,3 +45,18 @@ def test_existing_expiration_ns_is_honoured():
 
     assert source == "market_end_date"
     assert ns == 1_800_000_000_000_000_000
+
+
+def test_runner_passes_market_status_to_lifecycle_operands():
+    row = SimpleNamespace(
+        actual_kickoff_utc=utc(2026, 5, 10, 15, 30),
+        actual_end_utc=utc(2026, 5, 10, 17, 0),
+    )
+    settlement = utc(2026, 5, 10, 17, 5)
+    bar_time = utc(2026, 5, 10, 17, 2)
+
+    values = _lifecycle_values(int(bar_time.timestamp() * 1_000_000_000), row, settlement)
+
+    assert values["phase"] == "post_match"
+    assert values["market_status"] == "closed"
+    assert values["time_to_settlement_minutes"] == 3.0

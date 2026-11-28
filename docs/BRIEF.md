@@ -4,7 +4,9 @@
 > dynamic technical indicators, and NautilusTrader backtests, reachable over
 > Tailscale.
 
-Status: design agreed 2026-11-18. Implementation not started.
+Status: design agreed 2026-11-18; v1 implementation is in progress. See
+[`docs/IMPLEMENTATION.md`](IMPLEMENTATION.md) for implemented behavior and known
+gaps.
 
 ## 1. Purpose
 
@@ -160,6 +162,9 @@ match_key, actual_kickoff_utc, actual_end_utc, source, precision
 - Lifecycle operands for the rule builder: `time_to_kickoff_minutes`,
   `time_since_kickoff_minutes`, `time_to_settlement_minutes`, `phase`,
   `market_status` (`open` | `closed` | `settled`).
+- `market_status` is `open` before the observed match end, `closed` from that
+  end until the recorded settlement timestamp, and `settled` at or after that
+  timestamp. Without a verified lifecycle row it is unknown (`null`).
 - Pre-2026 coverage depends on the ESPN backfill. 2026 is complete from the
   existing fixture map. Default backfill range: Big-4 from 2022-11, EPL from
   2024-10, matching the trade tape.

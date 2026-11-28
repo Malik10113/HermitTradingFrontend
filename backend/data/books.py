@@ -147,7 +147,20 @@ class CompactBookProvider:
         except Exception:  # noqa: BLE001
             pass
 
-    def get_snapshot(self, condition_id: str, ts_ns: int):
+    def get_snapshot(self, condition_id: str, ts_ns: int, instrument_id: str | None = None):
+        """Latest snapshot at or before ``ts_ns`` for the traded token.
+
+        A short entry buys the ``-NO.POLYMARKET`` complement, whose book is the
+        ``token2`` side of the same condition; the caller passes the instrument
+        it is pricing so the query reads that token's side, not the primary
+        instrument the provider was constructed for.
+        """
+        side = self.side
+        if instrument_id:
+            if instrument_id.endswith("-YES.POLYMARKET"):
+                side = "token1"
+            elif instrument_id.endswith("-NO.POLYMARKET"):
+                side = "token2"
         if not self._files:
             return None
         ts_ms = int(ts_ns) // 1_000_000
@@ -159,7 +172,7 @@ class CompactBookProvider:
             LIMIT 1
         """
         try:
-            row = self._con.execute(query, [self._files, condition_id, self.side, ts_ms]).fetchone()
+            row = self._con.execute(query, [self._files, condition_id, side, ts_ms]).fetchone()
         except Exception:  # noqa: BLE001
             return None
         if row is None:

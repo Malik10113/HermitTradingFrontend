@@ -38,6 +38,23 @@ def test_data_version_does_not_depend_on_the_checkout_path(tmp_path, monkeypatch
     assert version_a == version_b
 
 
+def test_missing_file_hash_is_checkout_independent(tmp_path, monkeypatch):
+    """A missing optional artifact must not make the version path-dependent."""
+    first_root = tmp_path / "checkout-a"
+    second_root = tmp_path / "checkout-b"
+    first = first_root / "var/settlement/settlement.parquet"
+    second = second_root / "var/settlement/settlement.parquet"
+    assert not first.exists() and not second.exists()
+
+    monkeypatch.setattr(config, "VAR_DIR", first_root / "var")
+    version_a = versions.compute_version([(first, None)], "fixture-1")
+
+    monkeypatch.setattr(config, "VAR_DIR", second_root / "var")
+    version_b = versions.compute_version([(second, None)], "fixture-1")
+
+    assert version_a == version_b
+
+
 def test_data_version_changes_with_content(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "VAR_DIR", tmp_path / "var")
     path = tmp_path / "var/settlement/settlement.parquet"

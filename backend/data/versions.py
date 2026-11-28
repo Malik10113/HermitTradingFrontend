@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
@@ -19,7 +20,8 @@ from backend import config
 
 BUILDER_VERSION = "bars-1.0.0"
 # Bump when the fingerprint schema changes so cached versions are recomputed.
-VERSION_SCHEMA = "relpath-1"
+# relpath-2: a missing dataset hashes its checkout-relative path.
+VERSION_SCHEMA = "relpath-2"
 LIFECYCLE_BUILDER_VERSION = "lifecycle-1.0.0"
 SETTLEMENT_BUILDER_VERSION = "settlement-1.0.0"
 INSTRUMENT_INDEX_BUILDER_VERSION = "instruments-1.0.0"
@@ -101,7 +103,7 @@ def compute_version(
     h.update(builder_version.encode())
     for path, ts_col in datasets:
         if not path.exists():
-            h.update(f"missing:{path}".encode())
+            h.update(f"missing:{_rel(path)}\n".encode())
             continue
         fp = fingerprint(path, ts_col)
         h.update(json.dumps(fp.as_list(), separators=(",", ":")).encode())
@@ -118,9 +120,18 @@ def _cache_load() -> dict[str, str]:
 def _cache_store(cache: dict[str, str]) -> None:
     path = config.DATA_VERSIONS_PATH
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(cache, indent=2, sort_keys=True))
-    os.replace(tmp, path)
+    # A process-unique temp file in the same directory: concurrent workers
+    # writing the fingerprint cache must never collide on one fixed name.
+    fd, tmp = tempfile.mkstemp(
+        dir=str(path.parent), prefix=f"{path.name}.", suffix=".tmp"
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(cache, indent=2, sort_keys=True))
+        os.replace(tmp, path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
 
 
 def cached_version(key: str, datasets: list[tuple[Path, str | None]], builder_version: str) -> str:
@@ -223,7 +234,7 @@ def lifecycle_version(
     h.update(LIFECYCLE_BUILDER_VERSION.encode())
     for path, ts_col in datasets:
         if not path.exists():
-            h.update(f"missing:{path}".encode())
+            h.update(f"missing:{_rel(path)}\n".encode())
             continue
         fp = fingerprint(path, ts_col)
         h.update(json.dumps(fp.as_list(), separators=(",", ":")).encode())

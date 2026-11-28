@@ -240,7 +240,9 @@ def dataset(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Dataset:
         )
     ]
     _write(tape, _tape_table(home_rows + draw_rows + tape_only_rows + mismatch_rows))
-    _write(football_tape, _tape_table([]))
+    # The football tape repeats the EPL conditions verbatim, exactly as the real
+    # tapes overlap: the index must count each condition from one chosen tape.
+    _write(football_tape, _tape_table(home_rows))
 
     market_rows = [
         dict(
@@ -456,6 +458,14 @@ def dataset(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Dataset:
     monkeypatch.setattr(config, "SETTLEMENT_PATH", var / "settlement/settlement.parquet")
     monkeypatch.setattr(config, "INDEX_PATH", var / "instruments/instruments.parquet")
     monkeypatch.setattr(config, "DATA_VERSIONS_PATH", var / "data_versions.json")
+    # Generated state and read-only siblings must never resolve to the real
+    # checkout, even when a test forgets to set them itself.
+    monkeypatch.setattr(config, "MATCH_EVENTS", root / "events/match_events.parquet")
+    monkeypatch.setattr(config, "BOOKS_DIR", root / "cache/orderbooks_compact")
+    monkeypatch.setattr(config, "RUNS_DIR", var / "runs")
+    monkeypatch.setattr(config, "APP_DB", var / "app.db")
+    monkeypatch.setattr(config, "SIGNAL_CACHE_DIR", var / "cache/signals")
+    monkeypatch.setattr(config, "LOGS_DIR", var / "logs")
 
     return Dataset(
         root=root,

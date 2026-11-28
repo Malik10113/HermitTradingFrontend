@@ -77,3 +77,18 @@ def test_missing_settlement_is_null_not_inferred(dataset):
     assert yes is not None
     assert yes["settlement_value"] is None
     assert yes["end_date_utc"] is not None
+
+
+def test_condition_in_two_tapes_is_counted_once(dataset):
+    """A condition repeated in both tapes keeps its real fill count.
+
+    ``cond-home`` appears verbatim in the EPL tape and the football tape.  The
+    index must record the row count of one deterministic ``tape_source`` (the
+    one ``bars.py``/``quality.py`` read), not the ``UNION ALL`` total.
+    """
+    yes = instruments.get_instrument(dataset.yes_id)
+    assert yes is not None
+    assert yes["trade_count"] == 4
+    assert yes["tape_source"] == "polymarket/epl/epl_moneyline_tape.parquet"
+    # One condition still yields exactly one YES/NO pair, not a doubled one.
+    assert len([row for row in instruments.load_index() if row["condition_id"] == "cond-home"]) == 2

@@ -96,18 +96,31 @@ def _condition_rows() -> list[dict[str, Any]]:
     events_path = sources.require_file("polymarket_events")
 
     union_sql, union_params = _tape_union_sql(tapes)
+    # The football tape and the EPL tape both carry the EPL conditions with
+    # identical rows.  Counting the UNION ALL would double every EPL
+    # ``trade_count`` and disagree with ``bars.py``/``quality.py``, which read a
+    # single stored ``tape_source``.  Pick one deterministic source per
+    # condition and count only that source's rows.
     query = f"""
-        WITH tape AS (
-            SELECT
-                condition_id,
-                min(match_key) AS match_key,
-                min(leg) AS leg,
-                min(tape_source) AS tape_source,
-                min(timestamp) AS first_ts,
-                max(timestamp) AS last_ts,
-                count(*) AS trade_count
-            FROM ({union_sql})
+        WITH raw_tape AS ({union_sql}),
+        chosen_source AS (
+            SELECT condition_id, min(tape_source) AS tape_source
+            FROM raw_tape
             GROUP BY condition_id
+        ),
+        tape AS (
+            SELECT
+                r.condition_id,
+                min(r.match_key) AS match_key,
+                min(r.leg) AS leg,
+                c.tape_source AS tape_source,
+                min(r.timestamp) AS first_ts,
+                max(r.timestamp) AS last_ts,
+                count(*) AS trade_count
+            FROM raw_tape AS r
+            JOIN chosen_source AS c
+              ON r.condition_id = c.condition_id AND r.tape_source = c.tape_source
+            GROUP BY r.condition_id, c.tape_source
         ),
         markets AS (
             SELECT * FROM (

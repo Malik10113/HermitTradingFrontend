@@ -179,13 +179,12 @@ def update_run(run_id: str, **fields: Any) -> None:
     fields["updated_at"] = utcnow()
     cols = ", ".join(f"{k}=?" for k in fields)
     # Terminal statuses are final. A worker that finishes after a cancellation
-    # (or a duplicate queue claim) must not resurrect the run.
+    # (or a duplicate queue claim) must not resurrect the run, and a crash
+    # report must not turn a cancelled or completed run into ``failed``. The
+    # guard covers every transition that touches ``status``.
     guard = ""
-    status = fields.get("status")
-    if status in ("queued", "running"):
+    if "status" in fields:
         guard = " AND status NOT IN ('complete','failed','cancelled','orphaned')"
-    elif status == "complete":
-        guard = " AND status NOT IN ('failed','cancelled','orphaned')"
     with _LOCK, _conn() as conn:
         conn.execute(f"UPDATE runs SET {cols} WHERE run_id=?{guard}", (*fields.values(), run_id))
 

@@ -643,6 +643,82 @@ def settlement_for(instrument_id: str) -> dict[str, Any] | None:
     return row.as_dict() if hasattr(row, "as_dict") else {k: getattr(row, k) for k in dir(row) if not k.startswith("_")}
 
 
+class _SizingInstrument:
+    """Duck-typed stand-in for ``position_sizing`` when a token has no expiry.
+
+    ``position_sizing`` reads only ``size_increment``, ``size_precision`` and
+    ``make_qty`` from its instrument (BRIEF §7), so a full Nautilus
+    ``BinaryOption`` -- which requires a real expiry -- is not needed to show a
+    pre-run size. Polymarket contracts trade in 0.01 steps at precision 2, and
+    no expiry date is invented.
+    """
+
+    size_increment = 0.01
+    size_precision = 2
+
+    def make_qty(self, value: float, round_down: bool = True) -> float:
+        return float(value)
+
+
+def _observed_end_utc(match_key: Any) -> Any:
+    """The lifecycle's observed match end, or ``None``; never built on demand."""
+    if not match_key:
+        return None
+    try:
+        from backend import config
+        from backend.data.lifecycle import lifecycle_for
+
+        path = config.LIFECYCLE_PATH
+        if not path.exists():
+            return None
+        row = lifecycle_for(str(match_key), path)
+    except Exception:  # noqa: BLE001 - advisory metadata, not a hard error
+        return None
+    return getattr(row, "actual_end_utc", None) if row is not None else None
+
+
+def _sizing_instrument(row: dict[str, Any]) -> Any:
+    """The instrument ``position_sizing`` needs, without inventing an expiry.
+
+    Uses the row's own expiry; otherwise the observed lifecycle end (the same
+    real expiry the runner honours); otherwise the no-expiry stand-in above.
+    Trade timestamps are never used as an expiry.
+    """
+    from backend.engine.instruments import build_binary_option
+
+    option_row = dict(row)
+    option_id = str(option_row.get("instrument_id") or "")
+    option_row.setdefault(
+        "outcome", "NO" if option_id.endswith("-NO.POLYMARKET") else "YES"
+    )
+    option_row.setdefault("raw_symbol", option_row.get("token_symbol") or option_id)
+    expiry_keys = ("expiration_ns", "end_date_utc", "end_date")
+    if not any(option_row.get(key) for key in expiry_keys):
+        observed = _observed_end_utc(option_row.get("match_key"))
+        if observed is not None:
+            option_row["end_date_utc"] = observed
+    if any(option_row.get(key) for key in expiry_keys):
+        return build_binary_option(option_row)
+    return _SizingInstrument()
+
+
+def _indicators_warmup(indicators: Any) -> int | None:
+    """Largest declared warm-up among the request's indicator instances."""
+    if not indicators:
+        return None
+    try:
+        from backend.indicators.compute import build_indicators
+
+        values = [
+            int(value)
+            for value in build_indicators(indicators).warmup().values()
+            if value is not None
+        ]
+    except Exception:  # noqa: BLE001 - advisory only; rules validate on submit
+        return None
+    return max(values) if values else None
+
+
 def preflight(body: dict[str, Any]) -> dict[str, Any]:
     from backend.engine.execution import calculate_cost_estimate, resolve_profile
     from backend.rules.schema import ExecutionConfig, RiskConfig
@@ -698,20 +774,10 @@ def preflight(body: dict[str, Any]) -> dict[str, Any]:
     if row is not None and ref is not None and 0.0 < ref < 1.0:
         # Pre-run size and exposure, from the same sizing function the engine
         # uses; stake/contracts/max loss/max payout/max profit (BRIEF §7).
-        from backend.engine.instruments import build_binary_option
         from backend.engine.rule_strategy import position_sizing
 
-        option_row = dict(row)
-        option_id = str(option_row.get("instrument_id") or "")
-        option_row.setdefault("outcome", "NO" if option_id.endswith("-NO.POLYMARKET") else "YES")
-        option_row.setdefault("raw_symbol", option_row.get("token_symbol") or option_id)
-        if not option_row.get("expiration_ns") and not option_row.get("end_date_utc"):
-            observed = option_row.get("last_ts_utc") or option_row.get("first_ts_utc")
-            if observed is not None:
-                option_row["end_date_utc"] = observed
         try:
-            instrument = build_binary_option(option_row)
-            sizing = position_sizing(risk_cfg.sizing, ref, instrument)
+            sizing = position_sizing(risk_cfg.sizing, ref, _sizing_instrument(dict(row)))
             sizing["reference_price"] = ref
         except (KeyError, TypeError, ValueError):
             # No expiry or malformed row: report no size rather than a guess.
@@ -725,6 +791,8 @@ def preflight(body: dict[str, Any]) -> dict[str, Any]:
                 warmup_bars = int(warmup_bars)
             except (TypeError, ValueError):
                 warmup_bars = None
+        else:
+            warmup_bars = _indicators_warmup(body.get("indicators"))
         try:
             report = quality(
                 instrument_id, body.get("from"), body.get("to"), warmup_bars=warmup_bars

@@ -475,6 +475,49 @@ def test_preflight_returns_a_sizing_block(client, monkeypatch):
     assert sizing["max_profit_usd"] == pytest.approx(100.0)
 
 
+def test_preflight_forwards_indicator_warmup_to_quality(client, monkeypatch):
+    seen = {}
+
+    def fake_quality(instrument_id, start=None, end=None, warmup_bars=None):
+        seen["warmup_bars"] = warmup_bars
+        return {
+            "instrument_id": instrument_id,
+            "bar_count": 10,
+            "warnings": [
+                {
+                    "code": "insufficient_warmup",
+                    "message": (
+                        f"10 bars available but {warmup_bars} are required for "
+                        "indicator warm-up."
+                    ),
+                }
+            ],
+        }
+
+    monkeypatch.setattr(
+        services, "bars", lambda *args, **kwargs: {"bars": [{"close": 0.5}]}
+    )
+    monkeypatch.setattr(services, "quality", fake_quality)
+    response = client.post(
+        "/api/execution/preflight",
+        json={
+            "instrument_id": "alpha-beta-2024-10-19-alpha-YES.POLYMARKET",
+            "from": "2024-10-19",
+            "to": "2024-10-19",
+            "execution": {"profile": "frictionless"},
+            "risk": {"sizing": {"mode": "fixed_stake", "value": 100.0}},
+            "indicators": [
+                {"instance_id": "sma50", "type": "sma", "params": {"period": 50}}
+            ],
+        },
+    )
+    assert response.status_code == 200, response.text
+    # SMA warm-up is period - 1, derived from the instance (no warmup_bars sent).
+    assert seen["warmup_bars"] == 49
+    codes = [warning["code"] for warning in response.json()["warnings"]]
+    assert "insufficient_warmup" in codes
+
+
 def test_spa_fallback_cannot_escape_the_dist_directory(tmp_path, monkeypatch):
     from backend import main as main_module
 

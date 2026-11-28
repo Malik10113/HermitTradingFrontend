@@ -58,10 +58,15 @@ def test_update_run_never_leaves_a_terminal_status(tmp_path, monkeypatch):
     assert state.get_run("run_cancelled")["status"] == "cancelled"
     state.update_run("run_cancelled", status="complete")
     assert state.get_run("run_cancelled")["status"] == "cancelled"
+    # A crash report from a worker that exited late must not overwrite it.
+    state.update_run("run_cancelled", status="failed", error="worker exited")
+    assert state.get_run("run_cancelled")["status"] == "cancelled"
 
     state.create_run("run_complete", {}, "sha256:s", "sha256:r", "sha256:d", "conservative", "conservative")
     state.update_run("run_complete", status="complete")
     state.update_run("run_complete", status="running")
+    assert state.get_run("run_complete")["status"] == "complete"
+    state.update_run("run_complete", status="failed")
     assert state.get_run("run_complete")["status"] == "complete"
     # Fields other than status still update on a terminal run.
     state.update_run("run_complete", error="late")

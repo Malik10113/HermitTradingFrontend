@@ -20,8 +20,10 @@ from backend import config
 
 BUILDER_VERSION = "bars-1.0.0"
 # Bump when the fingerprint schema changes so cached versions are recomputed.
-# relpath-2: a missing dataset hashes its checkout-relative path.
-VERSION_SCHEMA = "relpath-2"
+# relpath-1: every hashed path component is checkout-relative (``_rel``), so
+# a missing dataset now hashes like a present one and existing production
+# versions stay valid; do not bump this without a real schema change.
+VERSION_SCHEMA = "relpath-1"
 LIFECYCLE_BUILDER_VERSION = "lifecycle-1.0.0"
 SETTLEMENT_BUILDER_VERSION = "settlement-1.0.0"
 INSTRUMENT_INDEX_BUILDER_VERSION = "instruments-1.0.0"

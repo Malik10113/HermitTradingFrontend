@@ -276,6 +276,76 @@ def test_equity_ignores_settlements_without_a_known_timestamp():
     assert curve[-1]["position_value_usd"] == pytest.approx(4.0)
 
 
+def test_analyse_forwards_default_settle_ts_for_open_lots():
+    """A runner-recorded expiry settles a lot whose record has no timestamp."""
+    settle_ts = 1_000_000_000_000
+    bars = [
+        {"ts_event_ns": 0, "close": 0.30},
+        {"ts_event_ns": 60_000_000_000, "close": 0.40},
+    ]
+    fills = [_fill(0, "BUY", 0.30, fee=0.1)]
+    settlements = {CID: SettlementRecord(CID, 1.0, 0.0, None, "markets_end_date")}
+    result = analyse(
+        fills,
+        [],
+        settlements,
+        {YES: bars},
+        YES,
+        100.0,
+        1,
+        0.0,
+        0.0,
+        0.0,
+        condition_by_instrument={YES: CID},
+        default_settle_ts_ns={YES: settle_ts},
+    )
+    curve = result["equity"]
+    assert result["positions"][0]["status"] == "settled"
+    assert result["trades"][0]["exit_reason"] == "settlement"
+    assert result["trades"][0]["exit_ts_ns"] == settle_ts
+    # The terminal point is the real expiry, not the last bar.
+    assert curve[-1]["ts_ns"] == settle_ts
+    assert curve[-1]["position_value_usd"] == 0.0
+    # cash = 100 - 10 * 0.30 - 0.10 entry fee + 10 * 1.00 settlement.
+    assert curve[-1]["cash_usd"] == pytest.approx(106.9)
+    assert curve[-1]["equity_usd"] == pytest.approx(106.9)
+    assert result["metrics"]["final_equity_usd"] == pytest.approx(106.9)
+    assert result["metrics"]["net_pnl_usd"] == pytest.approx(6.9)
+
+
+def test_rule_exit_before_the_last_bar_adds_no_post_bar_settlement_point():
+    """A run flat at expiry ends on the last stored bar, not the settlement."""
+    settle_ts = 1_000_000_000_000
+    bars = [
+        {"ts_event_ns": 0, "close": 0.30},
+        {"ts_event_ns": 100, "close": 0.50},
+        {"ts_event_ns": 200, "close": 0.60},
+    ]
+    fills = [_fill(0, "BUY", 0.30), _fill(100, "SELL", 0.50)]
+    settlements = {CID: SettlementRecord(CID, 1.0, 0.0, settle_ts, "fixture")}
+    result = analyse(
+        fills,
+        [],
+        settlements,
+        {YES: bars},
+        YES,
+        100.0,
+        1,
+        0.0,
+        0.0,
+        0.0,
+        condition_by_instrument={YES: CID},
+    )
+    curve = result["equity"]
+    assert result["trades"][0]["exit_reason"] == "rule_exit"
+    assert [p["ts_ns"] for p in curve] == [0, 100, 200]
+    assert settle_ts not in [p["ts_ns"] for p in curve]
+    # cash = 100 - 10 * 0.30 + 10 * 0.50, flat after the rule exit.
+    assert curve[-1]["position_value_usd"] == 0.0
+    assert curve[-1]["equity_usd"] == pytest.approx(102.0)
+    assert result["metrics"]["final_equity_usd"] == pytest.approx(102.0)
+
+
 def test_metrics_core_values():
     fills = [_fill(0, "BUY", 0.4), _fill(100, "SELL", 0.6)]
     settlements = _settle()

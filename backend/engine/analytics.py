@@ -296,8 +296,10 @@ def build_equity(
     settlements: dict[str, SettlementRecord],
     primary_instrument_id: str,
     condition_by_instrument: dict[str, str] | None = None,
+    default_settle_ts_ns: dict[str, int] | None = None,
 ) -> list[dict[str, Any]]:
     """Cash + marked positions at every stored bar timestamp."""
+    default_settle_ts_ns = default_settle_ts_ns or {}
     fills = sorted(fills, key=lambda x: x.ts_ns)
     # Union of bar timestamps, primary first for determinism.
     timestamps: list[int] = []
@@ -316,15 +318,32 @@ def build_equity(
         # A position held to expiry settles at the resolution timestamp, which
         # is normally *after* the last stored bar. Without that timestamp the
         # settlement cash flow would never reach the curve, and final equity
-        # would disagree with the sum of trade P&L.
-        for s in settlements.values():
-            if (
-                s.settled_ts_ns is None
-                or s.yes_settlement is None
-                or s.no_settlement is None
-            ):
+        # would disagree with the sum of trade P&L. Add that point only when a
+        # position is actually open then: a rule-exit run that closed every lot
+        # before the last bar must not gain a flat post-bar point.
+        def _net_qty_at(iid: str, ts: int) -> float:
+            quantity = 0.0
+            for f in fills:
+                if f.instrument_id != iid or f.ts_ns > ts:
+                    continue
+                quantity += f.quantity if f.side == "BUY" else -f.quantity
+            return quantity
+
+        candidates = list(
+            dict.fromkeys(
+                [f.instrument_id for f in fills]
+                + [iid for iid in bars_by_instrument]
+            )
+        )
+        for iid in candidates:
+            cid = (condition_by_instrument or {}).get(iid, _condition_from_instrument(iid))
+            s = settlements.get(cid)
+            if s is None or s.yes_settlement is None or s.no_settlement is None:
                 continue
-            ts = int(s.settled_ts_ns)
+            s_ts = s.settled_ts_ns if s.settled_ts_ns is not None else default_settle_ts_ns.get(iid)
+            if s_ts is None or _net_qty_at(iid, int(s_ts)) <= 1e-12:
+                continue
+            ts = int(s_ts)
             if ts not in seen:
                 seen.add(ts)
                 timestamps.append(ts)
@@ -370,7 +389,10 @@ def build_equity(
         for iid in list(qty):
             cid = (condition_by_instrument or {}).get(iid, _condition_from_instrument(iid))
             s = settlements.get(cid)
-            if s is None or s.settled_ts_ns is None or s.settled_ts_ns > ts:
+            if s is None or s.yes_settlement is None or s.no_settlement is None:
+                continue
+            s_ts = s.settled_ts_ns if s.settled_ts_ns is not None else default_settle_ts_ns.get(iid)
+            if s_ts is None or s_ts > ts:
                 continue
             value = _settle_value(s, "YES" if iid.endswith("-YES.POLYMARKET") else "NO")
             cash += qty[iid] * value
@@ -660,11 +682,17 @@ def analyse(
     min_abs_slippage: float,
     rejects: int = 0,
     condition_by_instrument: dict[str, str] | None = None,
+    default_settle_ts_ns: dict[str, int] | None = None,
 ) -> dict[str, Any]:
     if condition_by_instrument:
         for f in fills:
             f.condition_id = condition_by_instrument.get(f.instrument_id, f.condition_id)
-    trades, positions = reconstruct_trades(fills, settlements, primary_instrument_id)
+    trades, positions = reconstruct_trades(
+        fills,
+        settlements,
+        primary_instrument_id,
+        default_settle_ts_ns=default_settle_ts_ns,
+    )
     curve = build_equity(
         fills,
         bars_by_instrument,
@@ -672,6 +700,7 @@ def analyse(
         settlements,
         primary_instrument_id,
         condition_by_instrument,
+        default_settle_ts_ns=default_settle_ts_ns,
     )
     diag = diagnostics(signals, fills, trades, rejects, curve)
     costs = cost_breakdown(fills, fee_bps, slippage_bps, min_abs_slippage)

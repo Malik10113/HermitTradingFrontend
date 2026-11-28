@@ -334,4 +334,80 @@ describe("StrategyRail warnings and sizing", () => {
     );
     await waitFor(() => expect(acknowledge).not.toBeChecked());
   });
+
+  it("saves the advanced rule through POST /api/strategies with the strategy section", async () => {
+    let posted: { name?: unknown; config?: Record<string, unknown> } | null = null;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/api/strategies") && init?.method === "POST") {
+        posted = JSON.parse(String(init.body)) as typeof posted;
+        return jsonResponse({ id: "saved_1", name: "EMA rule" }, 201);
+      }
+      if (url.endsWith("/api/strategies")) {
+        return jsonResponse({
+          builtins: [
+            {
+              id: "nautilus_ema_cross",
+              label: "EMA cross",
+              description: "EMA cross",
+              direction: "long",
+              parameters: [],
+            },
+          ],
+          saved: [],
+        });
+      }
+      if (url.endsWith("/api/execution/preflight") && init?.method === "POST") {
+        return jsonResponse({
+          requested: "conservative",
+          effective: "conservative",
+          cost_source: "fixed",
+          fee_bps: 0,
+          slippage_bps: 10,
+          min_abs_slippage: 0.001,
+          cost_estimate: { fee_bps: 0, slippage_bps: 10, per_side_bps: 10 },
+          book_coverage: null,
+          warnings: [],
+          sizing: railSizing,
+        });
+      }
+      throw new Error(`Unexpected request in test: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    window.localStorage.clear();
+
+    const advancedJson = JSON.stringify({
+      strategy: {
+        instrument_id: instrumentId,
+        bar_type: "5m",
+        builtin_id: "nautilus_ema_cross",
+        builtin_params: { fast: 10 },
+      },
+      execution: { profile: "conservative" },
+      risk: { sizing: { mode: "fixed_stake", value: 100 } },
+      evaluation: { date_range: { from: "2024-09-01", to: "2024-12-01" } },
+    });
+
+    const user = userEvent.setup();
+    render(<StrategyRail {...railProps({ strategyJson: advancedJson })} />);
+
+    await user.type(await screen.findByLabelText("Saved rule name"), "EMA rule");
+    await user.click(screen.getByRole("button", { name: "Save rule" }));
+
+    await waitFor(() => expect(posted).not.toBeNull());
+    expect(posted).toMatchObject({
+      name: "EMA rule",
+      config: {
+        instrument_id: instrumentId,
+        bar_type: "5m",
+        builtin_id: "nautilus_ema_cross",
+      },
+    });
+    // POST /api/strategies carries only the strategy section, not execution,
+    // risk or evaluation.
+    expect(posted!.config).not.toHaveProperty("execution");
+    expect(posted!.config).not.toHaveProperty("risk");
+    expect(posted!.config).not.toHaveProperty("evaluation");
+    expect(await screen.findByText("Saved")).toBeInTheDocument();
+  });
 });

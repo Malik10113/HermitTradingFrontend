@@ -24,6 +24,25 @@ function selectionOf(instrument: Instrument | null): string | null {
   return tokenOf(instrument);
 }
 
+const TOKEN_SUFFIX: Record<"YES" | "NO", string> = {
+  YES: "-YES.",
+  NO: "-NO.",
+};
+
+/**
+ * Resolve the instrument id for a token of the same market. Polymarket lists
+ * YES and NO as separate instruments with a swapped suffix; when the API
+ * supplies an explicit complement, that wins.
+ */
+function tokenInstrumentId(instrument: Instrument, token: "YES" | "NO"): string | null {
+  if (tokenOf(instrument) === token) return instrument.instrument_id;
+  const complement = instrument.complement_instrument_id ?? null;
+  if (complement) return complement;
+  const other: "YES" | "NO" = token === "YES" ? "NO" : "YES";
+  if (!instrument.instrument_id.includes(TOKEN_SUFFIX[other])) return null;
+  return instrument.instrument_id.replace(TOKEN_SUFFIX[other], TOKEN_SUFFIX[token]);
+}
+
 export function MarketBar({
   instruments,
   inventoryTotal = null,
@@ -155,6 +174,42 @@ export function MarketBar({
           >
             {selection} token
           </span>
+        ) : null}
+
+        {selected && selection ? (
+          <div
+            className="flex overflow-hidden rounded border border-line"
+            role="group"
+            aria-label="Token side"
+            title="YES and NO are separate instruments; switching loads the sibling token"
+          >
+            {(["YES", "NO"] as const).map((token) => {
+              const targetId = tokenInstrumentId(selected, token);
+              const active = selection === token;
+              return (
+                <button
+                  key={token}
+                  type="button"
+                  className={`px-2 py-0.5 text-[10px] ${
+                    active
+                      ? token === "NO"
+                        ? "bg-warn/20 font-semibold text-ink"
+                        : "bg-accent/20 font-semibold text-ink"
+                      : "text-ink-muted hover:bg-surface-sunken"
+                  }`}
+                  aria-pressed={active}
+                  aria-label={`Toggle YES or NO token: ${token}`}
+                  disabled={!targetId}
+                  title={targetId ?? `No ${token} sibling instrument recorded`}
+                  onClick={() => {
+                    if (targetId && targetId !== selected.instrument_id) onSelect(targetId);
+                  }}
+                >
+                  {token}
+                </button>
+              );
+            })}
+          </div>
         ) : null}
 
         <span

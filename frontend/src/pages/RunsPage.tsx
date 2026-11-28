@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { api } from "../api/client";
+import { api, errorMessage } from "../api/client";
 import type { RunSummary } from "../api/types";
 import { useApiResource } from "../hooks/useApi";
 import { resolveExecution } from "../lib/execution";
@@ -18,6 +18,15 @@ import {
 
 const STATUSES = ["all", "queued", "running", "complete", "failed", "cancelled", "orphaned"] as const;
 
+/** Compact, copy-safe run identifier for accessible labels and titles. */
+function shortHash(value: string, length = 8): string {
+  return value.length > length ? `${value.slice(0, length)}…` : value;
+}
+
+function isActive(status: string): boolean {
+  return status === "queued" || status === "running";
+}
+
 export function RunsPage() {
   const navigate = useNavigate();
   const [status, setStatus] = useState<(typeof STATUSES)[number]>("all");
@@ -32,9 +41,26 @@ export function RunsPage() {
     [status],
   );
   const [selected, setSelected] = useState<string[]>([]);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<unknown | null>(null);
 
   const runs = runsResource.data?.runs ?? [];
   const total = runsResource.data?.total ?? runs.length;
+
+  const removeRun = async (run: RunSummary) => {
+    if (deletingId) return;
+    setDeletingId(run.run_id);
+    setActionError(null);
+    try {
+      await api.deleteRun(run.run_id);
+      setSelected((current) => current.filter((id) => id !== run.run_id));
+      runsResource.reload();
+    } catch (caught) {
+      setActionError(caught);
+    } finally {
+      setDeletingId(null);
+    }
+  };
 
   const toggle = (runId: string) => {
     setSelected((current) =>
@@ -127,6 +153,12 @@ export function RunsPage() {
         </span>
       </div>
 
+      {actionError ? (
+        <p className="rounded border border-negative/40 px-2 py-1 text-[11px] text-negative" role="alert">
+          Run was not cancelled or deleted: {errorMessage(actionError)}
+        </p>
+      ) : null}
+
       <SweepsPanel />
 
       <section className="panel overflow-hidden" aria-label="Run history">
@@ -215,9 +247,31 @@ export function RunsPage() {
                         {run.run_hash ? `${run.run_hash.slice(0, 10)}…` : "not available"}
                       </td>
                       <td className="px-2 py-1">
-                        <Link className="btn-ghost text-[10px]" to={`/?run=${encodeURIComponent(run.run_id)}`}>
-                          Open
-                        </Link>
+                        <div className="flex items-center gap-1.5">
+                          <Link className="btn-ghost text-[10px]" to={`/?run=${encodeURIComponent(run.run_id)}`}>
+                            Open
+                          </Link>
+                          <button
+                            type="button"
+                            className="btn-ghost text-[10px]"
+                            onClick={() => void removeRun(run)}
+                            disabled={deletingId === run.run_id}
+                            aria-label={`${isActive(run.status) ? "Cancel" : "Delete"} run ${shortHash(run.run_id, 8)}`}
+                            title={
+                              isActive(run.status)
+                                ? "Cancel the queued or running job and delete the run"
+                                : "Delete this run and its artifacts"
+                            }
+                          >
+                            {deletingId === run.run_id
+                              ? isActive(run.status)
+                                ? "Cancelling…"
+                                : "Deleting…"
+                              : isActive(run.status)
+                                ? "Cancel"
+                                : "Delete"}
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   );

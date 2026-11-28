@@ -91,6 +91,8 @@ export interface Instrument {
   question?: string | null;
   selection?: "YES" | "NO" | string | null;
   outcome?: string | null;
+  /** The sibling outcome token's instrument id, when the API supplies it. */
+  complement_instrument_id?: string | null;
   condition_id?: string | null;
   end_date?: string | null;
   price_tick?: number | null;

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { Instrument, InstrumentQuality } from "../api/types";
 import { MarketBar } from "./MarketBar";
@@ -35,7 +35,7 @@ const quality: InstrumentQuality = {
   settlement_known: false,
 };
 
-function renderBar(selected: Instrument | null = yesInstrument) {
+function renderBar(selected: Instrument | null = yesInstrument, onSelect = vi.fn()) {
   return render(
     <MarketBar
       instruments={[yesInstrument, noInstrument]}
@@ -44,7 +44,7 @@ function renderBar(selected: Instrument | null = yesInstrument) {
       onReloadInstruments={vi.fn()}
       selected={selected}
       selectedId={selected?.instrument_id ?? ""}
-      onSelect={vi.fn()}
+      onSelect={onSelect}
       league=""
       onLeague={vi.fn()}
       onOpenPalette={vi.fn()}
@@ -73,6 +73,39 @@ describe("market bar", () => {
     renderBar(noInstrument);
     expect(screen.getByText("NO token")).toBeInTheDocument();
     expect(screen.getByTestId("settlement-badge").textContent).toBe("settles 1");
+  });
+
+  it("switches to the sibling NO instrument from the token side toggle", async () => {
+    const onSelect = vi.fn();
+    renderBar(yesInstrument, onSelect);
+    const group = screen.getByRole("group", { name: "Token side" });
+    expect(
+      within(group).getByRole("button", { name: "Toggle YES or NO token: YES" }),
+    ).toHaveAttribute("aria-pressed", "true");
+    expect(
+      within(group).getByRole("button", { name: "Toggle YES or NO token: NO" }),
+    ).toHaveAttribute("aria-pressed", "false");
+
+    await userEvent.click(
+      within(group).getByRole("button", { name: "Toggle YES or NO token: NO" }),
+    );
+    expect(onSelect).toHaveBeenCalledWith(noInstrument.instrument_id);
+  });
+
+  it("does not reselect the current token", async () => {
+    const onSelect = vi.fn();
+    renderBar(yesInstrument, onSelect);
+    await userEvent.click(
+      screen.getByRole("button", { name: "Toggle YES or NO token: YES" }),
+    );
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it("shows the NO side as pressed for a NO instrument", () => {
+    renderBar(noInstrument);
+    expect(
+      screen.getByRole("button", { name: "Toggle YES or NO token: NO" }),
+    ).toHaveAttribute("aria-pressed", "true");
   });
 
   it("keeps a remembered selection visible outside the league filter", () => {

@@ -182,6 +182,9 @@ export function StrategyRail(props: StrategyRailProps) {
   const [quickSeeded, setQuickSeeded] = useState(false);
   const [presetName, setPresetName] = useState("");
   const [presetState, setPresetState] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  const [ruleName, setRuleName] = useState("");
+  const [ruleSaveState, setRuleSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  const [strategiesNonce, setStrategiesNonce] = useState(0);
   const advanced = strategyJson !== null;
 
   useEffect(() => {
@@ -201,7 +204,7 @@ export function StrategyRail(props: StrategyRailProps) {
         if (!controller.signal.aborted) setStrategiesLoading(false);
       });
     return () => controller.abort();
-  }, []);
+  }, [strategiesNonce]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -216,6 +219,7 @@ export function StrategyRail(props: StrategyRailProps) {
   }, [feeBps, sizing, maxTrades]);
 
   const builtins = strategies?.builtins ?? [];
+  const savedStrategies = strategies?.saved ?? [];
   const builtin = useMemo(
     () => builtins.find((item) => item.id === builtinId) ?? null,
     [builtins, builtinId],
@@ -483,6 +487,39 @@ export function StrategyRail(props: StrategyRailProps) {
     }
   };
 
+  const loadSavedRule = (id: string) => {
+    const saved = savedStrategies.find((item) => item.id === id);
+    if (!saved) return;
+    onStrategyJson(
+      prettyConfig({
+        ...config,
+        strategy: {
+          ...saved.strategy,
+          instrument_id: instrumentId || saved.strategy.instrument_id,
+          bar_type: barType || saved.strategy.bar_type,
+        },
+      }),
+    );
+  };
+
+  const saveRule = async () => {
+    const name = ruleName.trim();
+    if (!name) {
+      setRuleSaveState("error");
+      return;
+    }
+    setRuleSaveState("saving");
+    try {
+      await api.saveStrategy({ name, config: config.strategy });
+      setRuleSaveState("saved");
+      setRuleName("");
+      // Refresh the catalogue so the new rule appears in the saved selector.
+      setStrategiesNonce((value) => value + 1);
+    } catch {
+      setRuleSaveState("error");
+    }
+  };
+
   return (
     <aside className="flex h-full min-h-0 flex-col overflow-y-auto" aria-label="Strategy rail">
       <div className="border-b border-line px-3 py-2">
@@ -518,6 +555,27 @@ export function StrategyRail(props: StrategyRailProps) {
       <div className="space-y-3 p-3">
         {strategiesError ? (
           <ErrorState error={strategiesError} title="Strategy catalogue unavailable" />
+        ) : null}
+
+        {savedStrategies.length > 0 ? (
+          <label className="block">
+            <span className="label">Saved rules</span>
+            <select
+              className="input mt-1"
+              value=""
+              onChange={(event) => loadSavedRule(event.target.value)}
+              aria-label="Load saved rule"
+            >
+              <option value="">Load saved rule…</option>
+              <optgroup label="Saved rules">
+                {savedStrategies.map((saved) => (
+                  <option key={saved.id} value={saved.id}>
+                    {saved.label}
+                  </option>
+                ))}
+              </optgroup>
+            </select>
+          </label>
         ) : null}
 
         {!advanced ? (
@@ -659,6 +717,39 @@ export function StrategyRail(props: StrategyRailProps) {
               range from this rail are applied over the JSON. Rules stay declarative; no code is
               uploaded or evaluated.
             </p>
+            <div className="space-y-1">
+              <span className="label">Saved rules</span>
+              <div className="flex items-center gap-1.5">
+                <input
+                  className="input py-1 text-[11px]"
+                  placeholder="Rule name"
+                  value={ruleName}
+                  onChange={(event) => {
+                    setRuleName(event.target.value);
+                    setRuleSaveState("idle");
+                  }}
+                  aria-label="Saved rule name"
+                />
+                <button
+                  type="button"
+                  className="btn shrink-0"
+                  onClick={() => void saveRule()}
+                  disabled={ruleSaveState === "saving" || !ruleName.trim()}
+                >
+                  {ruleSaveState === "saving" ? "Saving…" : "Save rule"}
+                </button>
+              </div>
+              {ruleSaveState === "saved" ? (
+                <p className="text-[10px] text-positive" role="status">
+                  Saved
+                </p>
+              ) : null}
+              {ruleSaveState === "error" ? (
+                <p className="text-[10px] text-negative" role="alert">
+                  Rule was not saved. A name is required and the API must accept the strategy.
+                </p>
+              ) : null}
+            </div>
           </section>
         )}
 

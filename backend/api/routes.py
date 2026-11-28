@@ -8,7 +8,7 @@ import secrets
 import shutil
 import uuid
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, Header, Query, Request
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
@@ -895,6 +895,33 @@ def compare(ids: str = Query(min_length=1)) -> dict[str, Any]:
         payload["equity_index"] = norm
         out.append(payload)
     return {"runs": out, "base": 100.0}
+
+
+class PortfolioOptimizeRequest(BaseModel):
+    run_ids: list[str]
+    method: Literal[
+        "equal",
+        "inverse_volatility",
+        "risk_parity",
+        "exponential",
+        "shrunk_mean_variance",
+        "three_stage",
+    ] = "three_stage"
+    max_weight: float = Field(default=0.35, gt=0.0, le=1.0)
+    vol_window: int = Field(default=20, ge=2, le=365)
+    min_periods: int = Field(default=5, ge=2, le=365)
+    correlation_penalty: float = Field(default=0.5, ge=0.0, le=2.0)
+    max_pair_correlation: float = Field(default=0.95, gt=-1.0, le=1.0)
+    kelly_fraction: float = Field(default=0.25, gt=0.0, le=1.0)
+    lcb_z: float = Field(default=1.0, ge=0.0, le=5.0)
+    bankroll_usd: float = Field(default=1000.0, gt=0.0)
+
+    model_config = {"extra": "forbid"}
+
+
+@router.post("/portfolio/optimize")
+def portfolio_optimize(req: PortfolioOptimizeRequest) -> dict[str, Any]:
+    return services.portfolio_optimize(req.model_dump())
 
 
 # ---------------------------------------------------------------- experiments

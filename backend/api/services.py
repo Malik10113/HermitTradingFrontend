@@ -15,6 +15,8 @@ from backend.api.errors import ApiError, bad_request, not_found, unavailable
 from backend.config import code_version, nautilus_version
 from backend.data.sources import MissingDatasetError
 from backend.data.versions import run_data_version
+from backend.engine.artifacts import parquet_rows, read_json_artifact
+from backend.jobs import state
 
 
 def _records(value: Any) -> list[dict[str, Any]]:
@@ -834,3 +836,97 @@ def preflight(body: dict[str, Any]) -> dict[str, Any]:
         "cost_estimate": estimate,
         "sizing": sizing,
     }
+
+
+def portfolio_optimize(body: dict[str, Any]) -> dict[str, Any]:
+    """Compose 2-10 completed runs into one weighted portfolio.
+
+    Only stored artifacts are read: every weight, Kelly fraction and equity
+    point comes from a run's ``equity.parquet`` and ``summary.json``.  A run
+    whose holdout split has not been revealed is restricted to its in-sample
+    window so out-of-sample results cannot leak into the optimisation.
+    """
+    from backend.engine.portfolio import optimize_runs
+
+    run_ids = list(
+        dict.fromkeys(
+            run_id
+            for run_id in (body.get("run_ids") or [])
+            if isinstance(run_id, str) and run_id.strip()
+        )
+    )
+    if not 2 <= len(run_ids) <= 10:
+        raise bad_request(
+            "bad_portfolio",
+            "portfolio optimisation requires between 2 and 10 distinct run ids",
+            {"count": len(run_ids)},
+        )
+
+    sleeves: list[dict[str, Any]] = []
+    extra_warnings: list[str] = []
+    for run_id in run_ids:
+        run = state.get_run(run_id)
+        if run is None:
+            raise not_found("run", run_id)
+        if run.get("status") != "complete":
+            status = run.get("status")
+            raise bad_request(
+                "run_not_complete",
+                f"run '{run_id}' has status '{status}', "
+                "only completed runs can be optimised",
+                {"run_id": run_id, "status": status},
+            )
+        equity = parquet_rows(run_id, "equity.parquet", 200_000)
+        summary = read_json_artifact(run_id, "summary.json") or {}
+        config = run.get("config") or {}
+        split = (config.get("evaluation") or {}).get("split")
+        # A completed run with an unrevealed split must contribute only its
+        # in-sample history; the holdout stays behind the explicit reveal.
+        unrevealed = isinstance(split, dict) and bool(split) and (
+            int(run.get("holdout_reveals") or 0) <= 0
+        )
+        if unrevealed:
+            train_end = split.get("train_end")
+            train_end_ns = _parse_date(train_end, end=True) if train_end else None
+            if train_end_ns is not None:
+                equity = [
+                    point
+                    for point in equity
+                    if (point.get("ts_ns") or _ns(point.get("ts")) or 0) < train_end_ns
+                ]
+            summary = summary.get("in_sample") or {}
+            extra_warnings.append(
+                f"Run {run_id[:8]} has an unrevealed holdout split; "
+                f"restricted to in-sample window through {train_end}."
+            )
+        strategy_cfg = config.get("strategy") or {}
+        sleeves.append(
+            {
+                "run_id": run_id,
+                "instrument_id": strategy_cfg.get("instrument_id"),
+                "strategy_hash": run.get("strategy_hash"),
+                "requested_profile": run.get("requested_profile"),
+                "effective_profile": run.get("effective_profile"),
+                "equity": equity,
+                "metrics": summary,
+            }
+        )
+
+    try:
+        result = optimize_runs(
+            sleeves,
+            method=body.get("method") or "three_stage",
+            max_weight=float(body.get("max_weight", 0.35)),
+            vol_window=int(body.get("vol_window", 20)),
+            min_periods=int(body.get("min_periods", 5)),
+            correlation_penalty=float(body.get("correlation_penalty", 0.5)),
+            max_pair_correlation=float(body.get("max_pair_correlation", 0.95)),
+            kelly_fraction=float(body.get("kelly_fraction", 0.25)),
+            lcb_z=float(body.get("lcb_z", 1.0)),
+            bankroll_usd=float(body.get("bankroll_usd", 1000.0)),
+        )
+    except ValueError as exc:
+        raise bad_request("bad_portfolio", str(exc)) from exc
+
+    result["warnings"] = extra_warnings + list(result.get("warnings") or [])
+    return result

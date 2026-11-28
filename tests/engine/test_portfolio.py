@@ -69,6 +69,22 @@ def _assert_weight_vector(
         assert deployed == pytest.approx(total, abs=1e-9)
 
 
+def _sample_std(values: list[float]) -> float:
+    mean = sum(values) / len(values)
+    return math.sqrt(
+        sum((value - mean) ** 2 for value in values) / (len(values) - 1)
+    )
+
+
+def _pearson(left: list[float], right: list[float]) -> float:
+    mean_left = sum(left) / len(left)
+    mean_right = sum(right) / len(right)
+    covariance = sum(
+        (a - mean_left) * (b - mean_right) for a, b in zip(left, right)
+    ) / (len(left) - 1)
+    return covariance / (_sample_std(left) * _sample_std(right))
+
+
 # ---------------------------------------------------------------------------
 # Kelly stake sizing
 # ---------------------------------------------------------------------------
@@ -185,6 +201,32 @@ def test_risk_parity_sums_to_one_and_favours_the_calmer_sleeve() -> None:
     )
     _assert_weight_vector(weights, max_weight=1.0, total=1.0)
     assert weights["low"] > weights["indep"] > 0.0
+
+
+def test_risk_parity_and_inv_vol_return_zero_for_ineligible_sleeves() -> None:
+    # One observation cannot support a variance estimate, so no variance-based
+    # rule may fund the sleeve -- and the equal-weight fallback must never
+    # name it either.
+    assert compute_weights(
+        {"a": [0.01]}, method="risk_parity", min_periods=5
+    ) == {"a": 0.0}
+
+    all_thin = {"a": [0.01], "b": [-0.02]}
+    for method in ("inverse_volatility", "risk_parity", "shrunk_mean_variance"):
+        assert compute_weights(all_thin, method=method, min_periods=5) == {
+            "a": 0.0,
+            "b": 0.0,
+        }
+
+    # One sleeve has plenty of evidence and one does not; the thin sleeve is
+    # ineligible for this run even though a fallback is available to the other.
+    mixed = {"low": LOW_VOL, "thin": [0.01]}
+    for method in ("inverse_volatility", "risk_parity", "shrunk_mean_variance"):
+        weights = compute_weights(
+            mixed, method=method, min_periods=5, max_weight=1.0
+        )
+        assert weights["thin"] == 0.0
+        assert weights["low"] == pytest.approx(1.0)
 
 
 def test_exponential_weights_decayed_positive_means_only() -> None:
@@ -345,6 +387,38 @@ def test_optimize_runs_composes_multi_day_equity_curves() -> None:
         assert member["dropped"] == (member["weight"] <= 0.0)
 
     assert isinstance(result["warnings"], list)
+
+
+def test_staggered_start_runs_do_not_dilute_late_sleeve_volatility_with_pre_start_zeros() -> None:
+    # ``early`` trades days 0..24; ``late`` starts on day 6.  Before day 6 the
+    # late sleeve was not active, so those steps must not enter its return
+    # sample as fabricated zeros.
+    early = [0.004, -0.003, 0.005, -0.002, 0.001, -0.004] * 4
+    late = [0.012, -0.011] * 9
+    runs = [
+        _run("early", early),
+        _run(
+            "late",
+            late,
+            equity=_curve(late, start_ns=START_NS + 6 * DAY_NS),
+        ),
+    ]
+    result = optimize_runs(runs, method="inverse_volatility", max_weight=1.0)
+    members = {member["run_id"]: member for member in result["members"]}
+
+    expected_vol = _sample_std(late) * math.sqrt(365.0)
+    diluted_vol = _sample_std([0.0] * 6 + late) * math.sqrt(365.0)
+    assert members["late"]["annualised_vol"] == pytest.approx(
+        expected_vol, rel=1e-12
+    )
+    assert abs(members["late"]["annualised_vol"] - diluted_vol) > 1e-3
+
+    # Correlation is a paired sample over the late sleeve's active window only.
+    expected_correlation = _pearson(early[6:], late)
+    assert result["correlation_matrix"]["early"]["late"] == pytest.approx(
+        expected_correlation, abs=1e-12
+    )
+    assert result["metrics"]["observations"] == 24
 
 
 def test_optimize_runs_aligns_intraday_bar_returns() -> None:

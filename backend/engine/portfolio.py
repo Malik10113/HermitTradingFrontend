@@ -23,7 +23,11 @@ Alignment
 ---------
 Runs are aligned on the union of UTC calendar days when they span at least
 three days.  Each run's equity is forward-filled from its first observation and
-day-to-day returns are ``eq[t] / eq[t-1] - 1.0``.  When the runs span fewer than
+day-to-day returns are ``eq[t] / eq[t-1] - 1.0``.  Before a run's first
+observation there is no equity to compare, so those aligned steps carry no
+return (``NaN`` in the internal series, ``0.0`` contribution to the composed
+portfolio curve) rather than a fabricated flat zero -- a sleeve that starts late
+is measured over its active window only.  When the runs span fewer than
 three days -- typical for intraday single-match backtests -- the union of bar
 timestamps is used instead and the output carries an ``intraday_bar_returns``
 warning.  The first aligned point has no predecessor and therefore no return;
@@ -282,16 +286,32 @@ def _pairwise_covariance(
 def _correlation(left: Sequence[float], right: Sequence[float]) -> float:
     """Pearson correlation in ``[-1, 1]``; ``0.0`` when undefined.
 
-    An undefined correlation (too few paired observations or zero variance)
-    is reported as ``0.0`` -- no measured co-movement -- never as a fabricated
-    strong relationship.
+    Means, variances and the covariance are all taken over the *same* paired
+    sample (positions where both series are finite), so the result is a true
+    Pearson correlation bounded by ``[-1, 1]`` even when the two series cover
+    different spans.  An undefined correlation (too few paired observations or
+    zero variance) is reported as ``0.0`` -- no measured co-movement -- never
+    as a fabricated strong relationship.
     """
-    covariance, _ = _pairwise_covariance(left, right)
-    std_left = _sample_std(left)
-    std_right = _sample_std(right)
-    if covariance == 0.0 or not std_left or not std_right:
+    pairs = [
+        (a, b)
+        for a, b in zip(map(_numeric, left), map(_numeric, right))
+        if math.isfinite(a) and math.isfinite(b)
+    ]
+    if len(pairs) < 2:
         return 0.0
-    value = covariance / (std_left * std_right)
+    count = len(pairs)
+    mean_left = sum(a for a, _ in pairs) / count
+    mean_right = sum(b for _, b in pairs) / count
+    var_left = sum((a - mean_left) ** 2 for a, _ in pairs) / (count - 1)
+    var_right = sum((b - mean_right) ** 2 for _, b in pairs) / (count - 1)
+    covariance = sum(
+        (a - mean_left) * (b - mean_right) for a, b in pairs
+    ) / (count - 1)
+    denominator = math.sqrt(var_left * var_right)
+    if not math.isfinite(denominator) or denominator <= 0.0:
+        return 0.0
+    value = covariance / denominator
     return float(min(max(value, -1.0), 1.0))
 
 
@@ -328,12 +348,14 @@ def _psd_project(sigma: np.ndarray, floor: float = _PSD_FLOOR) -> np.ndarray:
 # ---------------------------------------------------------------------------
 
 
-def _eligible_ids(returns_by_id: Mapping[str, Sequence[float]]) -> list[str]:
-    """Sleeves with at least two finite return observations, in input order."""
+def _eligible_ids(
+    returns_by_id: Mapping[str, Sequence[float]], min_observations: int = 2
+) -> list[str]:
+    """Sleeves with at least ``min_observations`` finite returns, input order."""
     return [
         str(identifier)
         for identifier, values in returns_by_id.items()
-        if len(_finite_tail(values, len(values))) >= 2
+        if len(_finite_tail(values, len(values))) >= min_observations
     ]
 
 
@@ -343,8 +365,16 @@ def _finalise(
     *,
     max_weight: float,
     all_zero_ok: bool,
+    fallback_ids: Sequence[str] | None = None,
 ) -> dict[str, float]:
-    """Clip raw scores, apply the fallback rule and cap the result."""
+    """Clip raw scores, apply the fallback rule and cap the result.
+
+    ``fallback_ids`` names the sleeves the equal-weight fallback may touch;
+    it defaults to every input id.  Sleeves outside it are held at ``0.0`` no
+    matter what the raw rule returned, so a sleeve without enough history can
+    never pick up weight through the fallback.
+    """
+    support = set(all_ids if fallback_ids is None else fallback_ids)
     clipped: dict[str, float] = {}
     for identifier in all_ids:
         try:
@@ -353,12 +383,15 @@ def _finalise(
             value = 0.0
         if not math.isfinite(value):
             raise ValueError("weight rule produced a non-finite raw weight")
-        clipped[identifier] = max(value, 0.0)
+        clipped[identifier] = max(value, 0.0) if identifier in support else 0.0
 
     if sum(clipped.values()) <= 0.0:
         if all_zero_ok:
             return {identifier: 0.0 for identifier in all_ids}
-        clipped = {identifier: 1.0 for identifier in all_ids}
+        clipped = {
+            identifier: 1.0 if identifier in support else 0.0
+            for identifier in all_ids
+        }
     return cap_weights(clipped, max_weight)
 
 
@@ -399,7 +432,11 @@ def _inverse_volatility_weights(
         vol_floor=vol_floor,
     )
     return _finalise(
-        raw, identifiers, max_weight=max_weight, all_zero_ok=False
+        raw,
+        identifiers,
+        max_weight=max_weight,
+        all_zero_ok=False,
+        fallback_ids=identifiers,
     )
 
 
@@ -421,7 +458,7 @@ def _risk_parity_raw(
         return raw
 
     tail = {
-        identifier: returns_by_id[identifier][-vol_window:]
+        identifier: _finite_tail(returns_by_id[identifier], vol_window)
         for identifier in usable
     }
     sigma = _psd_project(_covariance_matrix(tail, usable))
@@ -553,6 +590,10 @@ def compute_weights(
     ``returns_by_id`` maps a run id to its aligned return series (oldest first;
     the last value is the most recent observation).  Every input id appears in
     the result; ineligible sleeves and sleeves the rule zeroes get ``0.0``.
+    Variance-based rules need at least ``min_periods`` finite observations
+    (and never fewer than two); ``equal`` and ``exponential`` need one.  A
+    sleeve below its rule's minimum is never funded, not even by the
+    equal-weight fallback of a rule that produced no positive score.
     Weights are non-negative and sum to at most one -- the residual is cash when
     ``max_weight`` cannot deploy the whole book.
     """
@@ -574,7 +615,6 @@ def compute_weights(
     all_ids = list(returns_by_id)
     if not all_ids:
         return {}
-    identifiers = _eligible_ids(returns_by_id)
 
     if method == "three_stage":
         allocation = three_stage_allocate(
@@ -588,16 +628,29 @@ def compute_weights(
         weights = allocation["weights"]
         return {identifier: float(weights.get(identifier, 0.0)) for identifier in all_ids}
 
+    # Every rule except equal/exponential needs a variance estimate, so its
+    # minimum evidence is ``min_periods`` (never below two observations).
+    # Sleeves below that stay at 0.0 for this run -- including in the
+    # equal-weight fallback, which must never fund an unmeasured sleeve.
+    eff_min = 1 if method in ("equal", "exponential") else max(int(min_periods), 2)
+    eligible_ids = _eligible_ids(returns_by_id, eff_min)
+    if not eligible_ids:
+        return {identifier: 0.0 for identifier in all_ids}
+
     if method == "equal":
-        raw = {identifier: 1.0 for identifier in identifiers}
+        raw = {identifier: 1.0 for identifier in eligible_ids}
         return _finalise(
-            raw, all_ids, max_weight=max_weight, all_zero_ok=True
+            raw,
+            all_ids,
+            max_weight=max_weight,
+            all_zero_ok=True,
+            fallback_ids=eligible_ids,
         )
 
     if method == "inverse_volatility":
         weights = _inverse_volatility_weights(
             returns_by_id,
-            identifiers,
+            eligible_ids,
             max_weight=max_weight,
             vol_window=vol_window,
             min_periods=min_periods,
@@ -608,36 +661,50 @@ def compute_weights(
     if method == "risk_parity":
         raw = _risk_parity_raw(
             returns_by_id,
-            identifiers,
+            eligible_ids,
             vol_window=vol_window,
             min_periods=min_periods,
         )
         return _finalise(
-            raw, all_ids, max_weight=max_weight, all_zero_ok=False
+            raw,
+            all_ids,
+            max_weight=max_weight,
+            all_zero_ok=False,
+            fallback_ids=eligible_ids,
         )
 
     if method == "exponential":
-        raw = _exponential_raw(returns_by_id, identifiers)
+        raw = _exponential_raw(returns_by_id, eligible_ids)
         return _finalise(
-            raw, all_ids, max_weight=max_weight, all_zero_ok=True
+            raw,
+            all_ids,
+            max_weight=max_weight,
+            all_zero_ok=True,
+            fallback_ids=eligible_ids,
         )
 
     # shrunk_mean_variance: fall back to inverse volatility when the clipped
     # long-only solution is empty (no positive mean signal).
     raw = _shrunk_mean_variance_raw(
-        returns_by_id, identifiers, vol_window=vol_window
+        returns_by_id, eligible_ids, vol_window=vol_window
     )
     if sum(raw.values()) <= 0.0:
         weights = _inverse_volatility_weights(
             returns_by_id,
-            identifiers,
+            eligible_ids,
             max_weight=max_weight,
             vol_window=vol_window,
             min_periods=min_periods,
             vol_floor=_VOL_FLOOR,
         )
         return {identifier: float(weights.get(identifier, 0.0)) for identifier in all_ids}
-    return _finalise(raw, all_ids, max_weight=max_weight, all_zero_ok=False)
+    return _finalise(
+        raw,
+        all_ids,
+        max_weight=max_weight,
+        all_zero_ok=False,
+        fallback_ids=eligible_ids,
+    )
 
 
 def three_stage_allocate(
@@ -985,9 +1052,9 @@ def optimize_runs(
                 while pointer < len(points) and points[pointer][0] <= ts:
                     current = points[pointer][1]
                     pointer += 1
-                if current is None:
-                    current = points[0][1] if points else math.nan
-                values.append(current)
+                # ``current`` is None only before this run's first observation;
+                # NaN (not a fabricated flat value) marks the inactive window.
+                values.append(current if current is not None else math.nan)
             equity_by_id[run_id] = values
         warnings.append(
             "intraday_bar_returns: the runs span fewer than 3 UTC calendar "
@@ -1009,13 +1076,14 @@ def optimize_runs(
                     ]
                 )
             )
-            first_value = daily[min(daily)]
             values: list[float] = []
-            current = first_value
+            current: float | None = None
             for day in all_days:
                 if day in daily:
                     current = daily[day]
-                values.append(current)
+                # Days before this run's first observation stay NaN: the run
+                # was not active, so it has no return to contribute.
+                values.append(current if current is not None else math.nan)
             equity_by_id[run_id] = values
 
     returns_by_id = {
@@ -1108,6 +1176,9 @@ def optimize_runs(
             if weight == 0.0:
                 continue
             value = returns_by_id[run_id][index]
+            # NaN means the step precedes this sleeve's first observation, so
+            # the sleeve is flat/uninvested there: 0.0 contribution, not a
+            # fabricated return.
             if math.isfinite(value):
                 combined += weight * value
         portfolio_returns.append(combined)

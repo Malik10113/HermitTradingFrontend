@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -27,7 +28,9 @@ def sha256_file(path: Path) -> str:
 
 
 def _write_json(path: Path, value: Any) -> None:
-    path.write_text(json.dumps(value, indent=2, sort_keys=True, default=str))
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(value, indent=2, sort_keys=True, default=str))
+    os.replace(tmp, path)
 
 
 def _write_parquet(path: Path, rows: list[dict[str, Any]], schema: pa.Schema | None = None) -> None:
@@ -113,7 +116,13 @@ def read_artifact(run_id: str, name: str) -> Path | None:
 
 def read_json_artifact(run_id: str, name: str) -> Any:
     path = read_artifact(run_id, name)
-    return json.loads(path.read_text()) if path else None
+    if path is None:
+        return None
+    try:
+        return json.loads(path.read_text())
+    except (OSError, ValueError):
+        # A truncated or vanished artifact must not crash a listing request.
+        return None
 
 
 def parquet_rows(run_id: str, name: str, limit: int = 2000) -> list[dict[str, Any]]:

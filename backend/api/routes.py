@@ -811,6 +811,27 @@ def artifact(
     format: str | None = Query(default=None),
     limit: int = Query(default=5000, ge=1, le=100_000),
 ):
+    # The raw artifact must honour the holdout gate too: an unrevealed split
+    # reports the in-sample slice only, exactly like ``GET /api/backtests/{id}``.
+    if name == "summary.json":
+        run = state.get_run(run_id)
+        if run is not None:
+            config = run.get("config") or {}
+            split = (config.get("evaluation") or {}).get("split")
+            if split and (run.get("holdout_reveals") or 0) == 0:
+                summary = read_json_artifact(run_id, "summary.json")
+                if isinstance(summary, dict):
+                    in_sample = summary.get("in_sample")
+                    if in_sample is not None:
+                        summary = {
+                            **in_sample,
+                            "in_sample": in_sample,
+                            "out_of_sample": None,
+                            "oos_hidden": True,
+                        }
+                    else:
+                        summary = {**summary, "oos_hidden": True}
+                    return JSONResponse(summary)
     path = read_artifact(run_id, name)
     if path is None:
         raise not_found("artifact", f"{run_id}/{name}")
@@ -917,16 +938,15 @@ def create_experiment(req: ExperimentRequest) -> dict[str, Any]:
         raise bad_request("grid_too_large", f"grid has {len(combos)} variants; hard cap is {SETTINGS.hard_max_grid_runs}")
     if len(combos) > SETTINGS.max_grid_runs:
         raise bad_request("grid_too_large", f"grid has {len(combos)} variants; default cap is {SETTINGS.max_grid_runs}")
-    experiment_id = "exp_" + uuid.uuid4().hex[:12]
-    state.create_experiment(experiment_id, req.name, req.model_dump(mode="json"), len(combos))
-    created = []
+    # Validate and prepare every variant before writing any row or submitting a
+    # job: one bad variant must leave the experiment atomically uncreated.
+    prepared_variants: list[tuple[dict[str, Any], dict[str, Any]]] = []
     for combo in combos:
         data = req.base.model_dump(mode="json", exclude_none=True)
         try:
             for path, value in combo.items():
                 _set_path(data, path, value)
         except (KeyError, IndexError, TypeError, ValueError) as exc:
-            state.update_experiment(experiment_id, status="failed")
             raise bad_request(
                 "bad_axis_path",
                 f"grid path {next(iter(combo))!r} does not exist in the base config",
@@ -935,8 +955,12 @@ def create_experiment(req: ExperimentRequest) -> dict[str, Any]:
         try:
             prepared = _prepare(RunRequest.model_validate(data))
         except Exception as exc:  # noqa: BLE001
-            state.update_experiment(experiment_id, status="failed")
             raise bad_request("bad_variant", str(exc), {"variant": combo}) from exc
+        prepared_variants.append((combo, prepared))
+    experiment_id = "exp_" + uuid.uuid4().hex[:12]
+    state.create_experiment(experiment_id, req.name, req.model_dump(mode="json"), len(combos))
+    created = []
+    for _combo, prepared in prepared_variants:
         run_id = "run_" + uuid.uuid4().hex[:16]
         state.create_run(
             run_id,

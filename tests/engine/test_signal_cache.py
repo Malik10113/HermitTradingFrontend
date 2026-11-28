@@ -38,7 +38,7 @@ from backend.rules.schema import (
 
 from .conftest import COMPLEMENT_ID, PRIMARY_ID, SLUG, make_bar, make_quote
 
-TS0 = 1_700_000_000_000_000_000
+TS0 = 1_700_006_220_000_000_000  # 2023-11-14T23:57:00Z, spans midnight
 BAR = 60 * 10**9
 BAR_TYPE = f"{PRIMARY_ID}-1-MINUTE-LAST-EXTERNAL"
 
@@ -461,6 +461,12 @@ def runner_env(monkeypatch, tmp_path):
         rows = [
             bar_row(TS0 + index * BAR, close) for index, close in enumerate(closes)
         ]
+        if start_ns is not None:
+            rows = [row for row in rows if row["ts_event_ns"] >= start_ns]
+        if end_ns is not None:
+            rows = [row for row in rows if row["ts_event_ns"] < end_ns]
+        if limit is not None:
+            rows = rows[:limit]
         return {"bars": rows, "bar_type": alias, "data_version": "sha256:test"}
 
     monkeypatch.setattr(runner_module, "_ensure_derived", lambda: None)
@@ -504,6 +510,8 @@ def test_runner_reuses_a_disk_plan_across_worker_like_runs(runner_env):
         direction="long",
         execution=ExecutionConfig(profile="conservative"),
         bar_type="1m",
+        start="2023-11-14",
+        end="2023-11-15",
     )
     frictionless = conservative.model_copy(
         update={"execution": ExecutionConfig(profile="frictionless")}
@@ -544,3 +552,48 @@ def test_runner_reuses_a_disk_plan_across_worker_like_runs(runner_env):
     assert stats["disk"]["hits"] == 1
     assert stats["disk"]["entries"] == 1
     assert stats["disk"]["bytes"] > 0
+
+
+def test_runner_reuses_a_plan_across_different_date_windows(runner_env):
+    """The plan key omits the evaluation window, so it must cover every bar.
+
+    ``fake_load`` honours ``start_ns``/``end_ns``; the first run sees the three
+    bars before midnight and the second sees the two after it. A plan computed
+    over only the first window would not contain the second window's bars and
+    ``RuleStrategy.on_bar`` would raise ``is not in the signal plan``.
+    """
+    from backend.engine.runner import execute_run
+
+    first_window = make_config(
+        long_entry={"gt": ["close", 0.45]},
+        long_exit={"lt": ["close", 0.45]},
+        direction="long",
+        execution=ExecutionConfig(profile="conservative"),
+        bar_type="1m",
+        start="2023-11-14",
+        end="2023-11-14",
+    )
+    second_window = first_window.model_copy(
+        update={
+            "evaluation": EvaluationConfig(
+                date_range=DateRange(start="2023-11-15", end="2023-11-15")
+            )
+        }
+    )
+    assert strategy_hash(first_window) == strategy_hash(second_window)
+
+    first = execute_run(first_window.model_dump(mode="json"))
+    assert first.status == "complete"
+    assert first.manifest["signal_cache"]["hit"] is False
+
+    second = execute_run(second_window.model_dump(mode="json"))
+    assert second.status == "complete"
+    assert second.manifest["signal_cache"]["hit"] is True
+    # Same strategy, same plan, different window and run hash.
+    assert second.manifest["strategy_hash"] == first.manifest["strategy_hash"]
+    assert second.manifest["run_hash"] != first.manifest["run_hash"]
+    assert (
+        second.manifest["signal_cache"]["plan_hash"]
+        == first.manifest["signal_cache"]["plan_hash"]
+    )
+    assert second.result is not None

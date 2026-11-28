@@ -266,22 +266,36 @@ def execute_run(config_dict: dict[str, Any], prepared: dict[str, Any] | None = N
     start_ns = _date_ns(config.evaluation.date_range.start)
     end_ns = _date_ns(config.evaluation.date_range.end, end=True)
 
-    def load(iid: str) -> list[dict[str, Any]]:
+    def load(
+        iid: str,
+        s_ns: int | None = start_ns,
+        e_ns: int | None = end_ns,
+    ) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
-        cursor_ns = start_ns
+        cursor_ns = s_ns
         while True:
-            got = load_bars(iid, alias, cursor_ns, end_ns, 200_000)
+            got = load_bars(iid, alias, cursor_ns, e_ns, 200_000)
             raw_rows = got.get("bars") if isinstance(got, dict) else got
             rows = [_bar_dict(r) for r in (raw_rows or [])]
             out.extend(rows)
             if not (isinstance(got, dict) and got.get("has_more") and rows):
                 break
             cursor_ns = int(rows[-1].get("ts_event_ns") or _ns(rows[-1].get("ts_event")) or 0) + 1
-            if end_ns is not None and cursor_ns >= end_ns:
+            if e_ns is not None and cursor_ns >= e_ns:
                 break
         return out
 
-    bars_primary = load(primary.id.value)
+    # The signal plan is independent of the evaluation window (BRIEF §8): load
+    # the whole primary series so a cached plan covers any [start, end) window
+    # with indicator warm-up before ``start_ns``. Only the requested window is
+    # dispatched to Nautilus.
+    all_primary = load(primary.id.value, None, None)
+    bars_primary = [
+        r
+        for r in all_primary
+        if (start_ns is None or r["ts_event_ns"] >= start_ns)
+        and (end_ns is None or r["ts_event_ns"] < end_ns)
+    ]
     bars_complement = load(complement.id.value)
     if not bars_primary:
         raise ValueError("no bars for primary instrument")
@@ -356,6 +370,7 @@ def execute_run(config_dict: dict[str, Any], prepared: dict[str, Any] | None = N
             )
         return bars_out, quotes
 
+    all_bars_p, _ = build_bars(all_primary, primary)
     bars_p, quotes_p = build_bars(bars_primary, primary)
     bars_c, quotes_c = build_bars(bars_complement, complement)
 
@@ -389,8 +404,10 @@ def execute_run(config_dict: dict[str, Any], prepared: dict[str, Any] | None = N
     # bars Nautilus will dispatch.  The bar objects round-trip prices at the
     # instrument's precision but quantise volume to the size increment and drop
     # trade_count, so the exact tape values are restored from the raw rows.
+    # The plan spans the full series, not the evaluation window, so a cached
+    # plan works for any date range and carries warm-up before ``start_ns``.
     plan_bars: list[dict[str, Any]] = []
-    for bar, raw_row in zip(bars_p, bars_primary):
+    for bar, raw_row in zip(all_bars_p, all_primary):
         d = bar_to_dict(bar)
         d["volume"] = float(raw_row["volume"])
         d["trade_count"] = raw_row.get("trade_count")

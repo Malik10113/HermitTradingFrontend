@@ -702,6 +702,16 @@ def _sizing_instrument(row: dict[str, Any]) -> Any:
     return _SizingInstrument()
 
 
+#: Minutes covered by one bar of each supported alias.  The quality report
+#: counts active *minutes*, so a warm-up measured in bars must be scaled by
+#: the alias before it is compared with that count.
+_BAR_TYPE_MINUTES = {"1m": 1, "5m": 5, "15m": 15, "1h": 60, "1d": 1440}
+
+
+def _bar_type_minutes(alias: str | None) -> int:
+    return _BAR_TYPE_MINUTES.get(alias or "1m", 1)
+
+
 def _indicators_warmup(indicators: Any) -> int | None:
     """Largest declared warm-up among the request's indicator instances."""
     if not indicators:
@@ -793,6 +803,11 @@ def preflight(body: dict[str, Any]) -> dict[str, Any]:
                 warmup_bars = None
         else:
             warmup_bars = _indicators_warmup(body.get("indicators"))
+        if warmup_bars is not None:
+            # ``quality`` compares warm-up against active 1-minute bars, so a
+            # warm-up expressed in bars of the requested timeframe covers
+            # ``multiplier`` times as many minutes.
+            warmup_bars = warmup_bars * _bar_type_minutes(body.get("bar_type", "1m"))
         try:
             report = quality(
                 instrument_id, body.get("from"), body.get("to"), warmup_bars=warmup_bars

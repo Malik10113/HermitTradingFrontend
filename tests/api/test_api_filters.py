@@ -6,6 +6,7 @@ Everything runs offline against a temporary instrument index, SQLite state and
 
 from __future__ import annotations
 
+import json
 from datetime import date, datetime, timezone
 
 import pyarrow as pa
@@ -518,6 +519,36 @@ def test_preflight_forwards_indicator_warmup_to_quality(client, monkeypatch):
     assert "insufficient_warmup" in codes
 
 
+def test_preflight_scales_warmup_by_bar_type(client, monkeypatch):
+    seen = {}
+
+    def fake_quality(instrument_id, start=None, end=None, warmup_bars=None):
+        seen["warmup_bars"] = warmup_bars
+        return {"instrument_id": instrument_id}
+
+    monkeypatch.setattr(
+        services, "bars", lambda *args, **kwargs: {"bars": [{"close": 0.5}]}
+    )
+    monkeypatch.setattr(services, "quality", fake_quality)
+    response = client.post(
+        "/api/execution/preflight",
+        json={
+            "instrument_id": "alpha-beta-2024-10-19-alpha-YES.POLYMARKET",
+            "bar_type": "5m",
+            "from": "2024-10-19",
+            "to": "2024-10-19",
+            "execution": {"profile": "frictionless"},
+            "risk": {"sizing": {"mode": "fixed_stake", "value": 100.0}},
+            "indicators": [
+                {"instance_id": "sma50", "type": "sma", "params": {"period": 50}}
+            ],
+        },
+    )
+    assert response.status_code == 200, response.text
+    # Quality counts 1-minute active bars: 49 five-minute bars = 245 minutes.
+    assert seen["warmup_bars"] == 245
+
+
 def test_spa_fallback_cannot_escape_the_dist_directory(tmp_path, monkeypatch):
     from backend import main as main_module
 
@@ -558,3 +589,146 @@ def test_meta_names_the_markets_dataset_and_computes_catalog_coverage(client):
     # No global book window can be computed here, so none is claimed.
     assert body["book_profile"]["global_coverage_window"] is None
     assert "2026" not in str(body["book_profile"])
+
+
+# --------------------------------------------------------------- holdout gate
+
+
+def _split_run(run_id: str) -> None:
+    from backend.jobs import state
+
+    state.create_run(
+        run_id,
+        {
+            "strategy": {"instrument_id": "x-YES.POLYMARKET"},
+            "evaluation": {
+                "split": {"train_end": "2024-10-01", "test_start": "2024-10-03"}
+            },
+        },
+        "sha256:strategy",
+        "sha256:run",
+        "sha256:test",
+        "frictionless",
+        "frictionless",
+    )
+
+
+def test_summary_artifact_hides_out_of_sample_until_reveal(
+    client, monkeypatch, tmp_path
+):
+    from backend.jobs import state
+
+    _split_run("run_split")
+    summary = {
+        "net_pnl_usd": 5.0,
+        "in_sample": {"net_pnl_usd": 3.0},
+        "out_of_sample": {"net_pnl_usd": 2.0},
+    }
+    summary_path = tmp_path / "summary.json"
+    summary_path.write_text(json.dumps(summary))
+    monkeypatch.setattr(
+        routes,
+        "read_artifact",
+        lambda run_id, name: summary_path if name == "summary.json" else None,
+    )
+    monkeypatch.setattr(
+        routes,
+        "read_json_artifact",
+        lambda run_id, name: summary if name == "summary.json" else None,
+    )
+
+    hidden = client.get("/api/backtests/run_split/artifacts/summary.json")
+    assert hidden.status_code == 200, hidden.text
+    body = hidden.json()
+    assert body["oos_hidden"] is True
+    assert body["out_of_sample"] is None
+    assert body["in_sample"] == {"net_pnl_usd": 3.0}
+
+    # After an explicit reveal the raw artifact is served unredacted.
+    state.update_run("run_split", holdout_reveals=1)
+    revealed = client.get("/api/backtests/run_split/artifacts/summary.json")
+    assert revealed.status_code == 200, revealed.text
+    assert revealed.json()["out_of_sample"] == {"net_pnl_usd": 2.0}
+    assert "oos_hidden" not in revealed.json()
+
+
+# -------------------------------------------------------------- experiments
+
+
+class _RecordingQueue:
+    def __init__(self) -> None:
+        self.submitted: list[str] = []
+
+    def submit(self, run_id: str) -> None:
+        self.submitted.append(run_id)
+
+
+def _experiment_base() -> dict:
+    return {
+        "strategy": {
+            "instrument_id": "alpha-beta-2024-10-19-alpha-YES.POLYMARKET",
+            "builtin_id": "buy_and_hold",
+        },
+        "evaluation": {
+            "date_range": {"from": "2024-10-19", "to": "2024-10-19"}
+        },
+    }
+
+
+def _fake_prepared(req):
+    return {
+        "config": req.model_dump(mode="json", exclude_none=True),
+        "strategy_hash": "sha256:strategy",
+        "run_hash": "sha256:run",
+        "data_version": "sha256:test",
+        "requested_profile": "frictionless",
+        "effective_profile": "frictionless",
+        "fallback_reason": None,
+    }
+
+
+def test_experiment_invalid_second_variant_creates_nothing(client, monkeypatch):
+    from backend.jobs import state
+
+    queue = _RecordingQueue()
+    monkeypatch.setattr(routes, "QUEUE", queue)
+    monkeypatch.setattr(routes, "_prepare", lambda req: _fake_prepared(req))
+
+    response = client.post(
+        "/api/experiments",
+        json={
+            "name": "bad variant",
+            "base": _experiment_base(),
+            "axes": [{"path": "execution.slippage_bps", "values": [5, -1]}],
+        },
+    )
+    assert response.status_code == 422, response.text
+    assert response.json()["code"] == "bad_variant"
+    # The valid first variant must not have created a row or a queued job.
+    assert state.list_experiments() == []
+    assert state.count_runs() == 0
+    assert queue.submitted == []
+
+
+def test_experiment_bad_axis_path_creates_nothing(client, monkeypatch):
+    from backend.jobs import state
+
+    queue = _RecordingQueue()
+    monkeypatch.setattr(routes, "QUEUE", queue)
+    monkeypatch.setattr(
+        routes, "_prepare", lambda req: pytest.fail("no variant may be prepared")
+    )
+
+    response = client.post(
+        "/api/experiments",
+        json={
+            "name": "bad path",
+            "base": _experiment_base(),
+            "axes": [{"path": "strategy.nope.deeper", "values": [1, 2]}],
+        },
+    )
+    assert response.status_code == 422, response.text
+    assert response.json()["code"] == "bad_axis_path"
+    assert state.list_experiments() == []
+    assert state.count_runs() == 0
+    assert queue.submitted == []

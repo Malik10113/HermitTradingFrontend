@@ -10,6 +10,8 @@ import type {
   IndicatorPreviewResponse,
   IndicatorSpec,
   MetaResponse,
+  PortfolioOptimizeRequest,
+  PortfolioOptimizeResponse,
   PreflightRequest,
   PreflightResponse,
   StrategySection,
@@ -316,6 +318,13 @@ export const api = {
     normaliseCompare(
       await request<unknown>(`/runs/compare${buildQuery({ ids: ids.join(",") })}`, { signal }),
     ),
+
+  portfolioOptimize: (body: PortfolioOptimizeRequest, signal?: AbortSignal) =>
+    request<PortfolioOptimizeResponse>("/portfolio/optimize", {
+      method: "POST",
+      body,
+      signal,
+    }),
 
   artifact: (runId: string, name: string, signal?: AbortSignal) =>
     request<unknown>(

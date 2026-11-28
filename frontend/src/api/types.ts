@@ -681,6 +681,67 @@ export interface CompareResponse {
   runs: RunDetail[];
 }
 
+export type PortfolioMethod =
+  | "equal"
+  | "inverse_volatility"
+  | "risk_parity"
+  | "exponential"
+  | "shrunk_mean_variance"
+  | "three_stage";
+
+export interface PortfolioOptimizeRequest {
+  run_ids: string[];
+  method?: PortfolioMethod;
+  max_weight?: number;
+  vol_window?: number;
+  min_periods?: number;
+  correlation_penalty?: number;
+  max_pair_correlation?: number;
+  kelly_fraction?: number;
+  lcb_z?: number;
+  bankroll_usd?: number;
+}
+
+export interface PortfolioMemberResult {
+  run_id: string;
+  instrument_id?: string | null;
+  strategy_hash?: string | null;
+  requested_profile?: string | null;
+  effective_profile?: string | null;
+  weight: number;
+  kelly_fraction: number;
+  annualised_vol?: number | null;
+  sharpe?: number | null;
+  net_pnl_usd?: number | null;
+  dropped?: boolean;
+  drop_reason?: string | null;
+}
+
+export interface PortfolioOptimizeResponse {
+  method: PortfolioMethod;
+  provenance: string;
+  effective_n: number;
+  max_pair_correlation: number;
+  portfolio_kelly_fraction: number;
+  recommended_daily_stake_usd: number;
+  reallocated_weight: number;
+  members: PortfolioMemberResult[];
+  weights: Record<string, number>;
+  kelly_fractions: Record<string, number>;
+  correlation_matrix: Record<string, Record<string, number>>;
+  metrics: {
+    starting_cash_usd: number;
+    final_equity_usd: number;
+    net_pnl_usd: number;
+    return_pct: number | null;
+    sharpe: number | null;
+    max_drawdown_pct: number;
+    days: number;
+  };
+  equity_index: Array<{ ts: string; equity_index: number }>;
+  warnings: string[];
+}
+
 export interface Preset {
   id: string;
   name: string;

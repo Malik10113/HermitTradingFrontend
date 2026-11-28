@@ -50,6 +50,10 @@ def _warmup_period(key: str = "period") -> Callable[[dict[str, Any]], int]:
     return lambda params: max(int(params.get(key, 1)) - 1, 0)
 
 
+#: Declared warm-up for the rolling-window indicators: ``period - 1`` leading nulls.
+_period_minus_one: Callable[[dict[str, Any]], int] = _warmup_period()
+
+
 def _warmup_rsi(params: dict[str, Any]) -> int:
     return int(params["period"])
 
@@ -185,6 +189,79 @@ _SPECS: tuple[IndicatorSpec, ...] = (
         outputs=(OutputSpec("value", "VWAP"),),
         warmup=lambda _params: 0,
         description="Cumulative VWAP from typical price and volume.",
+    ),
+    IndicatorSpec(
+        id="logit",
+        label="Clipped Logit",
+        pane="separate",
+        inputs=("close",),
+        params=(
+            ParamSpec("eps", "Clip epsilon", "float", 0.001, 0.0001, 0.1, 0.0001),
+        ),
+        outputs=(OutputSpec("value", "Logit"),),
+        warmup=lambda _params: 0,
+        description="Log-odds of the probability, clipped to [eps, 1 - eps].",
+    ),
+    IndicatorSpec(
+        id="prob_change",
+        label="Probability Change",
+        pane="separate",
+        inputs=("close",),
+        params=(ParamSpec("period", "Lookback period", "int", 10, 1, 500, 1),),
+        outputs=(OutputSpec("value", "Delta p"), OutputSpec("pct", "Pct change")),
+        warmup=lambda params: int(params["period"]),
+        description="Absolute and percentage change in probability over N bars.",
+    ),
+    IndicatorSpec(
+        id="prob_vol",
+        label="Probability Volatility",
+        pane="separate",
+        inputs=("close",),
+        params=(ParamSpec("period", "Lookback period", "int", 20, 2, 500, 1),),
+        outputs=(OutputSpec("value", "Rolling std (Delta p)"),),
+        warmup=lambda params: int(params["period"]),
+        description="Rolling sample standard deviation of one-bar probability changes.",
+    ),
+    IndicatorSpec(
+        id="extreme_dist",
+        label="Distance from Extremes",
+        pane="separate",
+        inputs=("high", "low", "close"),
+        params=(ParamSpec("period", "Lookback period", "int", 20, 2, 500, 1),),
+        outputs=(
+            OutputSpec("from_high", "From high"),
+            OutputSpec("from_low", "From low"),
+            OutputSpec("position", "Range position"),
+        ),
+        warmup=_period_minus_one,
+        description="Close distance below the N-bar high/low and its range position.",
+    ),
+    IndicatorSpec(
+        id="rolling_volume",
+        label="Rolling Volume",
+        pane="separate",
+        inputs=("volume",),
+        params=(ParamSpec("period", "Lookback period", "int", 20, 2, 500, 1),),
+        outputs=(
+            OutputSpec("value", "Rolling mean volume"),
+            OutputSpec("sum", "Rolling total volume"),
+            OutputSpec("ratio", "Volume / mean"),
+        ),
+        warmup=_period_minus_one,
+        description="Rolling mean and total volume, and the latest bar's ratio to it.",
+    ),
+    IndicatorSpec(
+        id="flow_imbalance",
+        label="Signed Flow Imbalance",
+        pane="separate",
+        inputs=("open", "close", "volume"),
+        params=(ParamSpec("period", "Lookback period", "int", 15, 2, 500, 1),),
+        outputs=(
+            OutputSpec("value", "Flow imbalance [-1, 1]"),
+            OutputSpec("signed_volume", "Net signed volume"),
+        ),
+        warmup=_period_minus_one,
+        description="Net signed volume over gross volume; bar sign from open/close.",
     ),
 )
 

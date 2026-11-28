@@ -7,6 +7,8 @@ of the adapter.  No Nautilus object is mocked anywhere.
 
 from __future__ import annotations
 
+import math
+
 import pytest
 
 from backend.indicators import compute_series, get_spec, list_specs, validate_params
@@ -163,3 +165,249 @@ def test_registry_macd_warmup_matches_runtime() -> None:
 
 def test_registry_stochastic_warmup_matches_runtime() -> None:
     assert _declared_warmup("stochastic") == _runtime_warmup("stochastic")
+
+
+# ---------------------------------------------------------------------------
+# Prediction-market indicators
+
+
+def _bars_from(
+    closes: list[float],
+    *,
+    volumes: list[float] | None = None,
+) -> list[dict[str, float]]:
+    """Build probability bars where ``open`` is the previous close."""
+    volumes = volumes if volumes is not None else [100.0] * len(closes)
+    bars: list[dict[str, float]] = []
+    previous: float | None = None
+    for close, volume in zip(closes, volumes):
+        open_ = close if previous is None else previous
+        bars.append(
+            {
+                "open": open_,
+                "high": max(open_, close) + 0.01,
+                "low": min(open_, close) - 0.01,
+                "close": close,
+                "volume": volume,
+            }
+        )
+        previous = close
+    return bars
+
+
+def test_closed_form_clipped_logit_on_every_index() -> None:
+    eps = 0.001
+    values = _compute("logit", {"eps": eps})["value"]
+    assert leading_none_count(values) == 0
+    for bar, value in zip(BARS, values):
+        probability = min(max(bar["close"], eps), 1.0 - eps)
+        assert value == pytest.approx(
+            math.log(probability / (1.0 - probability)), rel=0, abs=1e-12
+        )
+
+
+def test_clipped_logit_never_returns_infinities() -> None:
+    bars = _bars_from([0.0, 0.5, 1.0, 0.0, 1.0])
+    series = compute_series(
+        bars, [{"instance_id": "l", "type": "logit", "params": {"eps": 0.001}}]
+    )["l"]["value"]
+    assert all(value is not None and math.isfinite(value) for value in series)
+    assert series[0] == pytest.approx(math.log(0.001 / 0.999), rel=0, abs=1e-12)
+    assert series[2] == pytest.approx(-series[0], rel=0, abs=1e-12)
+    assert series[1] == pytest.approx(0.0, rel=0, abs=1e-12)
+
+
+def test_closed_form_probability_change() -> None:
+    period = 10
+    series = _compute("prob_change", {"period": period})
+    for i, bar in enumerate(BARS):
+        if i < period:
+            assert series["value"][i] is None
+            assert series["pct"][i] is None
+            continue
+        previous = BARS[i - period]["close"]
+        delta = bar["close"] - previous
+        assert series["value"][i] == pytest.approx(delta, rel=0, abs=1e-12)
+        assert series["pct"][i] == pytest.approx(
+            delta / previous * 100.0, rel=0, abs=1e-12
+        )
+
+
+def test_probability_change_reports_pct_zero_on_zero_base() -> None:
+    bars = _bars_from([0.0, 0.0, 0.5, 0.6])
+    series = compute_series(
+        bars, [{"instance_id": "p", "type": "prob_change", "params": {"period": 1}}]
+    )["p"]
+    assert series["value"][1] == pytest.approx(0.0, rel=0, abs=1e-12)
+    assert series["pct"][1] == pytest.approx(0.0, rel=0, abs=1e-12)
+    assert series["value"][3] == pytest.approx(0.1, rel=0, abs=1e-12)
+    assert series["pct"][3] == pytest.approx(20.0, rel=0, abs=1e-12)
+
+
+def test_closed_form_probability_volatility_uses_sample_std() -> None:
+    period = 20
+    values = _compute("prob_vol", {"period": period})["value"]
+    closes = [bar["close"] for bar in BARS]
+    for i in range(len(closes)):
+        if i < period:
+            assert values[i] is None
+            continue
+        changes = [closes[j] - closes[j - 1] for j in range(i - period + 1, i + 1)]
+        mean = sum(changes) / period
+        expected = math.sqrt(
+            sum((change - mean) ** 2 for change in changes) / (period - 1)
+        )
+        assert values[i] == pytest.approx(expected, rel=0, abs=1e-12)
+
+
+def test_probability_volatility_is_zero_for_a_flat_market() -> None:
+    bars = _bars_from([0.5] * 8)
+    series = compute_series(
+        bars, [{"instance_id": "v", "type": "prob_vol", "params": {"period": 5}}]
+    )["v"]["value"]
+    assert series[:5] == [None] * 5
+    assert all(value == pytest.approx(0.0, rel=0, abs=1e-12) for value in series[5:])
+
+
+def test_distance_from_extremes_is_consistent_with_the_channel() -> None:
+    period = 20
+    series = _compute("extreme_dist", {"period": period})
+    for i, bar in enumerate(BARS):
+        if i < period - 1:
+            assert series["from_high"][i] is None
+            assert series["from_low"][i] is None
+            assert series["position"][i] is None
+            continue
+        window = BARS[i - period + 1 : i + 1]
+        highest = max(item["high"] for item in window)
+        lowest = min(item["low"] for item in window)
+        span = highest - lowest
+        assert series["from_high"][i] == pytest.approx(
+            highest - bar["close"], rel=0, abs=1e-12
+        )
+        assert series["from_low"][i] == pytest.approx(
+            bar["close"] - lowest, rel=0, abs=1e-12
+        )
+        assert series["from_high"][i] + series["from_low"][i] == pytest.approx(
+            span, rel=0, abs=1e-12
+        )
+        assert series["position"][i] == pytest.approx(
+            (bar["close"] - lowest) / span, rel=0, abs=1e-12
+        )
+        assert 0.0 <= series["position"][i] <= 1.0
+        assert series["from_high"][i] >= 0.0
+        assert series["from_low"][i] >= 0.0
+
+
+def test_distance_from_extremes_is_neutral_when_the_range_is_empty() -> None:
+    bars = _bars_from([0.5] * 6)
+    for bar in bars:
+        bar["high"] = 0.5
+        bar["low"] = 0.5
+    series = compute_series(
+        bars, [{"instance_id": "e", "type": "extreme_dist", "params": {"period": 3}}]
+    )["e"]
+    assert series["position"][2:] == [0.5, 0.5, 0.5, 0.5]
+    assert series["from_high"][2:] == [0.0, 0.0, 0.0, 0.0]
+    assert series["from_low"][2:] == [0.0, 0.0, 0.0, 0.0]
+
+
+def test_rolling_volume_matches_the_window() -> None:
+    period = 20
+    series = _compute("rolling_volume", {"period": period})
+    for i, bar in enumerate(BARS):
+        if i < period - 1:
+            assert series["value"][i] is None
+            assert series["sum"][i] is None
+            assert series["ratio"][i] is None
+            continue
+        window = [item["volume"] for item in BARS[i - period + 1 : i + 1]]
+        total = sum(window)
+        mean = total / period
+        assert series["sum"][i] == pytest.approx(total, rel=0, abs=1e-12)
+        assert series["value"][i] == pytest.approx(mean, rel=0, abs=1e-12)
+        assert series["ratio"][i] == pytest.approx(
+            window[-1] / mean, rel=0, abs=1e-12
+        )
+        assert series["ratio"][i] * series["value"][i] == pytest.approx(
+            bar["volume"], rel=0, abs=1e-9
+        )
+
+
+def test_rolling_volume_ratio_defaults_to_one_on_zero_mean() -> None:
+    bars = _bars_from([0.5] * 5, volumes=[0.0] * 5)
+    series = compute_series(
+        bars, [{"instance_id": "r", "type": "rolling_volume", "params": {"period": 2}}]
+    )["r"]
+    assert series["value"][1:] == [0.0, 0.0, 0.0, 0.0]
+    assert series["ratio"][1:] == [1.0, 1.0, 1.0, 1.0]
+
+
+def test_flow_imbalance_is_signed_volume_over_gross_volume() -> None:
+    period = 15
+    series = _compute("flow_imbalance", {"period": period})
+    assert leading_none_count(series["value"]) == period - 1
+    for i in range(len(BARS)):
+        if i < period - 1:
+            assert series["signed_volume"][i] is None
+            continue
+        net_signed = 0.0
+        gross = 0.0
+        for j in range(i - period + 1, i + 1):
+            item = BARS[j]
+            previous_close = BARS[j - 1]["close"] if j > 0 else item["open"]
+            if item["close"] > item["open"]:
+                sign = 1.0
+            elif item["close"] < item["open"]:
+                sign = -1.0
+            elif item["close"] > previous_close:
+                sign = 1.0
+            elif item["close"] < previous_close:
+                sign = -1.0
+            else:
+                sign = 0.0
+            net_signed += sign * item["volume"]
+            gross += item["volume"]
+        assert series["signed_volume"][i] == pytest.approx(
+            net_signed, rel=0, abs=1e-9
+        )
+        assert series["value"][i] == pytest.approx(
+            net_signed / gross, rel=0, abs=1e-12
+        )
+        assert -1.0 <= series["value"][i] <= 1.0
+
+
+def test_flow_imbalance_is_plus_one_when_every_bar_closes_up() -> None:
+    bars = [
+        {"open": 0.05, "high": 0.11, "low": 0.04, "close": 0.10, "volume": 100.0},
+        {"open": 0.10, "high": 0.21, "low": 0.09, "close": 0.20, "volume": 100.0},
+        {"open": 0.20, "high": 0.31, "low": 0.19, "close": 0.30, "volume": 100.0},
+        {"open": 0.30, "high": 0.41, "low": 0.29, "close": 0.40, "volume": 100.0},
+        {"open": 0.40, "high": 0.51, "low": 0.39, "close": 0.50, "volume": 100.0},
+    ]
+    series = compute_series(
+        bars,
+        [{"instance_id": "f", "type": "flow_imbalance", "params": {"period": 3}}],
+    )["f"]
+    assert series["value"][2:] == [1.0, 1.0, 1.0]
+    assert series["signed_volume"][2:] == [300.0, 300.0, 300.0]
+
+
+@pytest.mark.parametrize(
+    "indicator_id",
+    [
+        "logit",
+        "prob_change",
+        "prob_vol",
+        "extreme_dist",
+        "rolling_volume",
+        "flow_imbalance",
+    ],
+)
+def test_new_registry_warmup_matches_runtime(indicator_id: str) -> None:
+    series = _compute(indicator_id)
+    first_output = next(iter(series.values()))
+    assert _declared_warmup(indicator_id) == leading_none_count(first_output)
+    assert set(series) == {
+        output.key for output in get_spec(indicator_id).outputs
+    }

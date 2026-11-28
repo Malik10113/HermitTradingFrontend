@@ -19,6 +19,11 @@ Definitions pinned here (matching the conventions the adapter documents):
   for %D.
 * VWAP is the cumulative ``sum(close * volume) / sum(volume)`` and stays
   ``None`` until some volume has been seen.
+* The prediction-market additions follow :mod:`docs/BRIEF.md` §7: the clipped
+  logit uses ``ln(p / (1 - p))`` with ``p`` clipped to ``[eps, 1 - eps]``;
+  probability volatility is the sample (``ddof=1``) standard deviation of
+  one-bar changes; the flow imbalance signs each bar by ``close`` vs ``open``
+  (falling back to ``close`` vs the previous close), never by tick rule.
 """
 
 from __future__ import annotations
@@ -223,6 +228,98 @@ def vwap(bars: Bars) -> Values:
     return out
 
 
+def logit(values: Sequence[float], eps: float) -> Values:
+    out: Values = [None] * len(values)
+    for i, value in enumerate(values):
+        probability = min(max(float(value), eps), 1.0 - eps)
+        out[i] = math.log(probability / (1.0 - probability))
+    return out
+
+
+def probability_change(values: Sequence[float], period: int) -> dict[str, Values]:
+    value: Values = [None] * len(values)
+    pct: Values = [None] * len(values)
+    for i in range(period, len(values)):
+        previous = values[i - period]
+        current = values[i]
+        value[i] = current - previous
+        pct[i] = ((current - previous) / previous * 100.0) if previous != 0.0 else 0.0
+    return {"value": value, "pct": pct}
+
+
+def probability_volatility(values: Sequence[float], period: int) -> Values:
+    out: Values = [None] * len(values)
+    for i in range(period, len(values)):
+        changes = [values[j] - values[j - 1] for j in range(i - period + 1, i + 1)]
+        mean = sum(changes) / period
+        variance = sum((change - mean) ** 2 for change in changes) / (period - 1)
+        out[i] = math.sqrt(max(variance, 0.0))
+    return out
+
+
+def extreme_distance(bars: Bars, period: int) -> dict[str, Values]:
+    count = len(bars)
+    from_high: Values = [None] * count
+    from_low: Values = [None] * count
+    position: Values = [None] * count
+    for i in range(period - 1, count):
+        window = bars[i - period + 1 : i + 1]
+        highest = max(bar["high"] for bar in window)
+        lowest = min(bar["low"] for bar in window)
+        close = bars[i]["close"]
+        span = highest - lowest
+        from_high[i] = highest - close
+        from_low[i] = close - lowest
+        position[i] = ((close - lowest) / span) if span > 0.0 else 0.5
+    return {"from_high": from_high, "from_low": from_low, "position": position}
+
+
+def rolling_volume(bars: Bars, period: int) -> dict[str, Values]:
+    count = len(bars)
+    mean_values: Values = [None] * count
+    total_values: Values = [None] * count
+    ratio_values: Values = [None] * count
+    for i in range(period - 1, count):
+        window = [bar["volume"] for bar in bars[i - period + 1 : i + 1]]
+        total = sum(window)
+        mean = total / period
+        mean_values[i] = mean
+        total_values[i] = total
+        ratio_values[i] = (window[-1] / mean) if mean > 0.0 else 1.0
+    return {"value": mean_values, "sum": total_values, "ratio": ratio_values}
+
+
+def flow_imbalance(bars: Bars, period: int) -> dict[str, Values]:
+    count = len(bars)
+    value: Values = [None] * count
+    signed_volume: Values = [None] * count
+    window: list[tuple[float, float]] = []
+    for i, bar in enumerate(bars):
+        open_ = bar["open"]
+        close = bar["close"]
+        if close > open_:
+            sign = 1.0
+        elif close < open_:
+            sign = -1.0
+        else:
+            previous_close = bars[i - 1]["close"] if i > 0 else open_
+            if close > previous_close:
+                sign = 1.0
+            elif close < previous_close:
+                sign = -1.0
+            else:
+                sign = 0.0
+        window.append((sign * bar["volume"], bar["volume"]))
+        if len(window) > period:
+            window.pop(0)
+        if len(window) == period:
+            net_signed = sum(signed for signed, _ in window)
+            gross = sum(traded for _, traded in window)
+            value[i] = (net_signed / gross) if gross > 0.0 else 0.0
+            signed_volume[i] = net_signed
+    return {"value": value, "signed_volume": signed_volume}
+
+
 def reference_series(
     indicator_id: str, params: dict[str, float], bars: Bars
 ) -> dict[str, Values]:
@@ -258,4 +355,16 @@ def reference_series(
         return donchian(bars, int(params["period"]))
     if indicator_id == "vwap":
         return {"value": vwap(bars)}
+    if indicator_id == "logit":
+        return {"value": logit(closes, float(params["eps"]))}
+    if indicator_id == "prob_change":
+        return probability_change(closes, int(params["period"]))
+    if indicator_id == "prob_vol":
+        return {"value": probability_volatility(closes, int(params["period"]))}
+    if indicator_id == "extreme_dist":
+        return extreme_distance(bars, int(params["period"]))
+    if indicator_id == "rolling_volume":
+        return rolling_volume(bars, int(params["period"]))
+    if indicator_id == "flow_imbalance":
+        return flow_imbalance(bars, int(params["period"]))
     raise ValueError(f"no reference implementation for '{indicator_id}'")

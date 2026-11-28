@@ -2,12 +2,15 @@
 
 One implementation serves the chart and the backtest (see AGENTS.md §6): the
 :class:`IndicatorSet` here is the only place indicator math runs, and it feeds
-the pinned NautilusTrader indicator classes directly.  There is no Python
-re-implementation of any formula; this module is a thin adapter that
+the pinned NautilusTrader indicator classes directly.  There is no second,
+JavaScript re-implementation of any formula; this module is a thin adapter that
 
 * validates the declarative instance list through
   :mod:`backend.indicators.registry`,
-* feeds raw bar fields into the matching Nautilus indicator, and
+* feeds raw bar fields into the matching Nautilus indicator — or, for the
+  prediction-market indicators Nautilus does not ship (logit, probability
+  change/volatility, distance from extremes, rolling volume, signed flow
+  imbalance), into the small stateful classes defined below, and
 * reports ``None`` — never ``0.0`` — for every output while the indicator is
   still warming up.
 
@@ -23,6 +26,7 @@ import hashlib
 import json
 import math
 import numbers
+from collections import deque
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Callable, Iterable, Mapping, Sequence
@@ -182,6 +186,176 @@ def _feed_close_volume(obj: NautilusIndicator, bar: Bar, instance_id: str) -> No
     )
 
 
+def _feed_volume(obj: NautilusIndicator, bar: Bar, instance_id: str) -> None:
+    obj.update_raw(_field(bar, "volume", instance_id))
+
+
+def _feed_open_close_volume(obj: NautilusIndicator, bar: Bar, instance_id: str) -> None:
+    obj.update_raw(
+        _field(bar, "open", instance_id),
+        _field(bar, "close", instance_id),
+        _field(bar, "volume", instance_id),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Prediction-market indicators
+#
+# NautilusTrader ships no probability or bar-flow indicators, so these six are
+# plain stateful classes with the same surface the adapter uses for a Nautilus
+# object: ``update_raw(...)``, an ``initialized`` flag and one attribute per
+# output.  Warm-up is a declared count of leading nulls, never a zero.
+# ---------------------------------------------------------------------------
+
+
+class ClippedLogit:
+    """Log-odds of the probability, clipped away from 0 and 1."""
+
+    def __init__(self, eps: float) -> None:
+        self.eps = eps
+        self.value = 0.0
+        self.initialized = False
+
+    def update_raw(self, close: float) -> None:
+        p = min(max(float(close), self.eps), 1.0 - self.eps)
+        self.value = math.log(p / (1.0 - p))
+        self.initialized = True
+
+
+class ProbabilityChange:
+    """Absolute and percentage probability change over ``period`` bars."""
+
+    def __init__(self, period: int) -> None:
+        self.period = period
+        self._window: deque[float] = deque(maxlen=period + 1)
+        self.value = 0.0
+        self.pct = 0.0
+        self.initialized = False
+
+    def update_raw(self, close: float) -> None:
+        self._window.append(float(close))
+        if len(self._window) == self.period + 1:
+            previous = self._window[0]
+            current = self._window[-1]
+            self.value = current - previous
+            self.pct = ((current - previous) / previous * 100.0) if previous != 0.0 else 0.0
+            self.initialized = True
+
+
+class ProbabilityVolatility:
+    """Sample standard deviation of one-bar probability changes."""
+
+    def __init__(self, period: int) -> None:
+        self.period = period
+        self._previous: float | None = None
+        self._changes: deque[float] = deque(maxlen=period)
+        self.value = 0.0
+        self.initialized = False
+
+    def update_raw(self, close: float) -> None:
+        current = float(close)
+        previous = self._previous
+        self._previous = current
+        if previous is None:
+            return
+        self._changes.append(current - previous)
+        if len(self._changes) == self.period:
+            mean = sum(self._changes) / self.period
+            variance = sum(
+                (change - mean) ** 2 for change in self._changes
+            ) / (self.period - 1)
+            self.value = math.sqrt(max(variance, 0.0))
+            self.initialized = True
+
+
+class ExtremeDistance:
+    """Close distance from the N-bar high/low and its position in the range."""
+
+    def __init__(self, period: int) -> None:
+        self.period = period
+        self._highs: deque[float] = deque(maxlen=period)
+        self._lows: deque[float] = deque(maxlen=period)
+        self.from_high = 0.0
+        self.from_low = 0.0
+        self.position = 0.0
+        self.initialized = False
+
+    def update_raw(self, high: float, low: float, close: float) -> None:
+        self._highs.append(float(high))
+        self._lows.append(float(low))
+        if len(self._highs) == self.period:
+            highest = max(self._highs)
+            lowest = min(self._lows)
+            current = float(close)
+            span = highest - lowest
+            self.from_high = highest - current
+            self.from_low = current - lowest
+            self.position = (
+                ((current - lowest) / span) if span > 0.0 else 0.5
+            )
+            self.initialized = True
+
+
+class RollingVolume:
+    """Rolling mean and total volume, plus the latest bar's ratio to the mean."""
+
+    def __init__(self, period: int) -> None:
+        self.period = period
+        self._volumes: deque[float] = deque(maxlen=period)
+        self.value = 0.0
+        self.sum = 0.0
+        self.ratio = 0.0
+        self.initialized = False
+
+    def update_raw(self, volume: float) -> None:
+        self._volumes.append(float(volume))
+        if len(self._volumes) == self.period:
+            total = sum(self._volumes)
+            mean = total / self.period
+            self.value = mean
+            self.sum = total
+            self.ratio = (self._volumes[-1] / mean) if mean > 0.0 else 1.0
+            self.initialized = True
+
+
+class FlowImbalance:
+    """Net signed volume over gross volume; bar sign comes from open/close."""
+
+    def __init__(self, period: int) -> None:
+        self.period = period
+        self._window: deque[tuple[float, float]] = deque(maxlen=period)
+        self._previous_close: float | None = None
+        self.value = 0.0
+        self.signed_volume = 0.0
+        self.initialized = False
+
+    def update_raw(self, open_: float, close: float, volume: float) -> None:
+        open_price = float(open_)
+        current = float(close)
+        traded = float(volume)
+        previous = (
+            self._previous_close if self._previous_close is not None else open_price
+        )
+        if current > open_price:
+            sign = 1.0
+        elif current < open_price:
+            sign = -1.0
+        elif current > previous:
+            sign = 1.0
+        elif current < previous:
+            sign = -1.0
+        else:
+            sign = 0.0
+        self._previous_close = current
+        self._window.append((sign * traded, traded))
+        if len(self._window) == self.period:
+            net_signed = sum(signed for signed, _ in self._window)
+            gross = sum(traded for _, traded in self._window)
+            self.value = (net_signed / gross) if gross > 0.0 else 0.0
+            self.signed_volume = net_signed
+            self.initialized = True
+
+
 def _value(obj: NautilusIndicator) -> dict[str, float]:
     return {"value": obj.value}
 
@@ -262,6 +436,53 @@ _IMPLS: dict[str, _Impl] = {
         feed=_feed_close_volume,
         extract=_value,
         outputs=("value",),
+    ),
+    "logit": _Impl(
+        build=lambda p: ClippedLogit(eps=p["eps"]),
+        feed=_feed_close,
+        extract=_value,
+        outputs=("value",),
+    ),
+    "prob_change": _Impl(
+        build=lambda p: ProbabilityChange(period=p["period"]),
+        feed=_feed_close,
+        extract=lambda obj: {"value": obj.value, "pct": obj.pct},
+        outputs=("value", "pct"),
+    ),
+    "prob_vol": _Impl(
+        build=lambda p: ProbabilityVolatility(period=p["period"]),
+        feed=_feed_close,
+        extract=_value,
+        outputs=("value",),
+    ),
+    "extreme_dist": _Impl(
+        build=lambda p: ExtremeDistance(period=p["period"]),
+        feed=_feed_high_low_close,
+        extract=lambda obj: {
+            "from_high": obj.from_high,
+            "from_low": obj.from_low,
+            "position": obj.position,
+        },
+        outputs=("from_high", "from_low", "position"),
+    ),
+    "rolling_volume": _Impl(
+        build=lambda p: RollingVolume(period=p["period"]),
+        feed=_feed_volume,
+        extract=lambda obj: {
+            "value": obj.value,
+            "sum": obj.sum,
+            "ratio": obj.ratio,
+        },
+        outputs=("value", "sum", "ratio"),
+    ),
+    "flow_imbalance": _Impl(
+        build=lambda p: FlowImbalance(period=p["period"]),
+        feed=_feed_open_close_volume,
+        extract=lambda obj: {
+            "value": obj.value,
+            "signed_volume": obj.signed_volume,
+        },
+        outputs=("value", "signed_volume"),
     ),
 }
 

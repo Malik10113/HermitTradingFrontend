@@ -344,17 +344,19 @@ def test_short_horizon_reversion_wiring_and_rules():
 
 
 def test_short_horizon_reversion_rejects_overlapping_zones():
-    with pytest.raises(ValueError, match="low_zone"):
+    # Both values are inside their individual parameter ranges, so only the
+    # cross-parameter guard can reject them.
+    with pytest.raises(ValueError, match="low_zone must be smaller than high_zone"):
         build(
             "short_horizon_reversion",
             "x-YES.POLYMARKET",
             params={"low_zone": 0.5, "high_zone": 0.5},
         )
-    with pytest.raises(ValueError, match="low_zone"):
+    with pytest.raises(ValueError, match="low_zone must be smaller than high_zone"):
         build(
             "short_horizon_reversion",
             "x-YES.POLYMARKET",
-            params={"low_zone": 0.7, "high_zone": 0.6},
+            params={"low_zone": 0.60, "high_zone": 0.50},
         )
 
 

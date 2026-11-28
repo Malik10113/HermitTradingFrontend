@@ -25,7 +25,7 @@ from backend.rules.schema import (
     StrategySection,
 )
 
-CATALOGUE_VERSION = "1"
+CATALOGUE_VERSION = "2"
 REFERENCE_INSTRUMENT_ID = "CATALOGUE-REFERENCE-YES.POLYMARKET"
 REFERENCE_BAR_TYPE = "1m"
 
@@ -525,8 +525,8 @@ def large_trade_follow(
 SHORT_HORIZON_REVERSION_PARAMS = (
     ParamDef("period", "Lookback period", "int", 15, 3, 240, 1),
     ParamDef("shock_move", "Min shock move", "float", 0.03, 0.005, 0.40, 0.005),
-    ParamDef("low_zone", "Lower range zone", "float", 0.20, 0.05, 0.45, 0.05),
-    ParamDef("high_zone", "Upper range zone", "float", 0.80, 0.55, 0.95, 0.05),
+    ParamDef("low_zone", "Lower range zone", "float", 0.20, 0.05, 0.80, 0.05),
+    ParamDef("high_zone", "Upper range zone", "float", 0.80, 0.20, 0.95, 0.05),
 )
 
 
@@ -814,13 +814,14 @@ BUILTINS: tuple[Builtin, ...] = (
         id="short_horizon_reversion",
         label="Short-Horizon Probability Reversion",
         description=(
-            "Fades sharp short-horizon probability dislocations when recent range "
-            "position reaches an extreme and signed flow begins reverting."
+            "Fades sharp short-horizon probability dislocations when probability "
+            "change exceeds the shock threshold at an extreme of the recent range "
+            "and exits on reversion to the rolling mean."
         ),
         provenance=(
             "FundedBetBacktesting/src/polymarket_research/backtest/"
             "reversion_optimizer.py & docs/polymarket_strategy_register.md "
-            "(short_horizon_reversion)"
+            "(Short-horizon reversal)"
         ),
         params=SHORT_HORIZON_REVERSION_PARAMS,
         builder=short_horizon_reversion,

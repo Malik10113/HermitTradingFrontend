@@ -285,6 +285,8 @@ export interface PreflightRequest {
   to?: string;
   execution: ExecutionSection;
   risk?: RiskSection;
+  indicators?: IndicatorInstance[];
+  warmup_bars?: number;
 }
 
 export interface PreflightResponse extends EffectiveExecution {

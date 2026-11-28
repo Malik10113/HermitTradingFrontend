@@ -80,6 +80,8 @@ class PreflightRequest(BaseModel):
     end: str | None = Field(default=None, alias="to")
     execution: ExecutionConfig = Field(default_factory=ExecutionConfig)
     risk: RiskConfig | None = None
+    indicators: list[dict[str, Any]] | None = None
+    warmup_bars: int | None = None
 
     model_config = {"populate_by_name": True}
 

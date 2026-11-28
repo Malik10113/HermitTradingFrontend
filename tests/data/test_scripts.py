@@ -3,6 +3,8 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 
+import pytest
+
 from backend import config
 from backend.data import bars
 
@@ -45,3 +47,27 @@ def test_build_catalog_cli_is_idempotent_and_uses_instrument_precision(dataset):
     second = ParquetDataCatalog(str(catalog_dir)).query_bars(identifiers=identifiers)
     assert len(second) == 3
     assert sorted(catalog_dir.rglob("*.parquet")) == files_before
+
+
+def test_failed_catalog_promotion_preserves_the_previous_catalog(dataset, monkeypatch):
+    script = _load_script("build_catalog")
+    args = ["--instrument", dataset.yes_id, "--alias", "1m"]
+    assert script.main(args) == 0
+
+    catalog_dir = Path(config.CATALOG_DIR)
+    files_before = sorted(path.relative_to(catalog_dir) for path in catalog_dir.rglob("*"))
+    real_replace = script.os.replace
+    temp = catalog_dir.with_name(f".{catalog_dir.name}.tmp-{script.os.getpid()}")
+
+    def fail_new_catalog(source, destination):
+        if Path(source) == temp and Path(destination) == catalog_dir:
+            raise OSError("simulated promotion failure")
+        return real_replace(source, destination)
+
+    monkeypatch.setattr(script.os, "replace", fail_new_catalog)
+    with pytest.raises(OSError, match="simulated promotion failure"):
+        script.main(args)
+
+    assert catalog_dir.is_dir()
+    assert sorted(path.relative_to(catalog_dir) for path in catalog_dir.rglob("*")) == files_before
+    assert not temp.exists()

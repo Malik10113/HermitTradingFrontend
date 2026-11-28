@@ -22,6 +22,7 @@ import argparse
 import os
 import shutil
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -115,6 +116,22 @@ def _select_instruments(args: argparse.Namespace) -> list[dict]:
     raise SystemExit("choose --instrument <id> (repeatable) or --all")
 
 
+def _install_catalog(temp: Path, target: Path) -> None:
+    """Promote a completed catalog, restoring the old one if promotion fails."""
+    if not target.exists():
+        os.replace(temp, target)
+        return
+
+    backup = target.with_name(f".{target.name}.backup-{os.getpid()}-{time.time_ns()}")
+    os.replace(target, backup)
+    try:
+        os.replace(temp, target)
+    except BaseException:
+        os.replace(backup, target)
+        raise
+    shutil.rmtree(backup, ignore_errors=True)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--instrument", action="append", default=[])
@@ -150,9 +167,7 @@ def main(argv: list[str] | None = None) -> int:
                     f"{row['instrument_id']} {info['alias']} bars={len(rows)}",
                     flush=True,
                 )
-        if target.exists():
-            shutil.rmtree(target)
-        os.replace(temp, target)
+        _install_catalog(temp, target)
     except Exception:
         shutil.rmtree(temp, ignore_errors=True)
         raise
